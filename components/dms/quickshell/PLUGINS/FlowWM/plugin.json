@@ -1,0 +1,19 @@
+{
+    "id": "flowwm",
+    "name": "FlowWM",
+    "description": "An agent-native workflow graph, live node lookup, and desktop workspaces for Niri.",
+    "version": "0.2.0",
+    "author": "rayzh",
+    "license": "GPL-3.0-or-later",
+    "icon": "account_tree",
+    "type": "composite",
+    "capabilities": ["daemon", "launcher", "dankbar-widget"],
+    "components": {
+        "daemon": "./FlowBridge.qml",
+        "launcher": "./FlowLauncher.qml",
+        "widget": "./FlowWidget.qml"
+    },
+    "trigger": "@",
+    "requires_dms": ">=1.6.0",
+    "permissions": ["settings_read", "settings_write"]
+}
