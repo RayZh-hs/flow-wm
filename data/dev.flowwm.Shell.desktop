@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=FlowWM
+Comment=Orchestrate agents and your own work in parallel
+Exec=flowwm nodes
+Icon=dev.flowwm.Shell
+Terminal=false
+Categories=Utility;Development;
+StartupWMClass=dev.flowwm.Shell
+Actions=Lookup;Create;
+
+[Desktop Action Lookup]
+Name=Find a node
+Exec=flowwm search
+
+[Desktop Action Create]
+Name=Create a node
+Exec=flowwm search create

@@ -1,0 +1,6 @@
+/target/
+/.flowwm/
+/artifacts/
+reference/
+
+__pycache__/

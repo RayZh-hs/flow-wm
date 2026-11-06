@@ -1,0 +1,6 @@
+binds {
+    Mod+Tab repeat=false allow-inhibiting=false hotkey-overlay-title="FlowWM: Nodes / Windows" { spawn "flowwm" "toggle"; }
+    Mod+Shift+Tab repeat=false allow-inhibiting=false hotkey-overlay-title="FlowWM: Return to windows" { spawn "flowwm" "windows"; }
+    Mod+Shift+Space repeat=false allow-inhibiting=false hotkey-overlay-title="FlowWM: Find a node in DMS" { spawn "flowwm" "search"; }
+    Mod+Alt+Space repeat=false allow-inhibiting=false hotkey-overlay-title="FlowWM: Create a node in DMS" { spawn "flowwm" "search" "create"; }
+}

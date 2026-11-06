@@ -1,0 +1,70 @@
+* { font-family: __FONT__, sans-serif; font-size: 13px; }
+window { background: @flow_surface; color: @flow_text; }
+button { background: transparent; color: @flow_muted; border: 1px solid transparent; border-radius: __RADIUS__; padding: 7px 12px; box-shadow: none; min-height: 20px; }
+button:hover { background: @flow_surface_highest; color: @flow_text; }
+button:focus-visible { outline: 1px solid @flow_primary; outline-offset: 2px; }
+button.accent { background: @flow_primary; border-color: @flow_primary; color: @flow_on_primary; border-radius: 24px; font-weight: 600; }
+button.accent:hover { background: @flow_primary; }
+button.quiet { border-color: @flow_outline; background: @flow_surface_high; color: @flow_text; }
+button.flat { padding: 5px 9px; }
+.topbar { min-height: 54px; padding: 0 22px; background: @flow_surface_low; border-bottom: 1px solid alpha(@flow_outline, 0.45); }
+.logo { font-size: 33px; color: @flow_primary; padding-right: 2px; }
+.logo-small { font-size: 25px; color: @flow_primary; }
+.wordmark { font-weight: 650; font-size: 15px; color: @flow_text; }
+separator { background: @flow_outline; margin: 12px 8px; min-width: 1px; min-height: 1px; }
+.view-switch { border: 1px solid @flow_outline; border-radius: 24px; padding: 3px; background: @flow_surface; }
+.view-switch button { min-width: 89px; padding: 4px 8px; font-size: 12px; border-radius: 20px; }
+.view-switch button.selected { background: @flow_primary_container; color: @flow_primary; border-color: @flow_primary_container; }
+.muted { color: alpha(@flow_muted, 0.72); font-size: 11px; }
+.subbar { padding: 8px 24px; min-height: 28px; background: @flow_surface; border-bottom: 1px solid alpha(@flow_outline, 0.3); }
+.subbar button { font-size: 11px; }
+.eyebrow { font-size: 9px; color: alpha(@flow_muted, 0.55); letter-spacing: 1.3px; font-weight: 600; }
+.path { font-family: monospace; color: alpha(@flow_muted, 0.6); font-size: 10px; }
+.footer { min-height: 38px; padding: 0 20px; background: @flow_surface_low; border-top: 1px solid alpha(@flow_outline, 0.4); }
+.footer button { font-size: 11px; padding: 2px 7px; }
+.bar-content { min-height: 44px; padding: 0 18px; border-bottom: 1px solid @flow_outline; background: @flow_surface_low; }
+.inspector { background: @flow_surface_low; border-left: 1px solid alpha(@flow_outline, 0.5); }
+.panel-heading { min-height: 43px; padding: 0 18px; border-bottom: 1px solid alpha(@flow_outline, 0.5); }
+.panel-summary { padding: 22px 20px 18px; }
+.panel-title { font-size: 19px; font-weight: 550; color: @flow_text; }
+.status { font-size: 10px; color: @flow_primary; }
+.command-preview { font-family: monospace; font-size: 11px; color: @flow_muted; line-height: 1.6; padding: 12px; background: @flow_surface_low; border: 1px solid alpha(@flow_outline, 0.5); border-radius: __RADIUS__; }
+.node-actions { padding: 0 20px 18px; }
+.node-actions button { font-size: 11px; }
+.panel-hint { font-size: 10px; color: alpha(@flow_muted, 0.55); padding: 15px 20px; border-top: 1px solid alpha(@flow_outline, 0.3); }
+.output-tabs { background: @flow_surface; border: none; }
+.output-tabs header { background: @flow_surface_low; border-bottom: 1px solid alpha(@flow_outline, 0.4); }
+.output-tabs tab { min-height: 24px; padding: 3px 16px; border-bottom: 2px solid transparent; }
+.output-tabs tab:checked { border-bottom-color: @flow_primary; }
+.output-tabs tab label { font-size: 11px; }
+textview, textview text { background: @flow_surface_low; color: @flow_muted; }
+.output-view { padding: 20px; font-family: monospace; font-size: 11px; line-height: 1.7; }
+.node-window .panel-summary { padding: 28px; }
+.node-window .panel-title { font-size: 23px; }
+.node-window .output-view { font-size: 13px; padding: 28px; }
+.flow-dialog { background: @flow_surface; border-radius: 28px; border: 1px solid alpha(@flow_outline, 0.5); }
+.dialog-body { padding: 28px; background: @flow_surface; border-radius: 28px; }
+.dialog-title { font-size: 22px; font-weight: 550; color: @flow_text; margin-bottom: 5px; }
+.field-label { font-size: 11px; color: @flow_muted; }
+entry, searchentry, spinbutton, combobox button { background: @flow_surface_low; border: 1px solid @flow_outline; border-radius: __RADIUS__; color: @flow_text; padding: 8px 10px; box-shadow: none; }
+entry:focus-within, searchentry:focus-within { border-color: @flow_primary; }
+.code-editor { padding: 14px; font-family: monospace; font-size: 12px; line-height: 1.6; border: 1px solid @flow_outline; border-radius: __RADIUS__; }
+.notes-editor { padding: 18px; font-size: 15px; line-height: 1.8; }
+.hint { font-size: 10px; color: alpha(@flow_muted, 0.55); }
+.macro-list { background: transparent; }
+.macro-list row { border-radius: __RADIUS__; padding: 3px; margin-bottom: 3px; }
+.macro-list row:selected { background: @flow_primary_container; }
+.macro-row { padding: 11px 9px; }
+.macro-symbol { min-width: 27px; color: @flow_primary; font-family: monospace; font-size: 18px; }
+.node-title-small { font-size: 13px; color: @flow_text; }
+.workspace-choice { padding: 13px; border-color: alpha(@flow_outline, 0.6); }
+.shortcut { font-family: monospace; color: @flow_primary; font-size: 11px; }
+.error-banner { background: alpha(@flow_error, 0.12); color: @flow_error; padding: 12px 24px; border-top: 1px solid alpha(@flow_error, 0.3); }
+checkbutton { font-size: 11px; color: @flow_muted; }
+scrollbar { background: transparent; }
+scrollbar slider { background: @flow_outline; min-width: 4px; min-height: 4px; border-radius: 4px; }
+.flow-shell.integrated { background: transparent; }
+.integrated .graph-surface { background: transparent; border: none; border-radius: 0; }
+.collapse-window { background: alpha(@flow_surface_high, 0.95); border: 1px solid @flow_primary; border-radius: __RADIUS__; padding: 16px; }
+
+dropdown button { border: 1px solid @flow_outline; background: @flow_surface_high; border-radius: __RADIUS__; }

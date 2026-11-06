@@ -1,0 +1,120 @@
+use crate::engine::{Control, Engine};
+use crate::{catalog::Catalog, extensions::Macro};
+use anyhow::{Context, Result, bail, ensure};
+use serde_json::Value;
+use std::{
+    fs,
+    io::{BufRead, BufReader, Write},
+    os::unix::{
+        fs::{FileTypeExt, MetadataExt, PermissionsExt},
+        net::{UnixListener, UnixStream},
+    },
+    path::{Path, PathBuf},
+    thread,
+    time::Duration,
+};
+
+pub fn default_socket() -> PathBuf {
+    let uid = unsafe { libc::getuid() };
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{uid}")))
+        .join("flowwm.sock")
+}
+pub fn bind(path: &Path) -> Result<UnixListener> {
+    if path.exists() {
+        if UnixStream::connect(path).is_ok() {
+            bail!("FlowWM is already running at {}", path.display());
+        }
+        let metadata = fs::symlink_metadata(path)?;
+        ensure!(
+            metadata.file_type().is_socket() && metadata.uid() == unsafe { libc::getuid() },
+            "Refusing to replace a socket not owned by this user"
+        );
+        fs::remove_file(path)?;
+    }
+    let listener = UnixListener::bind(path).context("Create FlowWM control socket")?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
+pub fn serve(listener: UnixListener, engine: Engine, macros: Vec<Macro>) {
+    let macros = std::sync::Arc::new(macros);
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else {
+                break;
+            };
+            let engine = engine.clone();
+            let macros = macros.clone();
+            thread::spawn(move || serve_client(stream, engine, &macros));
+        }
+    });
+}
+fn serve_client(mut stream: UnixStream, engine: Engine, macros: &[Macro]) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    let result = (|| -> Result<Value> {
+        let mut bytes = vec![];
+        std::io::Read::take(BufReader::new(stream.try_clone()?), 1024 * 1024)
+            .read_until(b'\n', &mut bytes)?;
+        ensure!(
+            bytes.last() == Some(&b'\n'),
+            "Request is too large or incomplete"
+        );
+        let value: Value = serde_json::from_slice(&bytes)?;
+        if value["op"] == "performance" {
+            if value["reset"] == true {
+                engine.performance.reset();
+            }
+            return Ok(serde_json::to_value(engine.performance.snapshot())?);
+        }
+        if value["op"] == "subscribe" {
+            let mut generation = 0;
+            let mut previous = String::new();
+            while let Some(next) = engine.wait_for_change(generation) {
+                generation = next;
+                let catalog = serde_json::to_string(&Catalog::new(
+                    &engine.snapshot(),
+                    engine.presentation(),
+                    macros,
+                ))?;
+                if catalog == previous {
+                    continue;
+                }
+                writeln!(stream, "{catalog}")?;
+                previous = catalog;
+            }
+            return Ok(Value::Null);
+        }
+        if value["op"] == "catalog" {
+            return Ok(serde_json::to_value(Catalog::new(
+                &engine.snapshot(),
+                engine.presentation(),
+                macros,
+            ))?);
+        }
+        engine.request(serde_json::from_value::<Control>(value)?)
+    })();
+    let reply = match result {
+        Ok(value) => serde_json::json!({"ok":value}),
+        Err(e) => serde_json::json!({"error":format!("{e:#}")}),
+    };
+    let _ = writeln!(stream, "{reply}");
+}
+pub fn send(path: &Path, command: &impl serde::Serialize) -> Result<Value> {
+    let mut stream = UnixStream::connect(path).with_context(|| {
+        format!(
+            "FlowWM is not running. Start `flowwm start` first (socket: {}).",
+            path.display()
+        )
+    })?;
+    stream.set_read_timeout(Some(Duration::from_secs(6)))?;
+    writeln!(stream, "{}", serde_json::to_string(command)?)?;
+    let mut reply = String::new();
+    BufReader::new(stream).read_line(&mut reply)?;
+    let mut value: Value = serde_json::from_str(&reply)?;
+    if let Some(error) = value.get("error").and_then(Value::as_str) {
+        bail!("{error}");
+    }
+    Ok(value["ok"].take())
+}

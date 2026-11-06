@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "macros": [
+    {
+      "id": "git.inspect",
+      "name": "Inspect repository",
+      "description": "Summarize the working tree and recent commits",
+      "kind": "shell",
+      "command": "git status --short && git log -5 --oneline"
+    },
+    {
+      "id": "git.review",
+      "name": "Review changes",
+      "description": "Ask an agent to inspect the current changes",
+      "kind": "agent",
+      "command": "Review the uncommitted changes. Look for correctness issues, regressions, and missing validation. Do not modify files. Return outcome issue if you find a problem that should block the next step."
+    }
+  ]
+}

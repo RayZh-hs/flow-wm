@@ -1,0 +1,10 @@
+pub mod catalog;
+pub mod engine;
+pub mod extensions;
+pub mod groups;
+pub mod ipc;
+pub mod model;
+pub mod niri;
+pub mod performance;
+pub mod store;
+pub mod ui;

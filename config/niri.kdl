@@ -1,0 +1,12 @@
+// Merge into your Niri config. Replace existing bindings for these keys.
+// Ensure `flowwm` is on the environment PATH used by Niri, or use its absolute path.
+binds {
+    Mod+Tab allow-inhibiting=false { spawn "flowwm" "toggle"; }
+    Mod+Up { spawn "flowwm" "navigate" "up"; }
+    Mod+Down { spawn "flowwm" "navigate" "down"; }
+    Mod+Left { spawn "flowwm" "navigate" "left"; }
+    Mod+Right { spawn "flowwm" "navigate" "right"; }
+}
+
+// Optional, after installing FlowWM:
+// spawn-at-startup "flowwm" "start"

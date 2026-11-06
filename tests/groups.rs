@@ -1,0 +1,287 @@
+use flowwm::{groups, model::*, niri::Desktop};
+use niri_ipc::{Window, Workspace as NiriRow};
+
+fn row(id: u64, index: u8, focused: bool) -> NiriRow {
+    serde_json::from_value(serde_json::json!({"id":id,"idx":index,"name":null,"output":"DP-1","is_urgent":false,"is_active":focused,"is_focused":focused,"active_window_id":null})).unwrap()
+}
+fn window(id: u64, row: u64, title: &str) -> Window {
+    serde_json::from_value(serde_json::json!({"id":id,"workspace_id":row,"title":title,"app_id":"test.editor","pid":100,"is_focused":false,"is_floating":false,"is_urgent":false,"layout":{"pos_in_scrolling_layout":[1,1],"tile_size":[800,600],"window_size":[800,600],"tile_pos_in_workspace_view":[16,60],"window_offset_in_tile":[0,0]},"focus_timestamp":null})).unwrap()
+}
+fn desktop() -> Desktop {
+    Desktop {
+        connected: true,
+        session: "niri.session.1".into(),
+        windows_ready: true,
+        workspaces_ready: true,
+        workspaces: vec![row(10, 1, true), row(20, 2, false), row(30, 3, false)],
+        windows: vec![window(1, 10, "Editor"), window(2, 20, "Browser")],
+        error: None,
+    }
+}
+
+#[test]
+fn active_niri_row_selects_its_group_and_empty_tail_does_not_create_groups() {
+    let mut state = State::empty("/tmp".into());
+    let original = state.selected_workspace.clone();
+    let mut desktop = desktop();
+    assert!(groups::synchronize(&mut state, &desktop));
+    assert_eq!(state.workspaces.len(), 2);
+    assert_eq!(state.workspace().row.as_ref().unwrap().id, 10);
+    assert_eq!(state.selected_workspace, original);
+    assert_eq!(state.nodes.len(), 2);
+    assert!(
+        !groups::synchronize(&mut state, &desktop),
+        "unchanged events must not save state or wake the UI"
+    );
+    desktop.activate_row(20, true);
+    groups::synchronize(&mut state, &desktop);
+    assert_eq!(state.workspace().row.as_ref().unwrap().id, 20);
+    assert_ne!(state.selected_workspace, original);
+    state.validate().unwrap();
+}
+
+#[test]
+fn row_reordering_and_title_changes_keep_node_ids_positions_and_group_identity() {
+    let mut state = State::empty("/tmp".into());
+    let mut desktop = desktop();
+    groups::synchronize(&mut state, &desktop);
+    let id = state
+        .nodes
+        .iter()
+        .find(|n| n.window_id == Some(1))
+        .unwrap()
+        .id
+        .clone();
+    state.node_mut(&id).unwrap().position.x = 678.;
+    desktop.windows[0].title = Some("Renamed editor".into());
+    desktop.workspaces[0].idx = 2;
+    desktop.workspaces[1].idx = 1;
+    groups::synchronize(&mut state, &desktop);
+    assert_eq!(state.nodes.len(), 2);
+    assert_eq!(state.node(&id).unwrap().title, "Renamed editor");
+    assert_eq!(state.node(&id).unwrap().position.x, 678.);
+    assert_eq!(state.workspace().row.as_ref().unwrap().index, 2);
+    desktop.windows.remove(0);
+    groups::synchronize(&mut state, &desktop);
+    assert_eq!(state.node(&id).unwrap().window_id, None);
+    assert_eq!(state.node(&id).unwrap().status, Status::Stopped);
+}
+
+#[test]
+fn moving_a_window_moves_its_connected_branch_and_preserves_edges() {
+    let mut state = State::empty("/tmp".into());
+    let mut desktop = desktop();
+    groups::synchronize(&mut state, &desktop);
+    let id = state
+        .nodes
+        .iter()
+        .find(|n| n.window_id == Some(1))
+        .unwrap()
+        .id
+        .clone();
+    let group = state.node(&id).unwrap().workspace.clone();
+    let mut child = Node::new(&group, NodeKind::Gate, "/tmp".into(), Position::default());
+    child.dependencies.push(id.clone());
+    let child_id = child.id.clone();
+    state.nodes.push(child);
+    desktop.windows[0].workspace_id = Some(20);
+    groups::synchronize(&mut state, &desktop);
+    assert_ne!(state.node(&id).unwrap().workspace, group);
+    assert_eq!(
+        state.node(&id).unwrap().workspace,
+        state.node(&child_id).unwrap().workspace
+    );
+    assert_eq!(state.node(&child_id).unwrap().dependencies, vec![id]);
+    state.validate().unwrap();
+}
+
+#[test]
+fn native_output_is_bound_to_its_existing_workflow_node() {
+    let mut state = State::empty("/tmp".into());
+    let mut desktop = desktop();
+    let mut node = Node::new(
+        &state.selected_workspace,
+        NodeKind::Human,
+        "/tmp".into(),
+        Position::default(),
+    );
+    node.title = "Draft plan".into();
+    let id = node.id.clone();
+    state.nodes.push(node);
+    desktop.windows[0].title = Some("Draft plan".into());
+    desktop.windows[0].app_id = Some("dev.flowwm.Shell".into());
+    groups::synchronize(&mut state, &desktop);
+    assert_eq!(state.node(&id).unwrap().window_id, Some(1));
+    assert_eq!(
+        state.nodes.len(),
+        2,
+        "native output must not create a second node"
+    );
+    assert_eq!(
+        state.node(&id).unwrap().status,
+        Status::Idle,
+        "presentation must not start work"
+    );
+}
+
+#[test]
+fn a_compositor_restart_rebinds_rows_instead_of_trusting_reused_ids() {
+    let mut state = State::empty("/tmp".into());
+    let mut desktop = desktop();
+    groups::synchronize(&mut state, &desktop);
+    let group = state.selected_workspace.clone();
+    for node in &mut state.nodes {
+        node.window_id = None;
+    }
+    desktop.session = "niri.session.2".into();
+    desktop.workspaces[0].id = 20;
+    desktop.workspaces[1].id = 10;
+    desktop.windows[0].workspace_id = Some(20);
+    desktop.windows[1].workspace_id = Some(10);
+    groups::synchronize(&mut state, &desktop);
+    assert_eq!(state.selected_workspace, group);
+    assert_eq!(state.workspace().row.as_ref().unwrap().id, 20);
+    assert_eq!(state.workspaces.len(), 2);
+    assert_eq!(state.nodes.len(), 2);
+}
+
+#[test]
+fn identical_window_titles_still_have_distinct_nodes() {
+    let mut state = State::empty("/tmp".into());
+    let mut desktop = desktop();
+    desktop.windows.push(window(3, 10, "Editor"));
+    groups::synchronize(&mut state, &desktop);
+    let first = state
+        .nodes
+        .iter()
+        .find(|n| n.window_id == Some(1))
+        .unwrap()
+        .id
+        .clone();
+    let second = state
+        .nodes
+        .iter()
+        .find(|n| n.window_id == Some(3))
+        .unwrap()
+        .id
+        .clone();
+    assert_ne!(first, second);
+    desktop.windows[0].title = Some("Changed".into());
+    groups::synchronize(&mut state, &desktop);
+    assert_eq!(
+        state
+            .nodes
+            .iter()
+            .find(|n| n.window_id == Some(1))
+            .unwrap()
+            .id,
+        first
+    );
+    assert_eq!(
+        state
+            .nodes
+            .iter()
+            .find(|n| n.window_id == Some(3))
+            .unwrap()
+            .id,
+        second
+    );
+}
+
+#[test]
+fn partial_initial_events_cannot_clear_persisted_window_bindings() {
+    let mut state = State::empty("/tmp".into());
+    let mut desktop = desktop();
+    groups::synchronize(&mut state, &desktop);
+    let original: Vec<_> = state
+        .nodes
+        .iter()
+        .map(|n| (n.id.clone(), n.window_id))
+        .collect();
+    let saved = desktop.clone();
+    desktop.windows.clear();
+    desktop.windows_ready = false;
+    assert!(!groups::synchronize(&mut state, &desktop));
+    assert_eq!(
+        state
+            .nodes
+            .iter()
+            .map(|n| (n.id.clone(), n.window_id))
+            .collect::<Vec<_>>(),
+        original
+    );
+    desktop = saved.clone();
+    desktop.workspaces_ready = false;
+    assert!(!groups::synchronize(&mut state, &desktop));
+    desktop = saved;
+    desktop.windows[0].title = Some("New title during restart".into());
+    groups::synchronize(&mut state, &desktop);
+    assert_eq!(
+        state
+            .nodes
+            .iter()
+            .map(|n| (n.id.clone(), n.window_id))
+            .collect::<Vec<_>>(),
+        original
+    );
+}
+
+#[test]
+fn desktop_cache_tracks_background_active_windows_before_switching_rows() {
+    let mut desktop = desktop();
+    assert!(
+        !desktop.apply_event(niri_ipc::Event::WorkspaceActiveWindowChanged {
+            workspace_id: 20,
+            active_window_id: Some(2)
+        })
+    );
+    desktop.apply_event(niri_ipc::Event::WorkspaceActivated {
+        id: 20,
+        focused: true,
+    });
+    assert!(
+        desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == 20)
+            .unwrap()
+            .is_focused
+    );
+    assert!(
+        !desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == 10)
+            .unwrap()
+            .is_active
+    );
+    assert!(
+        desktop
+            .windows
+            .iter()
+            .find(|w| w.id == 2)
+            .unwrap()
+            .is_focused
+    );
+    desktop.apply_event(niri_ipc::Event::WindowFocusChanged { id: None });
+    assert!(!desktop.windows.iter().any(|w| w.is_focused));
+    assert_eq!(
+        desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == 20)
+            .unwrap()
+            .active_window_id,
+        Some(2)
+    );
+    desktop.activate_row(10, true);
+    desktop.activate_row(20, true);
+    assert!(
+        desktop
+            .windows
+            .iter()
+            .find(|w| w.id == 2)
+            .unwrap()
+            .is_focused
+    );
+}
