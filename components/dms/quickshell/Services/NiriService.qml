@@ -7,6 +7,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Common
 import qs.Services
+import "CastIndicator.js" as CastIndicator
 import qs.DCommon.Common as DCommon
 import "../Common/OutputModel.js" as OutputModel
 import "../Common/BlurStrength.js" as BlurStrength
@@ -37,6 +38,25 @@ Singleton {
     property var casts: []
     property bool hasCasts: casts.length > 0
     property bool hasActiveCast: casts.some(c => c.is_active)
+    property var _castIndicatorState: ({ entries: {}, casts: [], nextDelay: 0 })
+    readonly property bool hasIndicatorCasts: _castIndicatorState.casts.length > 0
+    readonly property bool hasActiveIndicatorCast: _castIndicatorState.casts.some(c => c.is_active)
+
+    onCastsChanged: updateCastIndicator()
+
+    Timer {
+        id: castIndicatorTimer
+        onTriggered: root.updateCastIndicator()
+    }
+
+    function updateCastIndicator() {
+        castIndicatorTimer.stop();
+        root._castIndicatorState = CastIndicator.update(root.casts, root._castIndicatorState.entries, Date.now());
+        if (root._castIndicatorState.nextDelay <= 0)
+            return;
+        castIndicatorTimer.interval = root._castIndicatorState.nextDelay;
+        castIndicatorTimer.start();
+    }
 
     property int currentKeyboardLayoutIndex: 0
     property var keyboardLayoutNames: []
