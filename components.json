@@ -1,0 +1,16 @@
+{
+  "niri": {
+    "path": "components/niri",
+    "fork": "https://github.com/RayZh-hs/niri.git",
+    "ref": "feature/tab-animations",
+    "upstream": "https://github.com/niri-wm/niri.git",
+    "upstream_ref": "main"
+  },
+  "dms": {
+    "path": "components/dms",
+    "fork": "https://github.com/RayZh-hs/DankMaterialShell.git",
+    "ref": "master",
+    "upstream": "https://github.com/duxlabs-dev/dux-shell.git",
+    "upstream_ref": "master"
+  }
+}

@@ -12,7 +12,7 @@ In graph view the widget becomes the graph header: active Niri row/group, node a
 
 The bridge maintains one Unix socket subscription to `$XDG_RUNTIME_DIR/flowwm.sock`. It does no polling while connected and receives no node output or activity logs. After a disconnect it retries at 100 ms, backing off to two seconds while the service remains offline.
 
-FlowWM is installed and configured from `/home/rayzh/Projects/FlowWM`. Enable the `flowwm` plugin and add the `flowwm` widget to a bar. Its service starts with `flowwm start --dms --background`.
+In the integrated FlowWM checkout, this plugin lives under `components/dms/quickshell/PLUGINS/FlowWM`. Run `python3 scripts/install.py` from the FlowWM repository root to install and configure it. Enable the `flowwm` plugin and add the `flowwm` widget to a bar. Its service starts with `flowwm start --dms --background`.
 
 The FlowWM installer configures Super+Tab to toggle the graph, Super+Shift+Space for lookup, and Super+Alt+Space for creation. Inside the graph, Ctrl+P opens lookup and Tab opens creation. Super+Shift+Tab returns to windows. The ordinary DMS launcher bindings continue to work from either view.
 

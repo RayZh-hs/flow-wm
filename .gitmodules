@@ -1,0 +1,3 @@
+[submodule "dms-qml-common"]
+	path = components/dms/dux-qml-common
+	url = https://github.com/duxlabs-dev/dux-qml-common.git

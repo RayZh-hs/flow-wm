@@ -1,0 +1,11 @@
+// Isolated by scripts/dev.py; this never imports environment into the live session.
+workspace "FlowWM test 1"
+workspace "FlowWM test 2"
+
+binds {
+    Mod+Tab repeat=false allow-inhibiting=false { spawn "flowwm" "toggle"; }
+    Mod+Space repeat=false { spawn "flowwm" "new"; }
+    Mod+Page_Down { focus-workspace-down; }
+    Mod+Page_Up { focus-workspace-up; }
+    Mod+Shift+E { quit skip-confirmation=true; }
+}

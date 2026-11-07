@@ -147,6 +147,7 @@ pub struct View {
     pub preview: Option<(String, Position)>,
     pointer: (f64, f64),
     pub workspace: String,
+    pub fitted: bool,
     motion_serial: u64,
     camera_target: Option<(f64, f64, f64)>,
     space_down: bool,
@@ -183,6 +184,7 @@ impl Default for View {
             preview: None,
             pointer: (0.0, 0.0),
             workspace: String::new(),
+            fitted: false,
             motion_serial: 0,
             camera_target: None,
             space_down: false,
@@ -355,6 +357,7 @@ impl View {
         }
     }
     pub fn fit(&mut self, state: &State, width: f64, height: f64) {
+        self.fitted = true;
         let nodes: Vec<_> = state
             .nodes
             .iter()
@@ -443,21 +446,133 @@ pub fn make(
     view: Rc<RefCell<View>>,
     callback: Callback,
 ) -> super::surface::Surface {
+    make_scoped(engine, view, callback, None)
+}
+
+pub type RowViews = Rc<RefCell<HashMap<String, View>>>;
+
+fn canvas_node(node: &Node) -> Node {
+    Node {
+        id: node.id.clone(),
+        workspace: node.workspace.clone(),
+        title: node.title.clone(),
+        kind: node.kind,
+        command: node.command.clone(),
+        cwd: node.cwd.clone(),
+        position: node.position.clone(),
+        dependencies: node.dependencies.clone(),
+        run_when: node.run_when,
+        review: node.review,
+        writable: node.writable,
+        status: node.status,
+        metric: node.metric.clone(),
+        window_match: node.window_match.clone(),
+        window_id: node.window_id,
+        desktop_window: node.desktop_window,
+        column: node.column.clone(),
+        column_mode: node.column_mode,
+        started_at: node.started_at,
+        finished_at: node.finished_at,
+        output: String::new(),
+        logs: vec![],
+        chat: vec![],
+        agent_session: None,
+    }
+}
+
+pub(super) fn row_state(state: &State, workspace: &str) -> State {
+    State {
+        version: state.version,
+        selected_workspace: workspace.into(),
+        workspaces: state
+            .workspaces
+            .iter()
+            .filter(|w| w.id == workspace)
+            .cloned()
+            .collect(),
+        nodes: state
+            .nodes
+            .iter()
+            .filter(|n| n.workspace == workspace)
+            .map(canvas_node)
+            .collect(),
+        watchers: state.watchers.clone(),
+        recipes: vec![],
+    }
+}
+
+pub fn make_row(
+    engine: Engine,
+    view: Rc<RefCell<View>>,
+    callback: Callback,
+    workspace: String,
+    rows: RowViews,
+) -> super::surface::Surface {
+    make_scoped(engine, view, callback, Some((workspace, rows)))
+}
+
+fn make_scoped(
+    engine: Engine,
+    view: Rc<RefCell<View>>,
+    callback: Callback,
+    row: Option<(String, RowViews)>,
+) -> super::surface::Surface {
     let e = engine.clone();
     let v = view.clone();
     let cache = RefCell::new(super::gpu::Cache::default());
+    let scoped = RefCell::new(None::<(u64, State)>);
     let area = super::surface::Surface::new(move |snapshot, width, height| {
         let started = std::time::Instant::now();
         let state = e.snapshot();
-        super::gpu::render(
-            snapshot,
-            width,
-            height,
-            &state.state,
-            state.revision,
-            &v.borrow(),
-            &mut cache.borrow_mut(),
-        );
+        let revision = state.revision;
+        let render = |state: &State, view: &View| {
+            super::gpu::render(
+                snapshot,
+                width,
+                height,
+                state,
+                revision,
+                view,
+                &mut cache.borrow_mut(),
+            );
+        };
+        if let Some((id, rows)) = &row {
+            let mut scoped = scoped.borrow_mut();
+            if scoped
+                .as_ref()
+                .is_none_or(|(revision, _)| *revision != state.revision)
+            {
+                let selected = row_state(&state.state, id);
+                *scoped = Some((state.revision, selected));
+            }
+            let state = &scoped.as_ref().unwrap().1;
+            let mut current = v.borrow_mut();
+            if current.workspace == *id {
+                if !current.fitted && width > 100 && height > 100 {
+                    current.arrangement.update(state, width, height);
+                    current.fit(state, width as f64, height as f64);
+                }
+                render(state, &current);
+            } else {
+                let mut rows = rows.borrow_mut();
+                let saved = rows
+                    .entry(id.clone())
+                    .or_insert_with(|| current.for_row(id.clone()));
+                saved.theme = current.theme.clone();
+                saved.wallpaper = current.wallpaper.clone();
+                saved.wallpaper_texture = current.wallpaper_texture.clone();
+                saved.images.extend(current.images.clone());
+                saved.image_textures.extend(current.image_textures.clone());
+                saved.arrangement.update(state, width, height);
+                if !saved.fitted && width > 100 && height > 100 {
+                    saved.fit(state, width as f64, height as f64);
+                    saved.fitted = true;
+                }
+                render(state, saved);
+            }
+        } else {
+            render(&state.state, &v.borrow());
+        }
         e.performance.record("canvas_draw", started.elapsed());
     });
     area.set_cursor_from_name(Some("default"));
@@ -1828,6 +1943,39 @@ mod rendering_tests {
         );
         assert!(matches_query(&state.nodes[2], "EDITOR tests"));
         assert!(!matches_query(&state.nodes[1], "editor"));
+    }
+
+    #[test]
+    fn row_render_snapshots_skip_outputs_and_other_rows() {
+        let mut state = State::empty("/tmp".into());
+        let mut node = Node::new(
+            &state.selected_workspace,
+            NodeKind::Agent,
+            "/tmp".into(),
+            Position::default(),
+        );
+        node.output = "large agent output".repeat(8192);
+        node.log(
+            "agent",
+            "activity that does not belong in a canvas snapshot",
+        );
+        node.chat.push(ChatMessage {
+            role: "assistant".into(),
+            text: "private conversation".into(),
+        });
+        state.nodes.push(node);
+        state.nodes.push(Node::new(
+            "other row",
+            NodeKind::Shell,
+            "/tmp".into(),
+            Position::default(),
+        ));
+        let snapshot = row_state(&state, &state.selected_workspace);
+        assert_eq!(snapshot.nodes.len(), 1);
+        assert_eq!(snapshot.nodes[0].output.capacity(), 0);
+        assert!(snapshot.nodes[0].logs.is_empty() && snapshot.nodes[0].chat.is_empty());
+        assert_eq!(snapshot.nodes[0].command, state.nodes[0].command);
+        assert!(!state.nodes[0].output.is_empty());
     }
 
     #[test]

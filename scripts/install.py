@@ -22,7 +22,7 @@ def main():
     parser.add_argument("--dms-root", type=Path)
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[1]
-    dms = (args.dms_root or repo.parent / "DankMaterialShell").resolve()
+    dms = (args.dms_root or repo / "components/dms").resolve()
     plugin = dms / "quickshell/PLUGINS/FlowWM"
     if not (plugin / "plugin.json").is_file():
         parser.error(f"The FlowWM plugin is missing from {plugin}")
@@ -77,9 +77,9 @@ def main():
         temporary.replace(destination)
 
     desktop = data / "applications/dev.flowwm.Shell.desktop"
-    write(desktop, (repo / "data/dev.flowwm.Shell.desktop").read_text().replace("Exec=flowwm nodes", f"Exec={installed} nodes"))
+    write(desktop, (repo / "crates/flowwm/data/dev.flowwm.Shell.desktop").read_text().replace("Exec=flowwm nodes", f"Exec={installed} nodes"))
     icon = data / "icons/hicolor/scalable/apps/dev.flowwm.Shell.svg"
-    write(icon, (repo / "data/dev.flowwm.Shell.svg").read_text())
+    write(icon, (repo / "crates/flowwm/data/dev.flowwm.Shell.svg").read_text())
     plugin_link = config / "DankMaterialShell/plugins/flowwm"
     backup(plugin_link)
     plugin_link.parent.mkdir(parents=True, exist_ok=True)

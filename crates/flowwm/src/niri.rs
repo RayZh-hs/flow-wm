@@ -117,6 +117,13 @@ pub fn request(request: Request) -> Result<Response> {
         Socket::connect().context("NIRI_SOCKET is unavailable; start FlowWM inside Niri")?;
     socket.send(request)?.map_err(anyhow::Error::msg)
 }
+
+pub fn workspace_layers_supported() -> bool {
+    matches!(
+        request(Request::WorkspaceLayerSupport),
+        Ok(Response::WorkspaceLayerSupport { version: 1 })
+    )
+}
 pub fn focus(id: u64) -> Result<()> {
     request(Request::Action(Action::FocusWindow { id }))?;
     Ok(())

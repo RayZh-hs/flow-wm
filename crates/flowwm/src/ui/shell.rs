@@ -47,8 +47,8 @@ pub fn run(
         }
         let stop = Arc::new(AtomicBool::new(false)); let desktop = niri::listen(stop.clone(), options.integrated.then(|| engine.clone()));
         let shell = Shell::build(app, engine.clone(), macros.clone(), options, desktop);
-        gtk::prelude::WidgetExt::realize(&shell.window);
-        if let Some(renderer) = shell.window.renderer() { eprintln!("FlowWM renderer: {}", renderer.type_().name()); }
+        gtk::prelude::WidgetExt::realize(&shell.window());
+        if let Some(renderer) = shell.window().renderer() { eprintln!("FlowWM renderer: {}", renderer.type_().name()); }
         for path in Theme::paths() {
             if let Some(parent) = path.parent() {
                 let directory = gio::File::for_path(parent);
@@ -56,7 +56,7 @@ pub fn run(
                     let w = shell.weak.clone(); let provider = provider.clone();
                     monitor.connect_changed(move |_, file, _, _| {
                         if file.basename().is_some_and(|name| name.as_os_str() == "dms-colors.json" || name.as_os_str() == "settings.json" || name.as_os_str() == "session.json") && let Some(shell) = w.upgrade() {
-                            let theme = Theme::load(); provider.load_from_string(&theme.css()); shell.view.borrow_mut().theme = theme; shell.apply_insets(); shell.captures.request(shell.desktop.lock().unwrap().clone(),false); shell.canvas.queue_draw();
+                            let theme = Theme::load(); provider.load_from_string(&theme.css()); shell.view.borrow_mut().theme = theme; shell.ensure_row_surfaces(&shell.engine.snapshot().state); shell.apply_insets(); shell.captures.request(shell.desktop.lock().unwrap().clone(),false); shell.canvas().queue_draw();
                         }
                     });
                     shell.theme_monitors.borrow_mut().push(monitor);
@@ -107,6 +107,13 @@ struct NodeWindow {
     panel: NodePanel,
 }
 
+#[derive(Clone)]
+struct RowSurface {
+    window: gtk::ApplicationWindow,
+    canvas: super::surface::Surface,
+    row_id: u64,
+}
+
 fn row_direction(previous: Option<&Row>, next: Option<&Row>) -> Option<f32> {
     let (previous, next) = (previous?, next?);
     if previous.session != next.session || previous.output != next.output {
@@ -143,12 +150,12 @@ fn row_slides_follow_vertical_order_only_within_the_same_output_and_session() {
 }
 struct Shell {
     app: gtk::Application,
-    window: gtk::ApplicationWindow,
+    fallback_window: gtk::ApplicationWindow,
     bar: gtk::ApplicationWindow,
     engine: Engine,
     macros: Vec<Macro>,
     desktop: Arc<Mutex<Desktop>>,
-    canvas: super::surface::Surface,
+    fallback_canvas: super::surface::Surface,
     view: Rc<RefCell<View>>,
     inspector: gtk::Box,
     panel: RefCell<Option<(String, NodePanel)>>,
@@ -162,7 +169,9 @@ struct Shell {
     revision: Cell<u64>,
     weak: Weak<Shell>,
     last_workspace: RefCell<String>,
-    row_views: RefCell<HashMap<String, View>>,
+    row_views: canvas::RowViews,
+    row_surfaces: RefCell<HashMap<String, RowSurface>>,
+    workspace_layers: bool,
     displayed_row: RefCell<Option<Row>>,
     windowed: bool,
     theme_monitors: RefCell<Vec<gio::FileMonitor>>,
@@ -173,17 +182,238 @@ struct Shell {
     pending_focus: RefCell<Option<String>>,
     return_window: Cell<Option<u64>>,
     bar_geometry: RefCell<HashMap<String, [i32; 4]>>,
-    graph_content: gtk::Box,
+    fallback_content: gtk::Box,
     captures: super::collapse::Captures,
     chat: RefCell<Option<ChatUi>>,
     search_popup: RefCell<Option<gtk::Window>>,
     centered: Cell<bool>,
     reveal: Cell<f64>,
     paint_started: Cell<Option<std::time::Instant>>,
-    frame_monitor: Cell<bool>,
+    frame_monitors: RefCell<HashSet<usize>>,
     pinned_rows: RefCell<HashSet<u64>>,
 }
 impl Shell {
+    fn window(&self) -> gtk::ApplicationWindow {
+        let workspace = &self.engine.snapshot().state.selected_workspace;
+        self.row_surfaces
+            .borrow()
+            .get(workspace)
+            .map(|row| row.window.clone())
+            .unwrap_or_else(|| self.fallback_window.clone())
+    }
+
+    fn canvas(&self) -> super::surface::Surface {
+        let workspace = &self.engine.snapshot().state.selected_workspace;
+        self.row_surfaces
+            .borrow()
+            .get(workspace)
+            .map(|row| row.canvas.clone())
+            .unwrap_or_else(|| self.fallback_canvas.clone())
+    }
+
+    fn content(&self) -> gtk::Widget {
+        if self.workspace_layers {
+            self.canvas().upcast()
+        } else {
+            self.fallback_content.clone().upcast()
+        }
+    }
+
+    fn ensure_row_surfaces(&self, state: &State) -> bool {
+        if !self.workspace_layers {
+            return false;
+        }
+        let desktop = self.desktop.lock().unwrap().clone();
+        let display = gtk::prelude::WidgetExt::display(&self.fallback_window);
+        let mut surfaces = self.row_surfaces.borrow_mut();
+        let mut keep = HashSet::new();
+        let mut created_current = false;
+        for group in &state.workspaces {
+            let Some(row) = group.row.as_ref().filter(|row| {
+                row.session == desktop.session && desktop.workspaces.iter().any(|w| w.id == row.id)
+            }) else {
+                continue;
+            };
+            let monitor = (0..display.monitors().n_items())
+                .filter_map(|i| display.monitors().item(i)?.downcast::<gdk::Monitor>().ok())
+                .find(|m| m.connector().as_deref() == row.output.as_deref());
+            let Some(monitor) = monitor else { continue };
+            keep.insert(group.id.clone());
+            if surfaces.get(&group.id).is_some_and(|s| s.row_id != row.id) {
+                let surface = surfaces.remove(&group.id).unwrap();
+                self.frame_monitors
+                    .borrow_mut()
+                    .remove(&(surface.window.as_ptr() as usize));
+                surface.window.close();
+            }
+            if !surfaces.contains_key(&group.id) && group.view == RowView::Nodes {
+                let window = gtk::ApplicationWindow::builder()
+                    .application(&self.app)
+                    .title(format!("FlowWM — Row {}", row.index))
+                    .build();
+                window.add_css_class("flow-shell");
+                window.add_css_class("integrated");
+                window.init_layer_shell();
+                window.set_namespace(Some(&niri_ipc::workspace_layer::namespace(
+                    row.id, "flowwm",
+                )));
+                window.set_layer(Layer::Overlay);
+                window.set_exclusive_zone(-1);
+                for edge in [Edge::Top, Edge::Right, Edge::Bottom, Edge::Left] {
+                    window.set_anchor(edge, true);
+                }
+                let weak = self.weak.clone();
+                let workspace = group.id.clone();
+                let canvas = canvas::make_row(
+                    self.engine.clone(),
+                    self.view.clone(),
+                    Rc::new(move |action| {
+                        if let Some(shell) = weak.upgrade() {
+                            if shell.engine.snapshot().state.selected_workspace != workspace {
+                                let _ = shell.engine.request(Control::SelectWorkspace {
+                                    id: workspace.clone(),
+                                });
+                                shell.refresh();
+                            }
+                            shell.canvas_action(action);
+                        }
+                    }),
+                    group.id.clone(),
+                    self.row_views.clone(),
+                );
+                window.set_child(Some(&canvas));
+                let weak = self.weak.clone();
+                let workspace = group.id.clone();
+                let input = gtk::EventControllerLegacy::new();
+                input.set_propagation_phase(gtk::PropagationPhase::Capture);
+                input.connect_event(move |_, event| {
+                    if matches!(
+                        event.event_type(),
+                        gdk::EventType::ButtonPress
+                            | gdk::EventType::KeyPress
+                            | gdk::EventType::Scroll
+                            | gdk::EventType::TouchBegin
+                    ) && let Some(shell) = weak.upgrade()
+                        && shell.engine.snapshot().state.selected_workspace != workspace
+                    {
+                        let _ = shell.engine.request(Control::SelectWorkspace {
+                            id: workspace.clone(),
+                        });
+                        shell.refresh();
+                    }
+                    glib::Propagation::Proceed
+                });
+                window.add_controller(input);
+                if group.id == state.selected_workspace {
+                    created_current = true;
+                }
+                surfaces.insert(
+                    group.id.clone(),
+                    RowSurface {
+                        window,
+                        canvas,
+                        row_id: row.id,
+                    },
+                );
+            }
+            let Some(surface) = surfaces.get(&group.id) else {
+                continue;
+            };
+            if surface.window.monitor().as_ref() != Some(&monitor) {
+                surface.window.set_monitor(Some(&monitor));
+            }
+            let insets = row
+                .output
+                .as_ref()
+                .and_then(|o| self.bar_geometry.borrow().get(o).copied())
+                .unwrap_or_else(Theme::desktop_insets);
+            for (edge, margin) in [Edge::Top, Edge::Right, Edge::Bottom, Edge::Left]
+                .into_iter()
+                .zip(insets)
+            {
+                if surface.window.margin(edge) != margin {
+                    surface.window.set_margin(edge, margin);
+                }
+            }
+            let mixed = state.nodes.iter().any(|n| {
+                n.workspace == group.id
+                    && n.window_id.is_some()
+                    && n.column_mode == ColumnMode::Window
+            });
+            let keyboard = if group.view == RowView::Windows {
+                KeyboardMode::None
+            } else if mixed {
+                KeyboardMode::OnDemand
+            } else {
+                KeyboardMode::Exclusive
+            };
+            if surface.window.keyboard_mode() != keyboard {
+                surface.window.set_keyboard_mode(keyboard);
+            }
+            if group.id != state.selected_workspace {
+                surface.window.set_visible(group.view == RowView::Nodes);
+                let mut views = self.row_views.borrow_mut();
+                let saved = views
+                    .entry(group.id.clone())
+                    .or_insert_with(|| self.view.borrow().for_row(group.id.clone()));
+                saved.insets = insets;
+                let geometry = monitor.geometry();
+                saved.output_size = (geometry.width() as f64, geometry.height() as f64);
+                saved.transparent = true;
+                saved.chrome = 1.0;
+                saved.morphing = false;
+                saved.presentations.clear();
+                saved.live_fade = 0.0;
+                if mixed {
+                    let scoped = canvas::row_state(state, &group.id);
+                    saved.desktop_rects = super::collapse::rectangles(
+                        &desktop,
+                        &scoped,
+                        insets,
+                        (geometry.width() - insets[1] - insets[3]) as f64,
+                        false,
+                    );
+                    if let Some(native) = surface.window.surface() {
+                        let region =
+                            gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(
+                                0,
+                                0,
+                                geometry.width() - insets[1] - insets[3],
+                                geometry.height() - insets[0] - insets[2],
+                            ));
+                        for node in scoped
+                            .nodes
+                            .iter()
+                            .filter(|n| n.column_mode == ColumnMode::Window)
+                        {
+                            if let Some(rect) = saved.desktop_rects.get(&node.id) {
+                                let _ = region.subtract_rectangle(&rect.integer());
+                            }
+                        }
+                        native.set_input_region(Some(&region));
+                    }
+                } else if let Some(native) = surface.window.surface() {
+                    native.set_input_region(None);
+                }
+                surface.canvas.queue_draw();
+            }
+        }
+        surfaces.retain(|id, surface| {
+            if keep.contains(id) {
+                return true;
+            }
+            self.frame_monitors
+                .borrow_mut()
+                .remove(&(surface.window.as_ptr() as usize));
+            surface.window.close();
+            false
+        });
+        self.row_views
+            .borrow_mut()
+            .retain(|id, _| state.workspaces.iter().any(|w| w.id == *id));
+        created_current
+    }
+
     fn build(
         app: &gtk::Application,
         engine: Engine,
@@ -358,12 +588,12 @@ impl Shell {
             body.append(&inspector);
             Self {
                 app: app.clone(),
-                window: window.clone(),
+                fallback_window: window.clone(),
                 bar: bar.clone(),
                 engine: engine.clone(),
                 macros,
                 desktop,
-                canvas,
+                fallback_canvas: canvas,
                 view,
                 inspector,
                 panel: RefCell::new(None),
@@ -377,7 +607,11 @@ impl Shell {
                 revision: Cell::new(u64::MAX),
                 weak: weak.clone(),
                 last_workspace: RefCell::new(String::new()),
-                row_views: RefCell::new(HashMap::new()),
+                row_views: Rc::new(RefCell::new(HashMap::new())),
+                row_surfaces: RefCell::new(HashMap::new()),
+                workspace_layers: options.integrated
+                    && !windowed
+                    && niri::workspace_layers_supported(),
                 displayed_row: RefCell::new(None),
                 windowed,
                 theme_monitors: RefCell::new(vec![]),
@@ -388,14 +622,14 @@ impl Shell {
                 pending_focus: RefCell::new(None),
                 return_window: Cell::new(None),
                 bar_geometry: RefCell::new(HashMap::new()),
-                graph_content: root.clone(),
+                fallback_content: root.clone(),
                 captures: super::collapse::Captures::new(engine.clone()),
                 chat: RefCell::new(None),
                 search_popup: RefCell::new(None),
                 centered: Cell::new(false),
                 reveal: Cell::new(1.0),
                 paint_started: Cell::new(None),
-                frame_monitor: Cell::new(false),
+                frame_monitors: RefCell::new(HashSet::new()),
                 pinned_rows: RefCell::new(HashSet::new()),
             }
         });
@@ -484,40 +718,40 @@ impl Shell {
                     && n.column_mode == ColumnMode::Window
                     && n.window_id.is_some()
             });
-            self.window.set_keyboard_mode(if mixed {
+            self.window().set_keyboard_mode(if mixed {
                 KeyboardMode::OnDemand
             } else {
                 KeyboardMode::Exclusive
             });
         }
-        self.canvas.queue_draw();
+        self.canvas().queue_draw();
     }
     fn escape(&self) {
         let chat = self.chat.borrow_mut().take();
         if let Some(chat) = chat {
             chat.window.close();
-            self.canvas.grab_focus();
+            self.canvas().grab_focus();
             return;
         }
         let search = self.search_popup.borrow_mut().take();
         if let Some(search) = search {
             search.close();
-            self.canvas.grab_focus();
+            self.canvas().grab_focus();
             return;
         }
         if !self.view.borrow().query.is_empty() {
             self.view.borrow_mut().query.clear();
-            self.canvas.queue_draw();
+            self.canvas().queue_draw();
             return;
         }
         self.select(None);
     }
     fn fit_immediate(&self) {
-        canvas::fit_immediate(&self.canvas, &self.view, &self.engine.snapshot().state);
+        canvas::fit_immediate(&self.canvas(), &self.view, &self.engine.snapshot().state);
     }
     fn fit(&self) {
         self.prepare_camera();
-        canvas::fit_animated(&self.canvas, &self.view, &self.engine.snapshot().state);
+        canvas::fit_animated(&self.canvas(), &self.view, &self.engine.snapshot().state);
     }
     fn prepare_camera(&self) {
         let state = self.engine.snapshot().state;
@@ -543,13 +777,13 @@ impl Shell {
     fn scene_size(&self) -> (i32, i32) {
         let view = self.view.borrow();
         (
-            if self.canvas.width() > 100 {
-                self.canvas.width()
+            if self.canvas().width() > 100 {
+                self.canvas().width()
             } else {
                 view.output_size.0 as i32 - view.insets[1] - view.insets[3]
             },
-            if self.canvas.height() > 100 {
-                self.canvas.height()
+            if self.canvas().height() > 100 {
+                self.canvas().height()
             } else {
                 view.output_size.1 as i32 - view.insets[0] - view.insets[2]
             },
@@ -564,9 +798,9 @@ impl Shell {
             .into_iter()
             .zip(margins)
         {
-            self.window.set_margin(edge, margin);
+            self.window().set_margin(edge, margin);
         }
-        self.window.add_css_class("integrated");
+        self.window().add_css_class("integrated");
     }
     fn current_insets(&self) -> [i32; 4] {
         let output = self
@@ -584,7 +818,7 @@ impl Shell {
     }
     fn update_scene_geometry(&self) {
         let desktop = self.desktop.lock().unwrap().clone();
-        let display = gtk::prelude::WidgetExt::display(&self.window);
+        let display = gtk::prelude::WidgetExt::display(&self.window());
         let output = desktop
             .workspaces
             .iter()
@@ -600,7 +834,7 @@ impl Shell {
         if !self.windowed
             && let Some(monitor) = monitor
         {
-            self.window.set_monitor(Some(&monitor));
+            self.window().set_monitor(Some(&monitor));
         }
         let insets = self.current_insets();
         let mut view = self.view.borrow_mut();
@@ -616,14 +850,14 @@ impl Shell {
         );
     }
     fn input_region(&self) {
-        let Some(surface) = self.window.surface() else {
+        let Some(surface) = self.window().surface() else {
             return;
         };
         let region = gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(
             0,
             0,
-            self.window.width(),
-            self.window.height(),
+            self.window().width(),
+            self.window().height(),
         ));
         let state = self.engine.snapshot().state;
         let view = self.view.borrow();
@@ -663,15 +897,15 @@ impl Shell {
         view.images.retain(|id, _| live.contains(id));
         view.image_textures.retain(|id, _| live.contains(id));
         drop(view);
-        self.canvas.queue_draw();
+        self.canvas().queue_draw();
     }
     fn transition(&self, visible: bool, after: Option<Box<dyn FnOnce()>>) {
-        self.canvas.slide(None);
+        self.canvas().slide(None);
         let started = std::time::Instant::now();
         self.transition_serial.set(self.transition_serial.get() + 1);
         let serial = self.transition_serial.get();
         let was_visible = self.graph_visible.replace(visible);
-        let was_mapped = self.window.is_visible();
+        let was_mapped = self.window().is_visible();
         let chrome_from = if was_mapped {
             self.view.borrow().chrome
         } else {
@@ -816,23 +1050,26 @@ impl Shell {
         self.view.borrow_mut().morphing = true;
         self.view.borrow_mut().live_fade = 1.0;
         self.view.borrow_mut().chrome = chrome_from;
-        self.graph_content.set_opacity(1.0);
-        self.window.set_opacity(1.0);
+        self.content().set_opacity(1.0);
+        self.window().set_opacity(1.0);
         self.bar.set_visible(false);
         if !self.windowed {
-            self.window.set_keyboard_mode(if visible {
+            self.window().set_keyboard_mode(if visible {
                 KeyboardMode::Exclusive
             } else {
                 KeyboardMode::None
             });
         }
-        self.window.present();
+        self.window().present();
         self.input_region();
         if visible {
-            self.canvas.grab_focus();
+            self.canvas().grab_focus();
         }
-        if !self.frame_monitor.get()
-            && let Some(clock) = self.window.frame_clock()
+        if !self
+            .frame_monitors
+            .borrow()
+            .contains(&(self.window().as_ptr() as usize))
+            && let Some(clock) = self.window().frame_clock()
         {
             let weak = self.weak.clone();
             clock.connect_after_paint(move |_| {
@@ -845,12 +1082,14 @@ impl Shell {
                         .record("first_graph_frame", start.elapsed());
                 }
             });
-            self.frame_monitor.set(true);
+            self.frame_monitors
+                .borrow_mut()
+                .insert(self.window().as_ptr() as usize);
         }
         let weak = self.weak.clone();
         let after = RefCell::new(after);
         let previous = Cell::new(started);
-        self.window.add_tick_callback(move |_, _| {
+        self.window().add_tick_callback(move |_, _| {
             let Some(shell) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
@@ -861,20 +1100,20 @@ impl Shell {
                 "transition_frame_gap",
                 previous.replace(std::time::Instant::now()).elapsed(),
             );
-            if visible && shell.first_frame.get() && shell.canvas.width() > 0 {
+            if visible && shell.first_frame.get() && shell.canvas().width() > 0 {
                 shell.fit_immediate();
                 shell.first_frame.set(false);
-                gtk::prelude::GtkWindowExt::set_focus(&shell.window, Some(&shell.canvas));
-                shell.canvas.grab_focus();
+                gtk::prelude::GtkWindowExt::set_focus(&shell.window(), Some(&shell.canvas()));
+                shell.canvas().grab_focus();
                 if let Some(id) = shell.pending_focus.borrow_mut().take() {
                     let state = shell.engine.snapshot().state;
                     if let Some(node) = state.node(&id) {
                         let mut view = shell.view.borrow_mut();
                         view.zoom = 0.9;
                         let position = view.arrangement.position(node);
-                        view.pan_x = shell.canvas.width() as f64 / 2.0
+                        view.pan_x = shell.canvas().width() as f64 / 2.0
                             - (position.x + canvas::WIDTH / 2.0) * view.zoom;
-                        view.pan_y = shell.canvas.height() as f64 / 2.0
+                        view.pan_y = shell.canvas().height() as f64 / 2.0
                             - (position.y + canvas::node_height(node) / 2.0) * view.zoom;
                     }
                 }
@@ -921,9 +1160,9 @@ impl Shell {
             shell.reveal.set(if visible { eased } else { 1.0 - eased });
             // Geometry reaches the real client before the capture fades away.
             if !visible && progress >= 1.0 {
-                shell.graph_content.set_opacity(fade);
+                shell.content().set_opacity(fade);
             }
-            shell.canvas.queue_draw();
+            shell.canvas().queue_draw();
             if progress >= 1.0 && (!has_windows || fade <= 0.0) {
                 let weak = shell.weak.clone();
                 let after = after.borrow_mut().take();
@@ -942,9 +1181,9 @@ impl Shell {
                     }
                     shell.input_region();
                     if !visible {
-                        shell.window.set_visible(false);
+                        shell.window().set_visible(false);
                     } else if has_windows && !shell.windowed {
-                        shell.window.set_keyboard_mode(KeyboardMode::OnDemand);
+                        shell.window().set_keyboard_mode(KeyboardMode::OnDemand);
                         if let Some(id) = shell.return_window.get().filter(|id| {
                             shell.engine.snapshot().state.nodes.iter().any(|n| {
                                 n.window_id == Some(*id) && n.column_mode == ColumnMode::Window
@@ -1003,6 +1242,11 @@ impl Shell {
             lookup_return: false,
         });
         self.refresh();
+        if self.workspace_layers && !was_visible {
+            self.window().set_visible(false);
+            self.graph_visible.set(false);
+            self.view.borrow_mut().chrome = 0.0;
+        }
         self.transition(true, None);
         self.engine
             .performance
@@ -1242,7 +1486,7 @@ impl Shell {
                 glib::idle_add_local_once(move || {
                     if let Some(shell) = weak.upgrade() {
                         canvas::focus_node(
-                            &shell.canvas,
+                            &shell.canvas(),
                             &shell.view,
                             &shell.engine.snapshot().state,
                             &id,
@@ -1285,6 +1529,7 @@ impl Shell {
                 self.bar_geometry
                     .borrow_mut()
                     .insert(output, insets.map(|n| n.clamp(0, 512)));
+                self.ensure_row_surfaces(&self.engine.snapshot().state);
                 self.apply_insets();
             }
             UiCommand::Open { id } => self.open(&id),
@@ -1355,13 +1600,13 @@ impl Shell {
                 if self.graph_visible.get() {
                     self.prepare_camera();
                     let id = canvas::navigate(
-                        &self.canvas,
+                        &self.canvas(),
                         &self.view,
                         &self.engine.snapshot().state,
                         &direction,
                     );
                     self.select(id);
-                    self.canvas.queue_draw();
+                    self.canvas().queue_draw();
                 } else if let Err(error) = niri::navigate(&direction) {
                     self.show_error(&error.to_string());
                 }
@@ -1420,13 +1665,14 @@ impl Shell {
         } else {
             self.error.set_visible(false);
         }
+        let new_surface = self.ensure_row_surfaces(state);
         let workspace_changed = *self.last_workspace.borrow() != state.selected_workspace;
-        if workspace_changed {
+        if workspace_changed || new_surface {
             let previous = self.last_workspace.borrow().clone();
             let outgoing = self
-                .window
+                .window()
                 .is_visible()
-                .then(|| self.canvas.frame())
+                .then(|| self.canvas().frame())
                 .flatten();
             let direction = row_direction(
                 self.displayed_row.borrow().as_ref(),
@@ -1434,9 +1680,13 @@ impl Shell {
             );
             canvas::suspend(&self.view);
             if !previous.is_empty() {
-                self.row_views
-                    .borrow_mut()
-                    .insert(previous, self.view.borrow().clone());
+                let mut saved = self.view.borrow().clone();
+                if self.workspace_layers {
+                    saved.presentations.clear();
+                    saved.morphing = false;
+                    saved.live_fade = 0.0;
+                }
+                self.row_views.borrow_mut().insert(previous, saved);
             }
             let saved = self
                 .row_views
@@ -1509,7 +1759,7 @@ impl Shell {
             }
         }
         self.refresh_scene();
-        self.canvas.queue_draw();
+        self.canvas().queue_draw();
     }
     fn restore_row(
         &self,
@@ -1525,7 +1775,7 @@ impl Shell {
             graph_visible: visible,
             lookup_return: false,
         });
-        self.canvas.slide(None);
+        self.canvas().slide(None);
         self.update_scene_geometry();
         {
             let mut view = self.view.borrow_mut();
@@ -1535,15 +1785,33 @@ impl Shell {
             view.chrome = if visible { 1.0 } else { 0.0 };
             view.live_fade = 0.0;
         }
-        self.graph_content.set_opacity(1.0);
-        self.window.set_opacity(1.0);
+        self.content().set_opacity(1.0);
+        self.window().set_opacity(1.0);
         self.bar.set_visible(false);
         if !self.windowed {
-            self.window.set_keyboard_mode(if visible {
+            self.window().set_keyboard_mode(if visible {
                 KeyboardMode::Exclusive
             } else {
                 KeyboardMode::None
             });
+        }
+        if self.workspace_layers {
+            if visible
+                && !self
+                    .row_surfaces
+                    .borrow()
+                    .contains_key(&self.engine.snapshot().state.selected_workspace)
+            {
+                self.graph_visible.set(false);
+                self.engine.set_presentation(Presentation {
+                    graph_visible: false,
+                    lookup_return: false,
+                });
+                self.fallback_window.set_visible(false);
+            } else {
+                self.finish_row(visible);
+            }
+            return;
         }
         let duration = self.view.borrow().theme.motion_ms;
         let animate =
@@ -1554,17 +1822,17 @@ impl Shell {
         }
         self.view.borrow_mut().morphing = true;
         self.view.borrow_mut().live_fade = 1.0;
-        self.canvas.slide(Some(super::surface::RowSlide {
+        self.canvas().slide(Some(super::surface::RowSlide {
             outgoing,
             incoming: visible,
             direction: direction.unwrap(),
             progress: 0.0,
         }));
-        self.window.present();
+        self.window().present();
         self.input_region();
         let started = std::time::Instant::now();
         let weak = self.weak.clone();
-        self.window.add_tick_callback(move |_, _| {
+        self.window().add_tick_callback(move |_, _| {
             let Some(shell) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
@@ -1572,7 +1840,7 @@ impl Shell {
                 return glib::ControlFlow::Break;
             }
             let t = (started.elapsed().as_secs_f32() * 1000.0 / duration as f32).min(1.0);
-            shell.canvas.slide_progress(t * t * (3.0 - 2.0 * t));
+            shell.canvas().slide_progress(t * t * (3.0 - 2.0 * t));
             if t >= 1.0 {
                 let weak = shell.weak.clone();
                 glib::idle_add_local_once(move || {
@@ -1589,18 +1857,18 @@ impl Shell {
     }
 
     fn finish_row(&self, visible: bool) {
-        self.canvas.slide(None);
+        self.canvas().slide(None);
         self.view.borrow_mut().morphing = false;
         self.view.borrow_mut().live_fade = 0.0;
-        self.window.set_visible(visible);
+        self.window().set_visible(visible);
         self.input_region();
         if visible {
             let selected = self.view.borrow().selected.clone();
             self.select(selected);
-            self.canvas.grab_focus();
+            self.canvas().grab_focus();
             if self.first_frame.get() {
                 let weak = self.weak.clone();
-                self.canvas.add_tick_callback(move |canvas, _| {
+                self.canvas().add_tick_callback(move |canvas, _| {
                     let Some(shell) = weak.upgrade() else {
                         return glib::ControlFlow::Break;
                     };
@@ -1809,7 +2077,7 @@ impl Shell {
                 matches.set_text(&format!(
                     "{count} matching nodes · Enter to focus · Esc to dismiss"
                 ));
-                shell.canvas.queue_draw();
+                shell.canvas().queue_draw();
             }
         });
         let weak = self.weak.clone();
@@ -1822,7 +2090,7 @@ impl Shell {
                     .find(|n| canvas::matches_query(n, &entry.text()))
                 {
                     shell.select(Some(node.id.clone()));
-                    canvas::focus_node(&shell.canvas, &shell.view, &state, &node.id);
+                    canvas::focus_node(&shell.canvas(), &shell.view, &state, &node.id);
                     p.close();
                 }
             }
@@ -1832,8 +2100,8 @@ impl Shell {
             if let Some(shell) = weak.upgrade() {
                 shell.search_popup.borrow_mut().take();
                 shell.view.borrow_mut().query.clear();
-                shell.canvas.queue_draw();
-                shell.canvas.grab_focus();
+                shell.canvas().queue_draw();
+                shell.canvas().grab_focus();
             }
             glib::Propagation::Proceed
         });
@@ -1900,10 +2168,15 @@ impl Shell {
             chat.window.close();
             if let Some(id) = id {
                 self.select(Some(id.clone()));
-                canvas::focus_node(&self.canvas, &self.view, &self.engine.snapshot().state, &id);
+                canvas::focus_node(
+                    &self.canvas(),
+                    &self.view,
+                    &self.engine.snapshot().state,
+                    &id,
+                );
             }
         }
-        self.canvas.grab_focus();
+        self.canvas().grab_focus();
     }
     fn show_chat(&self, id: Option<String>) {
         let popup = self.dialog("Ask FlowGraph", 560, 150);
@@ -1955,8 +2228,8 @@ impl Shell {
                 } else {
                     let view = shell.view.borrow();
                     let center = view.world(
-                        shell.canvas.width() as f64 / 2.0,
-                        shell.canvas.height() as f64 / 2.0,
+                        shell.canvas().width() as f64 / 2.0,
+                        shell.canvas().height() as f64 / 2.0,
                     );
                     let selected = view.selected.as_deref().and_then(|id| state.node(id));
                     let mut position = selected
@@ -2018,7 +2291,7 @@ impl Shell {
         popup.connect_close_request(move |_| {
             if let Some(shell) = weak.upgrade() {
                 shell.chat.borrow_mut().take();
-                shell.canvas.grab_focus();
+                shell.canvas().grab_focus();
             }
             glib::Propagation::Proceed
         });
@@ -2210,8 +2483,8 @@ impl Shell {
         let state = self.engine.snapshot().state;
         let view = self.view.borrow();
         let center = view.world(
-            self.canvas.width() as f64 / 2.0,
-            self.canvas.height() as f64 / 2.0,
+            self.canvas().width() as f64 / 2.0,
+            self.canvas().height() as f64 / 2.0,
         );
         let mut position =
             if let Some(selected) = view.selected.as_deref().and_then(|id| state.node(id)) {
@@ -2728,7 +3001,7 @@ impl Shell {
         let dialog = gtk::Window::builder()
             .application(&self.app)
             .title(title)
-            .transient_for(&self.window)
+            .transient_for(&self.window())
             .modal(true)
             .default_width(width)
             .default_height(height)
@@ -2760,7 +3033,7 @@ impl Shell {
             .app
             .active_window()
             .filter(|window| window.is_visible() && window.is_mapped())
-            .unwrap_or_else(|| self.window.clone().upcast());
+            .unwrap_or_else(|| self.window().clone().upcast());
         let widget: gtk::Widget = window.clone().upcast();
         let paintable = gtk::WidgetPaintable::new(Some(&widget));
         let snapshot = gtk::Snapshot::new();

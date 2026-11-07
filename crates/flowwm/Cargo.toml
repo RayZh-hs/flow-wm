@@ -1,0 +1,31 @@
+[package]
+name = "flowwm"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "A native, agent-first workflow extension for Niri"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+directories = "6"
+gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
+gtk4-layer-shell = "0.8"
+libc = "0.2"
+niri-ipc = { path = "../../components/niri/niri-ipc" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+signal-hook = "0.3"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "flowwm"
+path = "src/main.rs"
+
+[[bin]]
+name = "flowwm-shell"
+path = "src/shell_main.rs"

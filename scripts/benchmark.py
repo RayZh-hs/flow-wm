@@ -45,7 +45,11 @@ def wait_for(predicate):
 
 
 def graph_mapped():
-    return any(layer["namespace"] == "flowwm-graph" for layer in niri("Layers")["Layers"])
+    layers = niri("Layers")["Layers"]
+    if any(layer["namespace"] == "flowwm-graph" for layer in layers):
+        return True
+    row = next((w for w in niri("Workspaces")["Workspaces"] if w["is_focused"]), None)
+    return row is not None and any(layer["namespace"] == f"niri-workspace-v1:{row['id']}:flowwm" for layer in layers)
 
 
 def count(name):
@@ -62,7 +66,17 @@ def main():
         parser.error("--samples must be between 1 and 30")
     original = niri("FocusedWindow")["FocusedWindow"]
     original_row = next((w for w in niri("Workspaces")["Workspaces"] if w["is_focused"]), None)
-    was_visible = flow({"op": "catalog"})["presentation"]["graph_visible"]
+    initial = flow({"op": "catalog"})
+    was_visible = initial["presentation"]["graph_visible"]
+    target_nodes = False
+    if args.window is not None:
+        target = next((w for w in niri("Windows")["Windows"] if w["id"] == args.window), None)
+        if target is None:
+            parser.error("--window does not identify an open window")
+        target_nodes = target["workspace_id"] != (original_row or {}).get("id") and any(
+            group.get("row") and group["row"]["id"] == target["workspace_id"] and group.get("view") == "nodes"
+            for group in initial["workspaces"]
+        )
     samples = []
     try:
         ui("windows")
@@ -97,6 +111,9 @@ def main():
     finally:
         ui("windows")
         wait_for(lambda: not graph_mapped())
+        if target_nodes:
+            ui("nodes")
+            wait_for(graph_mapped)
         if original and any(w["id"] == original["id"] for w in niri("Windows")["Windows"]):
             niri({"Action": {"FocusWindow": {"id": original["id"]}}})
         elif original_row and any(w["id"] == original_row["id"] for w in niri("Workspaces")["Workspaces"]):

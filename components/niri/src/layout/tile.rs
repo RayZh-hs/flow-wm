@@ -1442,6 +1442,7 @@ impl<W: LayoutElement> Tile<W> {
         (geometry, radius)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn render_tab_switch_contents<R: NiriRenderer>(
         &self,
         renderer: &mut R,

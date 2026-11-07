@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Build and test the integrated workspace, or run it in an isolated nested compositor."""
+import argparse
+import json
+import os
+from pathlib import Path
+import shlex
+import socket
+import subprocess
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def run(*args, cwd=ROOT):
+    print("+ " + shlex.join(map(str, args)), flush=True)
+    subprocess.run(list(map(str, args)), cwd=cwd, check=True)
+
+
+def cargo(component, command, *args):
+    if component == "niri":
+        return ["cargo", command, "--manifest-path", ROOT / "components/niri/Cargo.toml",
+                "--target-dir", ROOT / "target/niri", "--locked", *args]
+    return ["cargo", command, "--locked", *args]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    build = commands.add_parser("build")
+    build.add_argument("component", choices=["flowwm", "niri", "dms", "all"], default="flowwm", nargs="?")
+    build.add_argument("--release", action="store_true")
+    test = commands.add_parser("test")
+    test.add_argument("component", choices=["flowwm", "niri", "dms", "all"], default="all", nargs="?")
+    nested = commands.add_parser("nested")
+    nested.add_argument("--release", action="store_true")
+    nested.add_argument("--smoke", action="store_true", help="run the real GTK/compositor integration smoke test and exit")
+    args = parser.parse_args()
+    if args.command in ("build", "test"):
+        names = ["flowwm", "niri", "dms"] if args.component == "all" else [args.component]
+        for name in names:
+            if args.command == "build":
+                if name == "dms":
+                    run("make", "build", cwd=ROOT / "components/dms/core")
+                else:
+                    run(*cargo(name, "build", *(["--release"] if args.release else [])))
+            elif name == "flowwm":
+                run(*cargo(name, "test"))
+                run(*cargo(name, "clippy", "--all-targets", "--", "-D", "warnings"))
+            elif name == "niri":
+                run(*cargo(name, "test", "--lib", "workspace_layers"))
+                run(*cargo(name, "test", "--lib", "tests::layer_shell"))
+                run(*cargo(name, "test", "-p", "niri-ipc"))
+            else:
+                run("node", "--test", "components/dms/quickshell/PLUGINS/FlowWM/FlowCatalog.test.cjs")
+        return
+    profile = "release" if args.release else "debug"
+    compositor = ROOT / f"target/niri/{profile}/niri"
+    app = ROOT / f"target/{profile}/flowwm"
+    if not compositor.is_file() or not app.is_file():
+        parser.error(f"Build niri and FlowWM first: python3 scripts/dev.py build all{' --release' if args.release else ''}")
+    environment = os.environ.copy()
+    parent_runtime = Path(environment.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    parent_display = environment.get("WAYLAND_DISPLAY")
+    if parent_display:
+        environment["WAYLAND_DISPLAY"] = str(parent_runtime / parent_display)
+    environment.pop("NIRI_SOCKET", None)
+    environment["PATH"] = str(app.parent) + os.pathsep + environment.get("PATH", "")
+    with tempfile.TemporaryDirectory(prefix="flowwm-nested-", dir=parent_runtime) as temporary:
+        environment["XDG_RUNTIME_DIR"] = temporary
+        data = Path(temporary) / "data" if args.smoke else ROOT / "artifacts/nested/data"
+        command = [str(compositor), "--config", str(ROOT / "config/nested.kdl"), "--",
+                   str(app), "--data-dir", str(data), "start", "--dms", "--background"]
+        print("+ " + shlex.join(command), flush=True)
+        process = subprocess.Popen(command, env=environment)
+        try:
+            if args.smoke:
+                from smoke_native import run as smoke
+                smoke(ROOT, temporary, process, app, environment)
+            else:
+                process.wait()
+        except KeyboardInterrupt:
+            process.terminate()
+            process.wait(timeout=10)
+        finally:
+            try:
+                with socket.socket(socket.AF_UNIX) as channel:
+                    channel.settimeout(2)
+                    channel.connect(str(Path(temporary) / "flowwm.sock"))
+                    channel.sendall((json.dumps({"op": "ui", "command": {"action": "quit"}}) + "\n").encode())
+            except OSError:
+                pass
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=10)
+
+
+if __name__ == "__main__":
+    main()

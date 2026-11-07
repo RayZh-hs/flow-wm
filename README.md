@@ -4,19 +4,22 @@ A native Rust workflow shell for Niri. Agents, shell commands, metrics, applicat
 
 The interface follows DMS's Material surfaces, rounded controls, and primary color. With DMS's dynamic theme enabled, FlowWM reads `~/.cache/DankMaterialShell/dms-colors.json` and follows palette changes. It also reads DMS's corner radius and explicit font family. Without DMS, it uses the DMS purple dark palette.
 
-FlowWM is a companion extension over Niri's public Rust IPC interface. Niri continues to handle Wayland clients, tiling, input, outputs, and Xwayland-satellite windows. No compositor fork patch or compositor restart is needed.
+This repository develops FlowWM together with the Niri and DMS forks under `components/`. The native integration attaches each Nodes surface to its Niri workspace, so the compositor moves graphs and windows together throughout a swipe, including reversed swipes and overview zoom. Niri continues to handle Wayland clients, tiling, input, outputs, and Xwayland-satellite windows. Older compositors automatically use the companion overlay fallback.
+
+The application lives in `crates/flowwm`. See [integrated development](docs/development.md) for source updates, subtree export, build caches, and isolated compositor testing.
 
 ## Install with DMS
 
 The user installer builds the Rust release, installs the desktop entry and icon, enables a graphical-session service, links the plugin from the DMS fork, and adds a Nodes widget to the enabled DMS bar:
 
 ```sh
-python3 scripts/install.py --dms-root ../DankMaterialShell
+python3 scripts/components.py bootstrap
+python3 scripts/install.py
 ```
 
 Run this inside your Niri/DMS session. It expects the existing Niri configuration to include `dms-overwrite.kdl`. The installer adds `flowwm.kdl`, routes the existing launcher and directional bindings through FlowWM, and validates the resulting Niri configuration. It backs up changed files under `~/.local/state/flowwm/install-backups/`. The service runs `flowwm start --dms --background`, so login opens your normal desktop and DMS remains the desktop bar. Existing graphs are preserved.
 
-The DMS plugin source lives in the sibling fork at `DankMaterialShell/quickshell/PLUGINS/FlowWM/`. Its icon adapter supports the current `DIcon` widgets and the older deployed `DankIcon` widgets. The installer preserves the active DMS deployment and its other plugins.
+The DMS plugin source lives at `components/dms/quickshell/PLUGINS/FlowWM/`. Its icon adapter supports the current `DIcon` widgets and the older deployed `DankIcon` widgets. The installer preserves the active DMS deployment and its other plugins. Build the compositor with `python3 scripts/dev.py build niri --release` and start the next graphical session with that binary to enable native workspace motion; installing the application does not restart the running compositor.
 
 Installed global shortcuts (`Super` is Niri's `Mod` key):
 
@@ -34,7 +37,7 @@ Left-click the DMS Nodes widget to toggle the graph; right-click it to find a no
 
 Each Niri workspace row is a node group. Changing rows selects the corresponding graph, and choosing a group in DMS changes the actual Niri row. Existing application windows are imported automatically; opening and closing them updates their node presentations. Window IDs distinguish applications with identical titles. Moving a window between rows moves its connected workflow component with it, preserving its edges. Rows with workflow nodes receive a workspace name so Niri keeps the group when its last visible window closes. The trailing empty Niri row stays available for new groups.
 
-Nodes/Windows is saved independently for each row. Super+Tab toggles only the current row, including rows with expanded columns. New rows and old state files without a saved mode start in Windows view. Returning to a row restores its mode; its camera and selection are also kept for the current shell session. Three-finger workspace swipes and other Niri row switches slide the graph vertically in workspace order. The public IPC reports the committed row change, so graph motion starts at activation; continuous finger tracking and cancelled-swipe previews require compositor support. Rows on different outputs switch directly. Reduced motion skips the slide. Returning to Windows focuses the lowest-index selected node, using the same ordering as Alt+number; with no selection, the row's previous window retains focus.
+Nodes/Windows is saved independently for each row. Super+Tab toggles only the current row, including rows with expanded columns. New rows and old state files without a saved mode start in Windows view. Returning to a row restores its mode; its camera and selection are also kept for the current shell session. With the bundled compositor, three-finger workspace swipes move graphs and windows continuously in the same scene, including cancelled swipes. The companion fallback starts its graph slide at workspace activation. Returning to Windows focuses the lowest-index selected node, using the same ordering as Alt+number; with no selection, the row's previous window retains focus.
 
 Super+Tab shrinks the live windows on the current row into a horizontal array of nodes. Closed windows appear as compact title cards in a grid beneath the live row, fading in and rising gently from below. The grid chooses its column count from the available screen space so history does not stretch the live row across the canvas. Each live window's captured contents, outline width, outline color, and corner radius morph together; labels and IO appear as it reaches its node. Returning reverses the motion, then fades the capture into the live application over 65 ms. GTK's retained GPU renderer transforms cached textures and borders; capture, decoding, and pixel conversion run on a worker and never delay keyboard input or graph mapping. Window snapshots preserve transparency. A fresh snapshot is requested after the opening motion, so capture does not compete with the transition. The default motion is 120 ms and follows DMS's reduced-motion preference.
 
@@ -108,7 +111,7 @@ Agent nodes use your installed and authenticated `codex` CLI. They inherit the C
 Install the binary if desired:
 
 ```sh
-cargo install --path . --locked
+cargo install --path crates/flowwm --locked
 ```
 
 ## Desktop interaction
@@ -230,7 +233,7 @@ flowwm focus <node-id> --open
 flowwm quit
 ```
 
-`flowwm send '<JSON>'` exposes the typed control protocol in [src/engine.rs](src/engine.rs). For example:
+`flowwm send '<JSON>'` exposes the typed control protocol in [crates/flowwm/src/engine.rs](crates/flowwm/src/engine.rs). For example:
 
 ```sh
 flowwm send '{"op":"connect","source":"<node-id>","target":"<node-id>"}'
@@ -247,7 +250,8 @@ Normal shutdown stops owned subprocesses and preserves workspaces, notes, graph 
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
-node --test ../DankMaterialShell/quickshell/PLUGINS/FlowWM/FlowCatalog.test.cjs
+python3 scripts/dev.py test
+python3 scripts/dev.py nested --smoke
 ```
 
 The explicit native smoke test opens real surfaces inside the current Niri session. It checks the overlay, macro and parameter dialogs, native tiled output windows, and closing a presentation while work remains active. It cleans up its own workspace and restores focus afterward:

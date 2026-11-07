@@ -24,6 +24,7 @@ pub mod screencasting;
 pub mod ui;
 pub mod utils;
 pub mod window;
+mod workspace_layer;
 
 #[cfg(test)]
 mod tests;
