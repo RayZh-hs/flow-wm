@@ -16,8 +16,7 @@ PluginComponent {
             return I18n.tr("Flow graph");
         if (!group.row)
             return group.name;
-        const row = I18n.tr("Row") + " " + group.row.index;
-        return group.name === "Row " + group.row.index ? row : row + " · " + group.name;
+        return I18n.tr("Row") + " " + group.row.index;
     }
     readonly property string geometryKey: JSON.stringify([parentScreen?.name, barConfig?.position ?? 0, barThickness, barSpacing, barConfig?.bottomGap ?? 0])
     function reportGeometry() {
