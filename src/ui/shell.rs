@@ -106,6 +106,41 @@ struct NodeWindow {
     window: gtk::ApplicationWindow,
     panel: NodePanel,
 }
+
+fn row_direction(previous: Option<&Row>, next: Option<&Row>) -> Option<f32> {
+    let (previous, next) = (previous?, next?);
+    if previous.session != next.session || previous.output != next.output {
+        return None;
+    }
+    match next.index.cmp(&previous.index) {
+        std::cmp::Ordering::Greater => Some(1.0),
+        std::cmp::Ordering::Less => Some(-1.0),
+        std::cmp::Ordering::Equal => None,
+    }
+}
+
+#[test]
+fn row_slides_follow_vertical_order_only_within_the_same_output_and_session() {
+    let first = Row {
+        session: "session".into(),
+        id: 100,
+        index: 2,
+        output: Some("DP-1".into()),
+        name: None,
+    };
+    let mut next = first.clone();
+    next.id = 1;
+    next.index = 3;
+    assert_eq!(row_direction(Some(&first), Some(&next)), Some(1.0));
+    next.index = 1;
+    assert_eq!(row_direction(Some(&first), Some(&next)), Some(-1.0));
+    next.output = Some("DP-2".into());
+    assert_eq!(row_direction(Some(&first), Some(&next)), None);
+    next.output = first.output.clone();
+    next.session = "new session".into();
+    assert_eq!(row_direction(Some(&first), Some(&next)), None);
+    assert_eq!(row_direction(None, Some(&next)), None);
+}
 struct Shell {
     app: gtk::Application,
     window: gtk::ApplicationWindow,
@@ -127,6 +162,8 @@ struct Shell {
     revision: Cell<u64>,
     weak: Weak<Shell>,
     last_workspace: RefCell<String>,
+    row_views: RefCell<HashMap<String, View>>,
+    displayed_row: RefCell<Option<Row>>,
     windowed: bool,
     theme_monitors: RefCell<Vec<gio::FileMonitor>>,
     integrated: bool,
@@ -340,6 +377,8 @@ impl Shell {
                 revision: Cell::new(u64::MAX),
                 weak: weak.clone(),
                 last_workspace: RefCell::new(String::new()),
+                row_views: RefCell::new(HashMap::new()),
+                displayed_row: RefCell::new(None),
                 windowed,
                 theme_monitors: RefCell::new(vec![]),
                 integrated: options.integrated,
@@ -627,6 +666,7 @@ impl Shell {
         self.canvas.queue_draw();
     }
     fn transition(&self, visible: bool, after: Option<Box<dyn FnOnce()>>) {
+        self.canvas.slide(None);
         let started = std::time::Instant::now();
         self.transition_serial.set(self.transition_serial.get() + 1);
         let serial = self.transition_serial.get();
@@ -951,13 +991,12 @@ impl Shell {
             }
         }
         let state = self.engine.snapshot().state;
-        for node in state.nodes.iter().filter(|n| {
-            n.workspace == state.selected_workspace && n.column_mode != ColumnMode::Node
+        if let Err(error) = self.engine.request(Control::RowView {
+            workspace: state.selected_workspace.clone(),
+            view: RowView::Nodes,
         }) {
-            let _ = self.engine.request(Control::ColumnMode {
-                id: node.id.clone(),
-                mode: ColumnMode::Node,
-            });
+            self.show_error(&error.to_string());
+            return;
         }
         self.engine.set_presentation(Presentation {
             graph_visible: true,
@@ -1084,21 +1123,29 @@ impl Shell {
         }
     }
     fn show_windows(&self) {
+        self.synchronize_row();
+        self.refresh();
         let state = self.engine.snapshot().state;
-        for node in state.nodes.iter().filter(|n| {
-            n.workspace == state.selected_workspace
-                && n.window_id.is_some()
-                && n.column_mode != ColumnMode::Window
+        let selected = canvas::first_selected(&state, &self.view.borrow()).cloned();
+        if let Some(window) = selected.as_ref().and_then(|n| n.window_id) {
+            self.return_window.set(Some(window));
+        }
+        if let Err(error) = self.engine.request(Control::RowView {
+            workspace: state.selected_workspace.clone(),
+            view: RowView::Windows,
         }) {
-            let _ = self.engine.request(Control::ColumnMode {
-                id: node.id.clone(),
-                mode: ColumnMode::Window,
-            });
+            self.show_error(&error.to_string());
+            return;
         }
         self.hide_graph(true);
+        if let Some(node) = selected.filter(|n| n.window_id.is_none() && n.kind != NodeKind::Window)
+        {
+            self.open(&node.id);
+        }
     }
     fn hide_graph(&self, restore_focus: bool) {
         let was_visible = self.graph_visible.get();
+        let state = self.engine.snapshot().state;
         self.engine.set_presentation(Presentation {
             graph_visible: false,
             lookup_return: false,
@@ -1106,13 +1153,13 @@ impl Shell {
         if restore_focus
             && was_visible
             && let Some(id) = self.return_window.get()
-            && self
-                .desktop
-                .lock()
-                .unwrap()
-                .windows
-                .iter()
-                .any(|w| w.id == id)
+            && self.desktop.lock().unwrap().windows.iter().any(|w| {
+                w.id == id
+                    && state
+                        .nodes
+                        .iter()
+                        .any(|n| n.window_id == Some(id) && n.workspace == state.selected_workspace)
+            })
             && let Err(error) = niri::focus(id)
         {
             self.show_error(&error.to_string());
@@ -1210,17 +1257,10 @@ impl Shell {
             UiCommand::RefreshImages => self.collect_images(),
             UiCommand::AgentChat => self.agent_chat(),
             UiCommand::Toggle => {
-                if self.graph_visible.get() {
-                    let state = self.engine.snapshot().state;
-                    if state.nodes.iter().any(|n| {
-                        n.workspace == state.selected_workspace
-                            && n.column_mode == ColumnMode::Window
-                            && n.window_id.is_some()
-                    }) {
-                        self.show_nodes();
-                    } else {
-                        self.show_windows();
-                    }
+                self.synchronize_row();
+                self.refresh();
+                if self.engine.snapshot().state.workspace().view == RowView::Nodes {
+                    self.show_windows();
                 } else {
                     self.show_nodes();
                 }
@@ -1279,8 +1319,6 @@ impl Shell {
                 match self.engine.request(Control::SelectWorkspace { id }) {
                     Ok(_) => {
                         self.refresh();
-                        self.show_nodes();
-                        self.fit();
                     }
                     Err(error) => self.show_error(&error.to_string()),
                 }
@@ -1384,6 +1422,41 @@ impl Shell {
         }
         let workspace_changed = *self.last_workspace.borrow() != state.selected_workspace;
         if workspace_changed {
+            let previous = self.last_workspace.borrow().clone();
+            let outgoing = self
+                .window
+                .is_visible()
+                .then(|| self.canvas.frame())
+                .flatten();
+            let direction = row_direction(
+                self.displayed_row.borrow().as_ref(),
+                state.workspace().row.as_ref(),
+            );
+            canvas::suspend(&self.view);
+            if !previous.is_empty() {
+                self.row_views
+                    .borrow_mut()
+                    .insert(previous, self.view.borrow().clone());
+            }
+            let saved = self
+                .row_views
+                .borrow()
+                .get(&state.selected_workspace)
+                .cloned();
+            let known = saved.is_some();
+            let mut restored = saved
+                .unwrap_or_else(|| self.view.borrow().for_row(state.selected_workspace.clone()));
+            // Palette and image resources may have changed while this row was away.
+            let current = self.view.borrow();
+            restored.theme = current.theme.clone();
+            restored.wallpaper = current.wallpaper.clone();
+            restored.wallpaper_texture = current.wallpaper_texture.clone();
+            restored.images.extend(current.images.clone());
+            restored
+                .image_textures
+                .extend(current.image_textures.clone());
+            drop(current);
+            canvas::restore(&self.view, restored);
             if self.integrated {
                 self.return_window.set(
                     self.desktop
@@ -1397,17 +1470,15 @@ impl Shell {
                 self.apply_insets();
             }
             *self.last_workspace.borrow_mut() = state.selected_workspace.clone();
-            {
-                let mut view = self.view.borrow_mut();
-                view.workspace = state.selected_workspace.clone();
-                view.presented_positions.clear();
-                view.presentations.clear();
-                view.query.clear();
-            }
             self.centered.set(false);
-            self.select(None);
-            self.fit();
+            let selected = self.view.borrow().selected.clone();
+            self.select(selected);
+            if !known {
+                self.fit_immediate();
+            }
+            self.restore_row(state.workspace().view, outgoing, direction);
         }
+        *self.displayed_row.borrow_mut() = state.workspace().row.clone();
         let selected = self.view.borrow().selected.clone();
         if let Some(id) = selected {
             if let Some(node) = state.node(&id) {
@@ -1439,6 +1510,117 @@ impl Shell {
         }
         self.refresh_scene();
         self.canvas.queue_draw();
+    }
+    fn restore_row(
+        &self,
+        mode: RowView,
+        outgoing: Option<gtk::gsk::RenderNode>,
+        direction: Option<f32>,
+    ) {
+        let visible = mode == RowView::Nodes;
+        let was_visible = self.graph_visible.replace(visible);
+        self.transition_serial.set(self.transition_serial.get() + 1);
+        let serial = self.transition_serial.get();
+        self.engine.set_presentation(Presentation {
+            graph_visible: visible,
+            lookup_return: false,
+        });
+        self.canvas.slide(None);
+        self.update_scene_geometry();
+        {
+            let mut view = self.view.borrow_mut();
+            view.presentations.clear();
+            view.presented_positions.clear();
+            view.morphing = false;
+            view.chrome = if visible { 1.0 } else { 0.0 };
+            view.live_fade = 0.0;
+        }
+        self.graph_content.set_opacity(1.0);
+        self.window.set_opacity(1.0);
+        self.bar.set_visible(false);
+        if !self.windowed {
+            self.window.set_keyboard_mode(if visible {
+                KeyboardMode::Exclusive
+            } else {
+                KeyboardMode::None
+            });
+        }
+        let duration = self.view.borrow().theme.motion_ms;
+        let animate =
+            direction.is_some() && duration > 0 && (visible || was_visible || outgoing.is_some());
+        if !animate {
+            self.finish_row(visible);
+            return;
+        }
+        self.view.borrow_mut().morphing = true;
+        self.view.borrow_mut().live_fade = 1.0;
+        self.canvas.slide(Some(super::surface::RowSlide {
+            outgoing,
+            incoming: visible,
+            direction: direction.unwrap(),
+            progress: 0.0,
+        }));
+        self.window.present();
+        self.input_region();
+        let started = std::time::Instant::now();
+        let weak = self.weak.clone();
+        self.window.add_tick_callback(move |_, _| {
+            let Some(shell) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if shell.transition_serial.get() != serial {
+                return glib::ControlFlow::Break;
+            }
+            let t = (started.elapsed().as_secs_f32() * 1000.0 / duration as f32).min(1.0);
+            shell.canvas.slide_progress(t * t * (3.0 - 2.0 * t));
+            if t >= 1.0 {
+                let weak = shell.weak.clone();
+                glib::idle_add_local_once(move || {
+                    if let Some(shell) = weak.upgrade()
+                        && shell.transition_serial.get() == serial
+                    {
+                        shell.finish_row(visible);
+                    }
+                });
+                return glib::ControlFlow::Break;
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+
+    fn finish_row(&self, visible: bool) {
+        self.canvas.slide(None);
+        self.view.borrow_mut().morphing = false;
+        self.view.borrow_mut().live_fade = 0.0;
+        self.window.set_visible(visible);
+        self.input_region();
+        if visible {
+            let selected = self.view.borrow().selected.clone();
+            self.select(selected);
+            self.canvas.grab_focus();
+            if self.first_frame.get() {
+                let weak = self.weak.clone();
+                self.canvas.add_tick_callback(move |canvas, _| {
+                    let Some(shell) = weak.upgrade() else {
+                        return glib::ControlFlow::Break;
+                    };
+                    if !shell.first_frame.get() {
+                        return glib::ControlFlow::Break;
+                    }
+                    if canvas.width() < 100 || canvas.height() < 100 {
+                        return glib::ControlFlow::Continue;
+                    }
+                    shell.fit_immediate();
+                    shell.first_frame.set(false);
+                    glib::ControlFlow::Break
+                });
+            }
+            self.collect_images();
+            self.captures
+                .request(self.desktop.lock().unwrap().clone(), false);
+        } else if !self.integrated && !self.windowed {
+            self.bar.present();
+        }
     }
     fn refresh_scene(&self) {
         if self.graph_visible.get() && !self.view.borrow().morphing {
@@ -1522,7 +1704,11 @@ impl Shell {
                     self.show_error(&error.to_string());
                     return;
                 }
-                self.transition(true, None);
+                if state.workspace().view == RowView::Nodes {
+                    self.transition(true, None);
+                } else {
+                    self.hide_graph(false);
+                }
                 return;
             }
             self.edit(id);
@@ -1536,6 +1722,13 @@ impl Shell {
             }
         {
             self.show_error(&format!("Open workspace: {error:#}"));
+            return;
+        }
+        if let Err(error) = self.engine.request(Control::RowView {
+            workspace: node.workspace.clone(),
+            view: RowView::Windows,
+        }) {
+            self.show_error(&error.to_string());
             return;
         }
         if let Some(window) = self.windows.borrow().get(id) {

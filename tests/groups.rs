@@ -41,6 +41,61 @@ fn active_niri_row_selects_its_group_and_empty_tail_does_not_create_groups() {
 }
 
 #[test]
+fn row_views_survive_switching_reordering_and_new_windows() {
+    let mut state = State::empty("/tmp".into());
+    let mut desktop = desktop();
+    groups::synchronize(&mut state, &desktop);
+    assert!(state.workspaces.iter().all(|w| w.view == RowView::Windows));
+    state
+        .workspaces
+        .iter_mut()
+        .find(|w| w.row.as_ref().unwrap().id == 10)
+        .unwrap()
+        .view = RowView::Nodes;
+    desktop.activate_row(20, true);
+    groups::synchronize(&mut state, &desktop);
+    assert_eq!(state.workspace().view, RowView::Windows);
+    desktop.windows.push(window(3, 10, "New node"));
+    desktop
+        .windows
+        .last_mut()
+        .unwrap()
+        .layout
+        .pos_in_scrolling_layout = Some((2, 1));
+    groups::synchronize(&mut state, &desktop);
+    assert_eq!(
+        state
+            .nodes
+            .iter()
+            .find(|n| n.window_id == Some(3))
+            .unwrap()
+            .column_mode,
+        ColumnMode::Node
+    );
+    desktop.workspaces[0].idx = 2;
+    desktop.workspaces[1].idx = 1;
+    desktop.activate_row(10, true);
+    groups::synchronize(&mut state, &desktop);
+    assert_eq!(state.workspace().view, RowView::Nodes);
+    assert_eq!(state.workspace().row.as_ref().unwrap().index, 2);
+    desktop.windows.last_mut().unwrap().workspace_id = Some(20);
+    groups::synchronize(&mut state, &desktop);
+    assert_eq!(
+        state
+            .nodes
+            .iter()
+            .find(|n| n.window_id == Some(3))
+            .unwrap()
+            .column_mode,
+        ColumnMode::Window
+    );
+    // An unnamed trailing row has its own default; it never inherits Nodes.
+    desktop.activate_row(30, true);
+    groups::synchronize(&mut state, &desktop);
+    assert_eq!(state.workspace().view, RowView::Windows);
+}
+
+#[test]
 fn row_reordering_and_title_changes_keep_node_ids_positions_and_group_identity() {
     let mut state = State::empty("/tmp".into());
     let mut desktop = desktop();

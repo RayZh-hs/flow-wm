@@ -82,6 +82,7 @@ pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
                     notes: String::new(),
                     row: None,
                     window_array: false,
+                    view: RowView::default(),
                 });
                 changed = true;
                 state.workspaces.len() - 1
@@ -114,6 +115,7 @@ pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
         };
         let group_id = group.id.clone();
         let cwd = group.cwd.clone();
+        let view = group.view;
         let key = selector(window);
         let existing = state
             .nodes
@@ -162,13 +164,20 @@ pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
             changed = true;
             state.nodes.len() - 1
         });
-        if state.nodes[index].workspace != group_id {
+        let relocated = state.nodes[index].workspace != group_id;
+        if relocated {
             let node_id = state.nodes[index].id.clone();
             relocate_component(state, &node_id, &group_id);
             changed = true;
         }
         let node = &mut state.nodes[index];
         let newly_bound = node.window_id != Some(window.id);
+        if newly_bound || relocated {
+            node.column_mode = match view {
+                RowView::Nodes => ColumnMode::Node,
+                RowView::Windows => ColumnMode::Window,
+            };
+        }
         changed |= assign(&mut node.window_id, Some(window.id));
         seen.insert(node.id.clone());
         if node.kind == NodeKind::Window {

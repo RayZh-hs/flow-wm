@@ -97,6 +97,15 @@ pub enum ColumnMode {
     Window,
 }
 
+/// Row presentation is independent of both other rows and temporary UI popups.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RowView {
+    Nodes,
+    #[default]
+    Windows,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
@@ -234,6 +243,8 @@ pub struct Workspace {
     pub row: Option<Row>,
     #[serde(default)]
     pub window_array: bool,
+    #[serde(default)]
+    pub view: RowView,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Row {
@@ -280,6 +291,7 @@ impl State {
             notes: String::new(),
             row: None,
             window_array: false,
+            view: RowView::default(),
         };
         Self {
             version: 1,

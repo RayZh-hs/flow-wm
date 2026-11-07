@@ -262,6 +262,13 @@ pub fn suspend(view: &Rc<RefCell<View>>) {
     view.drag = None;
     view.preview = None;
 }
+
+pub fn restore(view: &Rc<RefCell<View>>, mut saved: View) {
+    // Animation callbacks outlive a row change; never reuse their serials.
+    saved.motion_serial = view.borrow().motion_serial + 1;
+    *view.borrow_mut() = saved;
+    suspend(view);
+}
 pub fn navigate(
     area: &super::surface::Surface,
     view: &Rc<RefCell<View>>,
@@ -292,6 +299,17 @@ pub fn focus_node(
     animate_camera(area, view, &target);
 }
 impl View {
+    pub fn for_row(&self, workspace: String) -> Self {
+        Self {
+            workspace,
+            theme: self.theme.clone(),
+            images: self.images.clone(),
+            image_textures: self.image_textures.clone(),
+            wallpaper: self.wallpaper.clone(),
+            wallpaper_texture: self.wallpaper_texture.clone(),
+            ..Self::default()
+        }
+    }
     pub fn interaction_key(&self) -> String {
         format!(
             "{}:{}:{:?}",
@@ -1334,15 +1352,7 @@ fn draw_window_node(
     } else {
         theme.outline
     };
-    c.set_source_rgb(
-        theme.primary.0 + (accent.0 - theme.primary.0) * t,
-        theme.primary.1 + (accent.1 - theme.primary.1) * t,
-        theme.primary.2 + (accent.2 - theme.primary.2) * t,
-    );
-    c.set_line_width(
-        (2.0 * (1.0 - t) + (if selected { 1.4 } else { 1.0 }) * view.zoom * t) / view.zoom,
-    );
-    let _ = c.stroke();
+    c.new_path();
     let content = super::collapse::Rect {
         x: rect.x + 10.0 * t,
         y: rect.y + 70.0 * t,
@@ -1384,6 +1394,16 @@ fn draw_window_node(
         let _ = c.paint_with_alpha(((t - 0.6) / 0.4).clamp(0.0, 1.0));
         let _ = c.restore();
     }
+    rounded(c, rect.x, rect.y, rect.width, rect.height, radius);
+    c.set_source_rgb(
+        theme.primary.0 + (accent.0 - theme.primary.0) * t,
+        theme.primary.1 + (accent.1 - theme.primary.1) * t,
+        theme.primary.2 + (accent.2 - theme.primary.2) * t,
+    );
+    c.set_line_width(
+        (2.0 * (1.0 - t) + (if selected { 2.0 } else { 1.0 }) * view.zoom * t) / view.zoom,
+    );
+    let _ = c.stroke();
     if t < 0.001 {
         let _ = c.pop_group_to_source();
         let _ = c.paint_with_alpha(view.live_fade);
@@ -1412,6 +1432,16 @@ pub fn ordered_nodes(state: &State) -> Vec<&Node> {
             .then(a.id.cmp(&b.id))
     });
     nodes
+}
+
+/// Use the same indices as Alt+number and the canvas, regardless of selection order.
+pub fn first_selected<'a>(state: &'a State, view: &View) -> Option<&'a Node> {
+    if !view.workspace.is_empty() && view.workspace != state.selected_workspace {
+        return None;
+    }
+    ordered_nodes(state).into_iter().find(|node| {
+        view.selected.as_deref() == Some(&node.id) || view.selection.contains(&node.id)
+    })
 }
 fn intersects((left, top, right, bottom): (f64, f64, f64, f64), node: &Node, p: &Position) -> bool {
     p.x <= right && p.x + WIDTH >= left && p.y <= bottom && p.y + node_height(node) >= top
@@ -1481,7 +1511,7 @@ pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, the
     } else {
         theme.outline.alpha(c, 0.5);
     }
-    c.set_line_width(if selected { 1.4 } else { 1.0 });
+    c.set_line_width(if selected { 2.0 } else { 1.0 });
     let _ = c.stroke();
     rounded(c, x + 14.0, y + 16.0, 25.0, 23.0, 5.0);
     c.set_source_rgba(accent.0, accent.1, accent.2, 0.13);
@@ -1799,6 +1829,81 @@ mod rendering_tests {
         assert!(matches_query(&state.nodes[2], "EDITOR tests"));
         assert!(!matches_query(&state.nodes[1], "editor"));
     }
+
+    #[test]
+    fn windows_focus_uses_canvas_indices_instead_of_selection_order() {
+        let mut state = State::empty("/tmp".into());
+        for x in [720.0, 360.0, 0.0] {
+            state.nodes.push(Node::new(
+                &state.selected_workspace,
+                NodeKind::Window,
+                "/tmp".into(),
+                Position { x, y: 80.0 },
+            ));
+        }
+        let mut view = View {
+            selected: Some(state.nodes[0].id.clone()),
+            ..View::default()
+        };
+        view.selection
+            .extend(state.nodes.iter().map(|n| n.id.clone()));
+        assert_eq!(first_selected(&state, &view).unwrap().id, state.nodes[2].id);
+        view.selection.clear();
+        assert_eq!(first_selected(&state, &view).unwrap().id, state.nodes[0].id);
+        view.selected = None;
+        assert!(first_selected(&state, &view).is_none());
+        view.selected = Some(state.nodes[0].id.clone());
+        view.workspace = "other row".into();
+        assert!(first_selected(&state, &view).is_none());
+    }
+
+    #[test]
+    fn selected_window_outline_survives_headers_and_footers() {
+        let mut node = Node::new(
+            "row",
+            NodeKind::Window,
+            "/tmp".into(),
+            Position { x: 80.0, y: 100.0 },
+        );
+        node.window_id = Some(1);
+        let mut view = View {
+            zoom: 1.0,
+            ..View::default()
+        };
+        view.theme.primary = super::super::theme::Color(1.0, 0.0, 0.0);
+        view.theme.outline = super::super::theme::Color(0.0, 1.0, 0.0);
+        let bytes = raster(500, 450, |c| {
+            draw_window_node(
+                c,
+                &node,
+                &node.position,
+                super::super::collapse::Rect {
+                    x: 80.0,
+                    y: 100.0,
+                    width: WIDTH,
+                    height: node_height(&node),
+                },
+                1.0,
+                true,
+                &view,
+            )
+        });
+        for (x, y) in [
+            (100, 100),
+            (80, 130),
+            (80, 230),
+            (80, 360),
+            (100, 374),
+            (371, 130),
+            (371, 360),
+        ] {
+            let rgb = pixel(&bytes, 500, x, y);
+            assert!(
+                rgb & 0xff0000 > 0xaa0000 && rgb & 0x00ff00 < 0x002800,
+                "selection at {x},{y}: {rgb:x}"
+            );
+        }
+    }
     #[test]
     fn grid_cache_tracks_pan_zoom_and_palette() {
         let mut view = View {
@@ -1894,7 +1999,7 @@ mod rendering_tests {
 
     #[test]
     #[ignore = "requires a GTK display; run explicitly inside Niri or Xvfb"]
-    fn gpu_history_reveals_as_a_compact_card_and_selection_is_above_it() {
+    fn gpu_window_cards_keep_full_selection_outlines_and_foreground_gestures() {
         gtk::init().unwrap();
         let mut state = State::empty("/tmp".into());
         let mut node = Node::new(
@@ -1960,5 +2065,27 @@ mod rendering_tests {
             pixel(&visible, 500, 200, 120),
             pixel(&selected, 500, 200, 120)
         );
+        // Live window metadata used to overwrite the top and bottom selection.
+        view.drag = None;
+        view.selected = Some(state.nodes[0].id.clone());
+        view.theme.primary = super::super::theme::Color(1.0, 0.0, 0.0);
+        view.theme.outline = super::super::theme::Color(0.0, 1.0, 0.0);
+        state.nodes[0].window_id = Some(1);
+        let selected = render(&state, &view);
+        for (x, y) in [
+            (100, 100),
+            (80, 130),
+            (80, 230),
+            (80, 360),
+            (100, 373),
+            (371, 130),
+            (371, 360),
+        ] {
+            let rgb = pixel(&selected, 500, x, y);
+            assert!(
+                rgb & 0xff0000 > 0xaa0000 && rgb & 0x00ff00 < 0x002800,
+                "GPU selection at {x},{y}: {rgb:x}"
+            );
+        }
     }
 }

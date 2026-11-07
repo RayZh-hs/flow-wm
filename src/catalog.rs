@@ -1,7 +1,7 @@
 use crate::{
     engine::{Presentation, Snapshot},
     extensions::Macro,
-    model::{ColumnMode, NodeKind, Row, Status},
+    model::{ColumnMode, NodeKind, Row, RowView, Status},
 };
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +23,8 @@ pub struct CatalogWorkspace {
     pub name: String,
     pub nodes: usize,
     pub row: Option<Row>,
+    #[serde(default)]
+    pub view: RowView,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CatalogRecipe {
@@ -80,6 +82,7 @@ impl Catalog {
                     name: w.name.clone(),
                     nodes: state.nodes.iter().filter(|n| n.workspace == w.id).count(),
                     row: w.row.clone(),
+                    view: w.view,
                 })
                 .collect(),
             recipes: state

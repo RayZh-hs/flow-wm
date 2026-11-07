@@ -155,6 +155,10 @@ pub enum Control {
         id: String,
         mode: crate::model::ColumnMode,
     },
+    RowView {
+        workspace: String,
+        view: crate::model::RowView,
+    },
     ClearHistory,
     Chat {
         id: String,
@@ -643,6 +647,22 @@ impl Runtime {
                     }
                 }
             }
+            Control::RowView { workspace, view } => {
+                self.state
+                    .workspaces
+                    .iter_mut()
+                    .find(|w| w.id == workspace)
+                    .context("Workspace not found")?
+                    .view = view;
+                for node in &mut self.state.nodes {
+                    if node.workspace == workspace {
+                        node.column_mode = match view {
+                            RowView::Nodes => ColumnMode::Node,
+                            RowView::Windows => ColumnMode::Window,
+                        };
+                    }
+                }
+            }
             Control::ClearHistory => {
                 let ids: Vec<_> = self
                     .state
@@ -773,6 +793,7 @@ impl Runtime {
                     notes: String::new(),
                     row: None,
                     window_array: false,
+                    view: RowView::default(),
                 };
                 self.state.selected_workspace = workspace.id.clone();
                 self.state.workspaces.push(workspace);

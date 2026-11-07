@@ -84,6 +84,143 @@ impl Drop for Native {
 }
 
 #[test]
+#[ignore = "requires a GTK display; uses isolated state and simulated compositor events"]
+fn windowed_row_modes_restore_during_switches_and_after_restart() {
+    use flowwm::{catalog::Catalog, model::RowView};
+    let dir = tempfile::tempdir().unwrap();
+    let start = || {
+        let socket = dir.path().join("rows.sock");
+        let process = Command::new(env!("CARGO_BIN_EXE_flowwm"))
+            .env_remove("NIRI_SOCKET")
+            .arg("--socket")
+            .arg(&socket)
+            .arg("--data-dir")
+            .arg(dir.path().join("data"))
+            .args(["start", "--windowed", "--background"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let native = Native {
+            process,
+            socket,
+            workspace: None,
+            original_workspace: None,
+        };
+        let started = Instant::now();
+        while ipc::send(&native.socket, &Control::Status).is_err() {
+            assert!(started.elapsed() < Duration::from_secs(10));
+            thread::sleep(Duration::from_millis(20));
+        }
+        native
+    };
+    let wait = |native: &Native, row: u64, visible: bool| {
+        let started = Instant::now();
+        loop {
+            let catalog: Catalog = serde_json::from_value(
+                ipc::send(&native.socket, &serde_json::json!({"op":"catalog"})).unwrap(),
+            )
+            .unwrap();
+            let group = catalog
+                .workspaces
+                .iter()
+                .find(|w| w.id == catalog.selected_workspace)
+                .unwrap();
+            if group.row.as_ref().is_some_and(|r| r.id == row)
+                && catalog.presentation.graph_visible == visible
+            {
+                assert_eq!(
+                    group.view,
+                    if visible {
+                        RowView::Nodes
+                    } else {
+                        RowView::Windows
+                    }
+                );
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "row {row} did not restore visibility {visible}"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        thread::sleep(Duration::from_millis(250));
+    };
+    let mut desktop: flowwm::niri::Desktop = serde_json::from_value(serde_json::json!({
+        "session":"row-test", "connected":true, "windows_ready":true, "workspaces_ready":true,
+        "windows":[], "error":null,
+        "workspaces":[
+            {"id":10,"idx":1,"name":"Row 1","output":"DP-1","is_urgent":false,"is_active":true,"is_focused":true,"active_window_id":null},
+            {"id":20,"idx":2,"name":"Row 2","output":"DP-1","is_urgent":false,"is_active":false,"is_focused":false,"active_window_id":null}
+        ]
+    })).unwrap();
+    let native = start();
+    native.send(Control::SyncDesktop {
+        desktop: desktop.clone(),
+    });
+    wait(&native, 10, false);
+    let mut node = flowwm::model::Node::new(
+        &native.state().selected_workspace,
+        flowwm::model::NodeKind::Window,
+        dir.path().into(),
+        flowwm::model::Position { x: 80.0, y: 100.0 },
+    );
+    node.title = "Remember this selection".into();
+    let selected = node.id.clone();
+    native.send(Control::Create {
+        node: Box::new(node),
+    });
+    native.ui(UiCommand::Nodes);
+    wait(&native, 10, true);
+    native.ui(UiCommand::Select { id: selected });
+    let screenshots = dir.path().join("screenshots");
+    fs::create_dir_all(&screenshots).unwrap();
+    native.capture(&screenshots, "selected-before.png");
+    desktop.activate_row(20, true);
+    native.send(Control::SyncDesktop {
+        desktop: desktop.clone(),
+    });
+    wait(&native, 20, false);
+    native.ui(UiCommand::Toggle);
+    wait(&native, 20, true);
+    desktop.activate_row(10, true);
+    native.send(Control::SyncDesktop {
+        desktop: desktop.clone(),
+    });
+    wait(&native, 10, true);
+    native.capture(&screenshots, "selected-after.png");
+    assert_eq!(
+        fs::read(screenshots.join("selected-before.png")).unwrap(),
+        fs::read(screenshots.join("selected-after.png")).unwrap(),
+        "returning to a row must restore both its camera and selection"
+    );
+    native.ui(UiCommand::Toggle);
+    wait(&native, 10, false);
+    desktop.activate_row(20, true);
+    native.send(Control::SyncDesktop {
+        desktop: desktop.clone(),
+    });
+    wait(&native, 20, true);
+    // Interrupt several in-flight row slides, then check the final row again.
+    for row in [10, 20, 10, 20, 10, 20] {
+        desktop.activate_row(row, true);
+        native.send(Control::SyncDesktop {
+            desktop: desktop.clone(),
+        });
+        thread::sleep(Duration::from_millis(30));
+    }
+    wait(&native, 20, true);
+    if let Some(directory) = std::env::var_os("FLOWWM_SCREENSHOT_DIR") {
+        fs::create_dir_all(&directory).unwrap();
+        native.capture(Path::new(&directory), "row-restored.png");
+    }
+    drop(native);
+    let native = start();
+    wait(&native, 20, true);
+}
+
+#[test]
 #[ignore = "opens native Wayland surfaces; run explicitly inside Niri"]
 fn graph_dialogs_and_output_windows_are_native_niri_surfaces() {
     assert!(std::env::var_os("NIRI_SOCKET").is_some());

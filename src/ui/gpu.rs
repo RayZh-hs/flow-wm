@@ -261,7 +261,7 @@ pub fn render(
             if selected || (!view.query.is_empty() && matching) {
                 snapshot.append_border(
                     &outline,
-                    &[1.4 * view.zoom as f32; 4],
+                    &[2.0 * view.zoom as f32; 4],
                     &[color(view.theme.primary); 4],
                 );
             }
@@ -327,8 +327,7 @@ pub fn render(
             start.1 + (accent.1 - start.1) * t,
             start.2 + (accent.2 - start.2) * t,
         );
-        let line = (2.0 * (1.0 - t) + view.zoom * (if selected { 1.4 } else { 1.0 }) * t) as f32;
-        snapshot.append_border(&outline, &[line; 4], &[color(border); 4]);
+        let line = (2.0 * (1.0 - t) + view.zoom * (if selected { 2.0 } else { 1.0 }) * t) as f32;
         if t > 0.6 {
             snapshot.save();
             snapshot.translate(&graphene::Point::new(graph.x as f32, graph.y as f32));
@@ -338,6 +337,9 @@ pub fn render(
             snapshot.pop();
             snapshot.restore();
         }
+        // Metadata contains its own card background and inactive border. Paint
+        // the shared outline last so headers and footers cannot cover selection.
+        snapshot.append_border(&outline, &[line; 4], &[color(border); 4]);
         snapshot.pop();
     }
     // Selection and cut gestures must be above GPU window cards and previews.

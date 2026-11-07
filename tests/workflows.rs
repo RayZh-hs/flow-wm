@@ -14,6 +14,72 @@ struct Fixture {
     engine: Engine,
     dir: tempfile::TempDir,
 }
+
+#[test]
+fn row_view_changes_are_local_and_persist_across_restart() {
+    let f = Fixture::new();
+    let first = f.engine.snapshot().state.selected_workspace.clone();
+    let node = f.node(NodeKind::Human, "Notes");
+    f.add(&node);
+    f.engine
+        .request(Control::RowView {
+            workspace: first.clone(),
+            view: RowView::Nodes,
+        })
+        .unwrap();
+    f.engine
+        .request(Control::CreateWorkspace {
+            name: "Another row".into(),
+            cwd: f.dir.path().into(),
+        })
+        .unwrap();
+    let second = f.engine.snapshot().state.selected_workspace.clone();
+    assert_eq!(f.engine.snapshot().state.workspace().view, RowView::Windows);
+    f.engine
+        .request(Control::SelectWorkspace { id: first.clone() })
+        .unwrap();
+    assert_eq!(f.engine.snapshot().state.workspace().view, RowView::Nodes);
+    f.engine
+        .request(Control::RowView {
+            workspace: second.clone(),
+            view: RowView::Windows,
+        })
+        .unwrap();
+    assert_eq!(
+        f.engine
+            .snapshot()
+            .state
+            .node(&node.id)
+            .unwrap()
+            .column_mode,
+        ColumnMode::Node
+    );
+    f.engine.shutdown();
+    let state: State =
+        serde_json::from_slice(&fs::read(f.dir.path().join("data/state.json")).unwrap()).unwrap();
+    assert_eq!(state.workspace().view, RowView::Nodes);
+    assert_eq!(
+        state
+            .workspaces
+            .iter()
+            .find(|w| w.id == second)
+            .unwrap()
+            .view,
+        RowView::Windows
+    );
+    // Old state files migrate consistently, including the first row.
+    let mut legacy = serde_json::to_value(&state).unwrap();
+    for workspace in legacy["workspaces"].as_array_mut().unwrap() {
+        workspace.as_object_mut().unwrap().remove("view");
+    }
+    let migrated: State = serde_json::from_value(legacy).unwrap();
+    assert!(
+        migrated
+            .workspaces
+            .iter()
+            .all(|w| w.view == RowView::Windows)
+    );
+}
 impl Fixture {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
