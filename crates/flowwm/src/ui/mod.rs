@@ -2,6 +2,7 @@ mod canvas;
 mod collapse;
 mod gpu;
 mod layout;
+mod native;
 mod shell;
 mod surface;
 pub mod theme;

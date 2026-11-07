@@ -58,9 +58,9 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+pub mod node_row;
 pub mod socket;
 pub mod state;
-pub mod workspace_layer;
 
 /// Request from client to niri.
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -76,8 +76,17 @@ pub enum Request {
     Windows,
     /// Request information about layer-shell surfaces.
     Layers,
-    /// Probe support for workspace-local layer surfaces. Older compositors reject this request.
-    WorkspaceLayerSupport,
+    /// Probe the native node tile and workspace presentation contract.
+    NodeRowSupport,
+    /// Stage geometry for the next node canvas commit.
+    SetNodeRow {
+        /// Stable workspace ID to update.
+        workspace_id: u64,
+        /// Geometry to latch on the next canvas commit.
+        scene: node_row::NodeRowScene,
+    },
+    /// Inspect native node rows without treating their canvases as application windows.
+    NodeRows,
     /// Request information about the configured keyboard layouts.
     KeyboardLayouts,
     /// Request information about the focused output.
@@ -152,11 +161,13 @@ pub enum Response {
     Windows(Vec<Window>),
     /// Information about layer-shell surfaces.
     Layers(Vec<LayerSurface>),
-    /// Supported workspace-local layer protocol version (currently 1).
-    WorkspaceLayerSupport {
-        /// Namespace contract version understood by the compositor.
+    /// Supported native node tile contract.
+    NodeRowSupport {
+        /// Native content role and scene format version.
         version: u32,
     },
+    /// Stable IDs of workspaces currently presenting nodes.
+    NodeRows(Vec<u64>),
     /// Information about the keyboard layout.
     KeyboardLayouts(KeyboardLayouts),
     /// Information about the focused output.

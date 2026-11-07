@@ -875,6 +875,9 @@ impl XdgShellHandler for State {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        if self.niri.remove_node_canvas(surface.wl_surface()) {
+            return;
+        }
         if self
             .niri
             .unmapped_windows
@@ -1294,6 +1297,14 @@ impl State {
         // Figure out if the root is a window or a layer surface.
         if let Some((mapped, _)) = self.niri.layout.find_window_and_output(&root) {
             self.unconstrain_window_popup(popup, &mapped.window);
+        } else if let Some((_, _, ws)) = self.niri.layout.workspaces().find(|(_, _, ws)| {
+            ws.node_tile
+                .as_ref()
+                .is_some_and(|tile| tile.canvas.toplevel().unwrap().wl_surface() == &root)
+        }) {
+            let mut target = Rectangle::from_size(ws.node_canvas_geometry().size);
+            target.loc -= get_popup_toplevel_coords(popup).to_f64();
+            self.position_popup_within_rect(popup, target, true);
         } else if let Some((layer_surface, output)) = self.niri.layout.outputs().find_map(|o| {
             let map = layer_map_for_output(o);
             let layer_surface = map.layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)?;

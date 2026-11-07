@@ -626,6 +626,10 @@ impl LayoutElement for Mapped {
         &self.window
     }
 
+    fn node_window_id(&self) -> Option<u64> {
+        Some(self.id().get())
+    }
+
     fn update_config(&mut self, blur_config: niri_config::Blur) {
         self.blur_config = blur_config;
     }

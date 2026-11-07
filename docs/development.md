@@ -33,7 +33,7 @@ python3 scripts/dev.py test
 python3 scripts/dev.py nested --smoke
 ```
 
-`test` runs FlowWM's tests and strict Clippy, the workspace-layer and existing
+`test` runs FlowWM's tests and strict Clippy, the native node-row and existing
 layer-shell compositor tests, the IPC crate tests, and DMS's FlowWM catalog tests.
 `cargo test --locked` at the root runs just the application tests. For a complete
 compositor suite, use:
@@ -78,14 +78,16 @@ rows. Three-finger gestures use niri's normal implementation.
 
 `nested --smoke` uses temporary data, verifies the actual GTK client and compositor
 together, writes captures under `artifacts/native-workspace`, and closes its own
-processes. It checks that both Nodes surfaces stay mapped while switching rows,
-camera and selection return unchanged, and switching one row to Windows unmaps
-only that row.
+processes. It checks independent native row content, camera and selection restoration,
+live preview windows, overview, and the absence of capture workers or screencasts.
+Canvases must be absent from both the application window list and the layer stack.
+The runner exposes both compositor and GTK logs and uses the nested Wayland socket
+for every child, including control commands and compositor captures.
 
 Changing the compositor binary does not replace a running Wayland session.
 Build and validate in the nested runner, then use `target/niri/release/niri
---session` as the compositor command for the next graphical login. Existing niri
-sessions keep the companion fallback until they restart with the fork.
+--session` as the compositor command for the next graphical login. Integrated FlowWM refuses a compositor without the native node-row contract;
+build and start the matching compositor before updating the live shell.
 
 ## Source updates
 
@@ -127,25 +129,50 @@ Export creates a local branch containing only that subtree's history and prints
 an explicit push command. It never pushes. Inspect the branch before publishing;
 subtree exports preserve niri's and DMS's original repository structure.
 
-## Workspace-layer contract
+## Native node-row contract
 
-The compositor addition is isolated in `components/niri/src/workspace_layer.rs`.
-The IPC crate defines the namespace format and a `WorkspaceLayerSupport` probe.
-Version 1 attaches an overlay layer to a stable workspace ID using
-`niri-workspace-v1:<workspace-id>:<component-name>`. Invalid bindings are closed.
+`components/niri/src/node_row.rs` implements a workspace-owned `NodeTile` and
+live application projections. The workspace renderer chooses the node presentation
+in place of its normal scrolling and floating passes. Node rows skip normal column and tab preparation; only expanded clients prepare
+native window decorations. Application windows retain their native
+sizes, IDs, workspace assignments, and normal window layout for switching back.
 
-Niri renders these surfaces once in the workspace scene, using the same geometry,
-scale, spring, and overview transform as native windows. It translates hit tests
-with the workspace and grants keyboard focus only to the active row. Fixed shell
-panels and launchers keep their stacking and input priority. Invisible surfaces
-use niri's existing frame callback throttling.
+An undecorated xdg toplevel binds to a stable workspace ID with application ID
+`dev.flowwm.node-row.v1.<workspace-id>`. The role is admitted before normal window
+mapping, never added to a column or published as an application window, and closed
+if the binding is invalid or already occupied. GTK sets the ID after mapping its
+GDK surface because its own mapping path restores the ordinary application ID.
+A null canvas buffer restores the Windows presentation; destroying the toplevel
+removes the role. Losing the graph process therefore exposes the normal windows.
+Node-only rows retain their workspace and leave an empty trailing row available.
 
-FlowWM retains one mapped surface for every Nodes row. Row switches restore the
-active camera/selection without starting a second client-side slide. Window-card
-morphs, cached thumbnails, graph editing, persistence, and agent execution remain
-in the application. Per-row canvas snapshots omit agent logs and output and are
-cached by engine revision. Gestures produce no per-frame IPC or screen capture.
+The IPC crate defines `NodeRowSupport`, `SetNodeRow`, and `NodeRows`. Scene updates
+contain native window IDs, preview rectangles, expanded-client input flags, and
+shell insets. Niri validates the geometry, stages the latest update, and latches it
+on the matching canvas commit. The client reuses a socket and deduplicates unchanged
+scenes. Workspace swipes and overview produce no client-side slides, per-frame IPC,
+or screenshots. Window buffer commits update the live previews directly.
 
-The extension adds no event-stream variants, so existing niri/DMS consumers keep
-their normal event stream. Older compositors reject the support probe, and FlowWM
-then uses its existing fixed overlay and activation-driven transition.
+The canvas supplies graph editing, workflow cards, labels, and connection gestures,
+with transparent preview areas. Niri composes application buffers below that canvas
+and expanded-client popups above it, preserving the compositor's capture privacy
+rules. Native Nodes does not initialize the capture worker or copy the wallpaper.
+The compositor applies the same row transform, cropping, scale, wallpaper, and
+output lifecycle as it does for Windows rows. Keyboard focus belongs to the active
+canvas or expanded client; overview, lock surfaces, panels, and launchers retain
+their normal input priorities. Frame callbacks and presentation/DMABUF feedback
+use niri's existing visibility bookkeeping, including hidden-surface throttling.
+
+FlowWM retains one mapped canvas for every Nodes row. Row switches restore the
+active camera and selection. Per-row graph snapshots omit agent logs and output
+and are cached by engine revision. The normal niri/DMS event stream is unchanged;
+these additions are request/response extensions, so DMS's existing catalog and
+bar geometry bridge need no additional timers or frame traffic.
+
+The compositor regression tests exercise real xdg clients and the headless EGL
+renderer. They cover replacing the window layout, atomic scene latching, live
+preview geometry, mixed-client hit testing/focus, swipe reversal, overview, panel
+priority over an underlying fullscreen window, invalid/duplicate roles, unmapping,
+trailing empty rows, and output removal. `nested --smoke` adds the real GTK client;
+when `grim` is installed it also saves full compositor captures of live previews
+and overview.

@@ -16,6 +16,7 @@ pub mod ipc;
 pub mod layer;
 pub mod layout;
 pub mod niri;
+mod node_row;
 pub mod protocols;
 pub mod render_helpers;
 pub mod rubber_band;
@@ -24,7 +25,6 @@ pub mod screencasting;
 pub mod ui;
 pub mod utils;
 pub mod window;
-mod workspace_layer;
 
 #[cfg(test)]
 mod tests;

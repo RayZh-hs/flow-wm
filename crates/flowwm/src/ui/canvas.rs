@@ -119,6 +119,7 @@ enum Drag {
 #[derive(Clone)]
 pub struct View {
     pub gpu: bool,
+    pub native_nodes: bool,
     pub theme: Theme,
     pub selected: Option<String>,
     pub selection: HashSet<String>,
@@ -156,6 +157,7 @@ impl Default for View {
     fn default() -> Self {
         Self {
             gpu: false,
+            native_nodes: false,
             theme: Theme::load(),
             selected: None,
             selection: HashSet::new(),
@@ -304,6 +306,7 @@ impl View {
     pub fn for_row(&self, workspace: String) -> Self {
         Self {
             workspace,
+            native_nodes: self.native_nodes,
             theme: self.theme.clone(),
             images: self.images.clone(),
             image_textures: self.image_textures.clone(),
@@ -520,12 +523,25 @@ fn make_scoped(
     let e = engine.clone();
     let v = view.clone();
     let cache = RefCell::new(super::gpu::Cache::default());
+    let publisher = super::native::Publisher::default();
+    let on_map = publisher.clone();
     let scoped = RefCell::new(None::<(u64, State)>);
     let area = super::surface::Surface::new(move |snapshot, width, height| {
         let started = std::time::Instant::now();
         let state = e.snapshot();
         let revision = state.revision;
         let render = |state: &State, view: &View| {
+            if view.native_nodes
+                && let Some(row) = &state.workspace().row
+            {
+                publisher.publish(
+                    row.id,
+                    niri_ipc::node_row::NodeRowScene {
+                        windows: super::gpu::native_windows(state, view),
+                        insets: view.insets,
+                    },
+                );
+            }
             super::gpu::render(
                 snapshot,
                 width,
@@ -575,6 +591,7 @@ fn make_scoped(
         }
         e.performance.record("canvas_draw", started.elapsed());
     });
+    area.connect_map(move |_| on_map.invalidate());
     area.set_cursor_from_name(Some("default"));
     let click = gtk::GestureClick::new();
     click.set_button(1);

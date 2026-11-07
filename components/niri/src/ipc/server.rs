@@ -288,7 +288,35 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
             let windows = state.windows.windows.values().cloned().collect();
             Response::Windows(windows)
         }
-        Request::WorkspaceLayerSupport => Response::WorkspaceLayerSupport { version: 1 },
+        Request::NodeRowSupport => Response::NodeRowSupport { version: 1 },
+        Request::NodeRows => {
+            let (tx, rx) = async_channel::bounded(1);
+            ctx.event_loop.insert_idle(move |state| {
+                let rows = state
+                    .niri
+                    .layout
+                    .workspaces()
+                    .filter_map(|(_, _, ws)| ws.nodes_visible().then_some(ws.id().get()))
+                    .collect();
+                let _ = tx.try_send(Response::NodeRows(rows));
+            });
+            rx.recv().await.map_err(|e| e.to_string())?
+        }
+        Request::SetNodeRow {
+            workspace_id,
+            scene,
+        } => {
+            if !scene.validate() {
+                return Err("invalid node row geometry".into());
+            }
+            let (tx, rx) = async_channel::bounded(1);
+            ctx.event_loop.insert_idle(move |state| {
+                let result = state.niri.stage_node_row(workspace_id, scene);
+                let _ = tx.try_send(result);
+            });
+            rx.recv().await.map_err(|e| e.to_string())??;
+            Response::Handled
+        }
         Request::Layers => {
             let (tx, rx) = async_channel::bounded(1);
             ctx.event_loop.insert_idle(move |state| {

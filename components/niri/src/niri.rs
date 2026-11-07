@@ -96,6 +96,7 @@ use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerCons
 use smithay::wayland::pointer_gestures::PointerGesturesState;
 use smithay::wayland::presentation::PresentationState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
+use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::security_context::SecurityContextState;
 use smithay::wayland::selection::data_device::{set_data_device_selection, DataDeviceState};
 use smithay::wayland::selection::ext_data_control::DataControlState as ExtDataControlState;
@@ -1088,6 +1089,7 @@ impl State {
     /// Focus a specific window, taking care of a potential active output change and cursor
     /// warp.
     pub fn focus_window(&mut self, window: &Window) {
+        self.niri.focus_node_canvas(None);
         let active_output = self.niri.layout.active_output().cloned();
 
         self.niri.layout.activate_window(window);
@@ -1243,7 +1245,6 @@ impl State {
         if let Some(surface) = &self.niri.layer_shell_on_demand_focus {
             // Still alive and has on-demand interactivity.
             let mut good = surface.alive()
-                && self.niri.workspace_layer_active(surface)
                 && surface.cached_state().keyboard_interactivity
                     == wlr_layer::KeyboardInteractivity::OnDemand;
 
@@ -1282,10 +1283,7 @@ impl State {
             let layer_grab = self.niri.popup_grab.as_ref().and_then(|g| {
                 layers
                     .layer_for_surface(&g.root, WindowSurfaceType::TOPLEVEL)
-                    .and_then(|l| {
-                        (l.can_receive_keyboard_focus() && self.niri.workspace_layer_active(l))
-                            .then(|| (&g.root, l.layer()))
-                    })
+                    .and_then(|l| l.can_receive_keyboard_focus().then(|| (&g.root, l.layer())))
             });
             let grab_on_layer = |layer: Layer| {
                 layer_grab
@@ -1294,6 +1292,11 @@ impl State {
             };
 
             let layout_focus = || {
+                if let Some(surface) = self.niri.node_canvas_focus() {
+                    return Some(KeyboardFocus::Layout {
+                        surface: Some(surface),
+                    });
+                }
                 self.niri
                     .layout
                     .focus()
@@ -1303,18 +1306,8 @@ impl State {
                     })
             };
 
-            let excl_focus_on_layer = |layer, workspace| {
+            let excl_focus_on_layer = |layer| {
                 layers.layers_on(layer).rev().find_map(|surface| {
-                    if surface
-                        .namespace()
-                        .starts_with(niri_ipc::workspace_layer::PREFIX)
-                        != workspace
-                    {
-                        return None;
-                    }
-                    if !self.niri.workspace_layer_active(surface) {
-                        return None;
-                    }
                     if surface.cached_state().keyboard_interactivity
                         != wlr_layer::KeyboardInteractivity::Exclusive
                     {
@@ -1331,18 +1324,10 @@ impl State {
                 })
             };
 
-            let on_d_focus_on_layer = |layer, workspace| {
+            let on_d_focus_on_layer = |layer| {
                 layers.layers_on(layer).rev().find_map(|surface| {
-                    if surface
-                        .namespace()
-                        .starts_with(niri_ipc::workspace_layer::PREFIX)
-                        != workspace
-                    {
-                        return None;
-                    }
-                    let is_on_demand_surface = Some(surface)
-                        == self.niri.layer_shell_on_demand_focus.as_ref()
-                        && self.niri.workspace_layer_active(surface);
+                    let is_on_demand_surface =
+                        Some(surface) == self.niri.layer_shell_on_demand_focus.as_ref();
                     is_on_demand_surface
                         .then(|| surface.wl_surface().clone())
                         .map(|surface| KeyboardFocus::LayerShell { surface })
@@ -1350,13 +1335,8 @@ impl State {
             };
 
             // Prefer exclusive focus on a layer, then check on-demand focus.
-            let focus_on_layer = |layer| {
-                excl_focus_on_layer(layer, false).or_else(|| on_d_focus_on_layer(layer, false))
-            };
-            let workspace_focus = || {
-                excl_focus_on_layer(Layer::Overlay, true)
-                    .or_else(|| on_d_focus_on_layer(Layer::Overlay, true))
-            };
+            let focus_on_layer =
+                |layer| excl_focus_on_layer(layer).or_else(|| on_d_focus_on_layer(layer));
 
             let is_overview_open = self.niri.layout.is_overview_open();
 
@@ -1374,7 +1354,6 @@ impl State {
             surface = surface.or_else(|| focus_on_layer(Layer::Overlay));
 
             if mon.render_above_top_layer() {
-                surface = surface.or_else(workspace_focus);
                 surface = surface.or_else(layout_focus);
                 surface = surface.or_else(|| focus_on_layer(Layer::Top));
                 surface = surface.or_else(|| focus_on_layer(Layer::Bottom));
@@ -1386,15 +1365,14 @@ impl State {
                     surface = Some(surface.unwrap_or(KeyboardFocus::Overview));
                 }
 
-                surface = surface.or_else(workspace_focus);
-                surface = surface.or_else(|| on_d_focus_on_layer(Layer::Bottom, false));
-                surface = surface.or_else(|| on_d_focus_on_layer(Layer::Background, false));
+                surface = surface.or_else(|| on_d_focus_on_layer(Layer::Bottom));
+                surface = surface.or_else(|| on_d_focus_on_layer(Layer::Background));
                 surface = surface.or_else(layout_focus);
 
                 // Bottom and background layers can only receive exclusive focus when there are no
                 // layout windows.
-                surface = surface.or_else(|| excl_focus_on_layer(Layer::Bottom, false));
-                surface = surface.or_else(|| excl_focus_on_layer(Layer::Background, false));
+                surface = surface.or_else(|| excl_focus_on_layer(Layer::Bottom));
+                surface = surface.or_else(|| excl_focus_on_layer(Layer::Background));
             }
 
             surface.unwrap_or(KeyboardFocus::Layout { surface: None })
@@ -3302,12 +3280,6 @@ impl Niri {
                 .layers_on(layer)
                 .rev()
                 .find_map(|layer| {
-                    if layer
-                        .namespace()
-                        .starts_with(niri_ipc::workspace_layer::PREFIX)
-                    {
-                        return None;
-                    }
                     let mapped = self.mapped_layer_surfaces.get(layer)?;
 
                     let mut layer_pos_within_output =
@@ -3356,10 +3328,7 @@ impl Niri {
             return false;
         }
         let layers = layer_map_for_output(output);
-        if self
-            .workspace_layer_under(output, pos_within_output, &layers)
-            .is_some()
-        {
+        if self.node_canvas_under(output, pos_within_output).is_some() {
             return true;
         }
 
@@ -3531,12 +3500,6 @@ impl Niri {
                 .layers_on(layer)
                 .rev()
                 .find_map(|layer_surface| {
-                    if layer_surface
-                        .namespace()
-                        .starts_with(niri_ipc::workspace_layer::PREFIX)
-                    {
-                        return None;
-                    }
                     let mapped = self.mapped_layer_surfaces.get(layer_surface)?;
                     if mapped.place_within_backdrop() {
                         return None;
@@ -3604,9 +3567,9 @@ impl Niri {
                 .window_under(output, pos_within_output)
                 .map(mapped_hit_data)
         };
-        let workspace_layer_under = || {
-            self.workspace_layer_under(output, pos_within_output, &layers)
-                .map(|hit| (Some((hit.surface, hit.position)), (None, Some(hit.layer))))
+        let node_canvas_under = || {
+            self.node_canvas_under(output, pos_within_output)
+                .map(|hit| (Some(hit), (None, None)))
         };
 
         let mon = self.layout.monitor_for_output(output).unwrap();
@@ -3621,8 +3584,8 @@ impl Niri {
         if mon.render_above_top_layer() {
             under = under
                 .or_else(interactive_moved_window_under)
-                .or_else(workspace_layer_under)
                 .or_else(window_under)
+                .or_else(node_canvas_under)
                 .or_else(|| layer_popup_under(Layer::Top))
                 .or_else(|| layer_toplevel_under(Layer::Top))
                 .or_else(|| layer_popup_under(Layer::Bottom))
@@ -3640,7 +3603,6 @@ impl Niri {
                 .or_else(|| layer_toplevel_under(Layer::Top));
 
             under = under.or_else(interactive_moved_window_under);
-            under = under.or_else(workspace_layer_under);
 
             if !is_overview_open {
                 under = under
@@ -3648,7 +3610,7 @@ impl Niri {
                     .or_else(|| layer_popup_under(Layer::Background));
             }
 
-            under = under.or_else(window_under);
+            under = under.or_else(window_under).or_else(node_canvas_under);
 
             if !is_overview_open {
                 under = under
@@ -3849,6 +3811,13 @@ impl Niri {
             return output;
         }
 
+        if let Some((_, _, ws)) = self.layout.workspaces().find(|(_, _, ws)| {
+            ws.node_tile
+                .as_ref()
+                .is_some_and(|t| t.canvas.wl_surface().as_deref() == Some(root))
+        }) {
+            return ws.current_output();
+        }
         // Check layer-shell.
         let has_layer_surface = |o: &&Output| {
             layer_map_for_output(o)
@@ -4578,7 +4547,6 @@ impl Niri {
 
             mon.render_insert_hint_between_workspaces(ctx.renderer, &mut |elem| push(elem.into()));
 
-            self.render_workspace_layers(ctx.r(), output, &layer_map, push);
             mon.render_workspaces(ctx.r(), focus_ring, &mut |elem| push(elem.into()));
 
             push_popups_from_layer!(Layer::Top);
@@ -4602,7 +4570,6 @@ impl Niri {
 
             mon.render_insert_hint_between_workspaces(ctx.renderer, &mut |elem| push(elem.into()));
 
-            self.render_workspace_layers(ctx.r(), output, &layer_map, push);
             // Macro instead of closure to avoid borrowing push().
             macro_rules! process {
                 ($geo:expr) => {{
@@ -4744,12 +4711,6 @@ impl Niri {
     ) -> impl Iterator<Item = (&'a MappedLayer, Rectangle<i32, Logical>)> {
         // LayerMap returns layers in reverse stacking order.
         layer_map.layers_on(layer).rev().filter_map(move |surface| {
-            if surface
-                .namespace()
-                .starts_with(niri_ipc::workspace_layer::PREFIX)
-            {
-                return None;
-            }
             let mapped = self.mapped_layer_surfaces.get(surface)?;
 
             if for_backdrop != mapped.place_within_backdrop() {
@@ -5014,6 +4975,25 @@ impl Niri {
         // The reason to do this at all is that it keeps track of whether the surface is visible or
         // not in a unified way with the pointer surfaces, which makes the logic elsewhere simpler.
 
+        for (_, _, ws) in self
+            .layout
+            .workspaces()
+            .filter(|(mon, _, _)| mon.is_some_and(|m| m.output() == output))
+        {
+            if let Some(tile) = &ws.node_tile {
+                tile.canvas.with_surfaces(|surface, states| {
+                    update_surface_primary_scanout_output(
+                        surface,
+                        output,
+                        states,
+                        None,
+                        render_element_states,
+                        |_, _, output, _| output,
+                    );
+                });
+            }
+        }
+
         for mapped in self.layout.windows_for_output(output) {
             let win = &mapped.window;
             let offscreen_data = mapped.offscreen_data();
@@ -5172,6 +5152,27 @@ impl Niri {
             );
         }
 
+        for (_, _, ws) in self
+            .layout
+            .workspaces()
+            .filter(|(mon, _, _)| mon.is_some_and(|m| m.output() == output))
+        {
+            if let Some(tile) = &ws.node_tile {
+                tile.canvas.send_dmabuf_feedback(
+                    output,
+                    surface_primary_scanout_output,
+                    |surface, _| {
+                        select_dmabuf_feedback(
+                            surface,
+                            render_element_states,
+                            &feedback.render,
+                            &feedback.scanout,
+                        )
+                    },
+                );
+            }
+        }
+
         for surface in layer_map_for_output(output).layers() {
             surface.send_dmabuf_feedback(
                 output,
@@ -5286,6 +5287,21 @@ impl Niri {
             );
         }
 
+        for (_, _, ws) in self
+            .layout
+            .workspaces()
+            .filter(|(mon, _, _)| mon.is_some_and(|m| m.output() == output))
+        {
+            if let Some(tile) = &ws.node_tile {
+                tile.canvas.send_frame(
+                    output,
+                    frame_callback_time,
+                    FRAME_CALLBACK_THROTTLE,
+                    should_send,
+                );
+            }
+        }
+
         for surface in layer_map_for_output(output).layers() {
             surface.send_frame(
                 output,
@@ -5352,6 +5368,17 @@ impl Niri {
                 |_, _| None,
             );
         });
+
+        for (_, _, ws) in self.layout.workspaces() {
+            if let Some(tile) = &ws.node_tile {
+                tile.canvas.send_frame(
+                    output,
+                    frame_callback_time,
+                    FRAME_CALLBACK_THROTTLE,
+                    |_, _| None,
+                );
+            }
+        }
 
         for (output, state) in self.output_state.iter() {
             for surface in layer_map_for_output(output).layers() {
@@ -5444,6 +5471,26 @@ impl Niri {
                     )
                 },
             )
+        }
+
+        for (_, _, ws) in self
+            .layout
+            .workspaces()
+            .filter(|(mon, _, _)| mon.is_some_and(|m| m.output() == output))
+        {
+            if let Some(tile) = &ws.node_tile {
+                tile.canvas.take_presentation_feedback(
+                    &mut feedback,
+                    surface_primary_scanout_output,
+                    |surface, _| {
+                        surface_presentation_feedback_flags_from_states(
+                            surface,
+                            None,
+                            render_element_states,
+                        )
+                    },
+                );
+            }
         }
 
         for surface in layer_map_for_output(output).layers() {

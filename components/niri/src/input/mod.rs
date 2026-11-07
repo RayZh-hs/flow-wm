@@ -3056,6 +3056,13 @@ impl State {
         self.update_pointer_contents();
 
         if ButtonState::Pressed == button_state {
+            let surface = self
+                .niri
+                .pointer_contents
+                .surface
+                .as_ref()
+                .map(|(s, _)| s.clone());
+            self.niri.focus_node_canvas(surface.as_ref());
             let layer_under = self.niri.pointer_contents.layer.clone();
             self.niri.focus_layer_surface_if_on_demand(layer_under);
         }
@@ -3798,6 +3805,8 @@ impl State {
                             // FIXME: granular.
                             self.niri.queue_redraw_all();
                         }
+                        self.niri
+                            .focus_node_canvas(under.surface.as_ref().map(|(s, _)| s));
                         self.niri.focus_layer_surface_if_on_demand(under.layer);
                     }
                 }
@@ -4409,6 +4418,8 @@ impl State {
                 // FIXME: granular.
                 self.niri.queue_redraw_all();
             }
+            self.niri
+                .focus_node_canvas(under.surface.as_ref().map(|(s, _)| s));
             self.niri.focus_layer_surface_if_on_demand(under.layer);
         };
 

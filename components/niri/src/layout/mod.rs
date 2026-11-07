@@ -135,6 +135,10 @@ pub trait LayoutElement {
     /// Unique ID of this element.
     fn id(&self) -> &Self::Id;
 
+    fn node_window_id(&self) -> Option<u64> {
+        None
+    }
+
     /// Updates the config for the element.
     fn update_config(&mut self, blur_config: niri_config::Blur) {
         let _ = blur_config;
@@ -1793,6 +1797,27 @@ impl<W: LayoutElement> Layout<W> {
         };
 
         monitors.iter()
+    }
+
+    pub(crate) fn ensure_node_row_space(&mut self) {
+        let empty_above = self.options.layout.empty_workspace_above_first;
+        for mon in self.monitors_mut() {
+            if mon
+                .workspaces
+                .last()
+                .is_some_and(|ws| ws.node_tile.is_some())
+            {
+                mon.add_workspace_bottom();
+            }
+            if empty_above
+                && mon
+                    .workspaces
+                    .first()
+                    .is_some_and(|ws| ws.node_tile.is_some())
+            {
+                mon.add_workspace_top();
+            }
+        }
     }
 
     pub fn monitors_mut(&mut self) -> impl Iterator<Item = &mut Monitor<W>> + '_ {

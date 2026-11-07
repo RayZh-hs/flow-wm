@@ -9,6 +9,7 @@ use niri_config::{
 use niri_ipc::{ColumnDisplay, PositionChange, SizeChange, WindowLayout};
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::desktop::space::SpaceElement;
 use smithay::desktop::{layer_map_for_output, Window};
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
@@ -45,6 +46,10 @@ use crate::window::ResolvedWindowRules;
 
 #[derive(Debug)]
 pub struct Workspace<W: LayoutElement> {
+    /// Native alternate presentation of this workspace's tiles.
+    pub(crate) node_tile: Option<crate::node_row::NodeTile>,
+    pub(crate) pending_node_scene: Option<niri_ipc::node_row::NodeRowScene>,
+
     /// The scrollable-tiling layout.
     scrolling: ScrollingSpace<W>,
 
@@ -147,6 +152,7 @@ niri_render_elements! {
     WorkspaceRenderElement<R> => {
         Scrolling = ScrollingSpaceRenderElement<R>,
         Floating = FloatingSpaceRenderElement<R>,
+        Node = crate::node_row::NodeRenderElement<R>,
     }
 }
 
@@ -259,6 +265,8 @@ impl<W: LayoutElement> Workspace<W> {
             compute_workspace_shadow_config(options.overview.workspace_shadow, view_size);
 
         Self {
+            node_tile: None,
+            pending_node_scene: None,
             scrolling,
             floating,
             floating_is_active: FloatingActive::No,
@@ -321,6 +329,8 @@ impl<W: LayoutElement> Workspace<W> {
             compute_workspace_shadow_config(options.overview.workspace_shadow, view_size);
 
         Self {
+            node_tile: None,
+            pending_node_scene: None,
             scrolling,
             floating,
             floating_is_active: FloatingActive::No,
@@ -358,7 +368,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn has_windows_or_name(&self) -> bool {
-        self.has_windows() || self.name.is_some()
+        self.has_windows() || self.name.is_some() || self.node_tile.is_some()
     }
 
     pub fn scale(&self) -> smithay::output::Scale {
@@ -379,6 +389,39 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn update_render_elements(&mut self, is_active: bool, layer: RenderLayer) {
+        if self.nodes_visible() {
+            // Only expanded clients need native decorations; previews bypass the tab layout.
+            if layer.is_normal() {
+                let origin = self.node_canvas_geometry().loc;
+                let view_size = self.view_size;
+                let entries = self.node_tile.as_ref().unwrap().scene.windows.clone();
+                let graph_focus = self.node_tile.as_ref().unwrap().graph_focused;
+                let focused = self.active_window().and_then(|w| w.node_window_id());
+                for tile in self.tiles_mut() {
+                    let Some(entry) = entries
+                        .iter()
+                        .find(|w| w.expanded && Some(w.id) == tile.window().node_window_id())
+                    else {
+                        continue;
+                    };
+                    let pos =
+                        origin + Point::from((entry.bounds.0, entry.bounds.1)) - tile.window_loc();
+                    let view_rect = Rectangle::new(pos.upscale(-1.), view_size);
+                    tile.update_render_elements(
+                        is_active && !graph_focus && tile.window().node_window_id() == focused,
+                        view_rect,
+                    );
+                }
+                self.shadow.update_render_elements(
+                    self.view_size,
+                    true,
+                    CornerRadius::default(),
+                    self.scale.fractional_scale(),
+                    1.,
+                );
+            }
+            return;
+        }
         self.scrolling
             .update_render_elements(is_active && !self.floating_is_active.get(), layer);
 
@@ -511,6 +554,9 @@ impl<W: LayoutElement> Workspace<W> {
         }
 
         if let Some(output) = self.output.take() {
+            if let Some(tile) = &self.node_tile {
+                tile.canvas.output_leave(&output);
+            }
             for win in self.windows() {
                 win.output_leave(&output);
             }
@@ -527,6 +573,12 @@ impl<W: LayoutElement> Workspace<W> {
             }
 
             self.update_output_size();
+            if let Some(tile) = &self.node_tile {
+                tile.canvas.output_enter(
+                    self.output.as_ref().unwrap(),
+                    Rectangle::from_size(self.view_size.to_i32_round()),
+                );
+            }
 
             for win in self.windows() {
                 self.enter_output_for_window(win);
@@ -1663,6 +1715,12 @@ impl<W: LayoutElement> Workspace<W> {
         layer: RenderLayer,
         push: &mut dyn FnMut(WorkspaceRenderElement<R>),
     ) {
+        if self.nodes_visible() {
+            if layer.is_normal() {
+                self.render_nodes(ctx, xray_pos, push);
+            }
+            return;
+        }
         let scrolling_focus_ring = focus_ring && !self.floating_is_active();
         self.scrolling
             .render(ctx, xray_pos, scrolling_focus_ring, layer, &mut |elem| {
@@ -1678,6 +1736,9 @@ impl<W: LayoutElement> Workspace<W> {
         layer: RenderLayer,
         push: &mut dyn FnMut(WorkspaceRenderElement<R>),
     ) {
+        if self.nodes_visible() {
+            return;
+        }
         if !self.is_floating_visible() && layer.is_normal() {
             return;
         }
@@ -1712,7 +1773,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn render_above_top_layer(&self) -> bool {
-        self.scrolling.render_above_top_layer()
+        !self.nodes_visible() && self.scrolling.render_above_top_layer()
     }
 
     pub fn is_floating_visible(&self) -> bool {
@@ -1795,6 +1856,9 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn window_under(&self, pos: Point<f64, Logical>) -> Option<(&W, HitType)> {
+        if self.nodes_visible() {
+            return self.node_window_under(pos);
+        }
         // This logic is consistent with tiles_with_render_positions().
         if self.is_floating_visible() {
             if let Some(rv) = self
@@ -1810,6 +1874,9 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn resize_edges_under(&self, pos: Point<f64, Logical>) -> Option<ResizeEdge> {
+        if self.nodes_visible() {
+            return None;
+        }
         self.tiles_with_render_positions()
             .find_map(|(tile, tile_pos, visible)| {
                 // This logic should be consistent with window_under() in when it returns Some vs.
@@ -1852,6 +1919,20 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn refresh(&mut self, is_active: bool, is_focused: bool) {
+        let focused = self
+            .active_window()
+            .and_then(|window| window.node_window_id());
+        if let Some(tile) = &mut self.node_tile {
+            let graph_focus = tile.graph_focused
+                || !tile
+                    .scene
+                    .windows
+                    .iter()
+                    .any(|w| w.expanded && Some(w.id) == focused);
+            tile.canvas
+                .set_activated(is_focused && tile.mapped && graph_focus);
+        }
+        self.refresh_node_tile();
         self.scrolling
             .refresh(is_active && !self.floating_is_active.get(), is_focused);
         self.floating

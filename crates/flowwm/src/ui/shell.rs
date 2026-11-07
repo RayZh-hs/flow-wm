@@ -36,6 +36,7 @@ pub fn run(
     let error = fatal.clone();
     application.connect_activate(move |app| {
         if !options.windowed && !gtk4_layer_shell::is_supported() { *error.borrow_mut() = Some("A Wayland compositor with layer-shell is required. Run inside Niri, or use `flowwm start --windowed` for development.".to_string()); app.quit(); return; }
+        if options.integrated && !options.windowed && !niri::node_rows_supported() { *error.borrow_mut() = Some("Native Nodes rows require FlowWM's bundled niri. Build it with `python3 scripts/dev.py build niri --release` and use that compositor at the next graphical login.".to_string()); app.quit(); return; }
         let provider = gtk::CssProvider::new(); provider.load_from_string(&Theme::load().css());
         if let Some(display) = gdk::Display::default() { gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION); }
         if let Some(settings) = gtk::Settings::default() {
@@ -47,6 +48,7 @@ pub fn run(
         }
         let stop = Arc::new(AtomicBool::new(false)); let desktop = niri::listen(stop.clone(), options.integrated.then(|| engine.clone()));
         let shell = Shell::build(app, engine.clone(), macros.clone(), options, desktop);
+        shell.view.borrow_mut().native_nodes = shell.native_nodes;
         gtk::prelude::WidgetExt::realize(&shell.window());
         if let Some(renderer) = shell.window().renderer() { eprintln!("FlowWM renderer: {}", renderer.type_().name()); }
         for path in Theme::paths() {
@@ -56,7 +58,7 @@ pub fn run(
                     let w = shell.weak.clone(); let provider = provider.clone();
                     monitor.connect_changed(move |_, file, _, _| {
                         if file.basename().is_some_and(|name| name.as_os_str() == "dms-colors.json" || name.as_os_str() == "settings.json" || name.as_os_str() == "session.json") && let Some(shell) = w.upgrade() {
-                            let theme = Theme::load(); provider.load_from_string(&theme.css()); shell.view.borrow_mut().theme = theme; shell.ensure_row_surfaces(&shell.engine.snapshot().state); shell.apply_insets(); shell.captures.request(shell.desktop.lock().unwrap().clone(),false); shell.canvas().queue_draw();
+                            let theme = Theme::load(); provider.load_from_string(&theme.css()); shell.view.borrow_mut().theme = theme; shell.ensure_row_surfaces(&shell.engine.snapshot().state); shell.apply_insets(); shell.request_captures(false); shell.canvas().queue_draw();
                         }
                     });
                     shell.theme_monitors.borrow_mut().push(monitor);
@@ -171,7 +173,7 @@ struct Shell {
     last_workspace: RefCell<String>,
     row_views: canvas::RowViews,
     row_surfaces: RefCell<HashMap<String, RowSurface>>,
-    workspace_layers: bool,
+    native_nodes: bool,
     displayed_row: RefCell<Option<Row>>,
     windowed: bool,
     theme_monitors: RefCell<Vec<gio::FileMonitor>>,
@@ -183,7 +185,7 @@ struct Shell {
     return_window: Cell<Option<u64>>,
     bar_geometry: RefCell<HashMap<String, [i32; 4]>>,
     fallback_content: gtk::Box,
-    captures: super::collapse::Captures,
+    captures: Option<super::collapse::Captures>,
     chat: RefCell<Option<ChatUi>>,
     search_popup: RefCell<Option<gtk::Window>>,
     centered: Cell<bool>,
@@ -212,7 +214,7 @@ impl Shell {
     }
 
     fn content(&self) -> gtk::Widget {
-        if self.workspace_layers {
+        if self.native_nodes {
             self.canvas().upcast()
         } else {
             self.fallback_content.clone().upcast()
@@ -220,7 +222,7 @@ impl Shell {
     }
 
     fn ensure_row_surfaces(&self, state: &State) -> bool {
-        if !self.workspace_layers {
+        if !self.native_nodes {
             return false;
         }
         let desktop = self.desktop.lock().unwrap().clone();
@@ -253,15 +255,8 @@ impl Shell {
                     .build();
                 window.add_css_class("flow-shell");
                 window.add_css_class("integrated");
-                window.init_layer_shell();
-                window.set_namespace(Some(&niri_ipc::workspace_layer::namespace(
-                    row.id, "flowwm",
-                )));
-                window.set_layer(Layer::Overlay);
-                window.set_exclusive_zone(-1);
-                for edge in [Edge::Top, Edge::Right, Edge::Bottom, Edge::Left] {
-                    window.set_anchor(edge, true);
-                }
+                window.set_decorated(false);
+                super::native::bind(&window, row.id);
                 let weak = self.weak.clone();
                 let workspace = group.id.clone();
                 let canvas = canvas::make_row(
@@ -319,38 +314,17 @@ impl Shell {
             let Some(surface) = surfaces.get(&group.id) else {
                 continue;
             };
-            if surface.window.monitor().as_ref() != Some(&monitor) {
-                surface.window.set_monitor(Some(&monitor));
-            }
             let insets = row
                 .output
                 .as_ref()
                 .and_then(|o| self.bar_geometry.borrow().get(o).copied())
                 .unwrap_or_else(Theme::desktop_insets);
-            for (edge, margin) in [Edge::Top, Edge::Right, Edge::Bottom, Edge::Left]
-                .into_iter()
-                .zip(insets)
-            {
-                if surface.window.margin(edge) != margin {
-                    surface.window.set_margin(edge, margin);
-                }
-            }
-            let mixed = state.nodes.iter().any(|n| {
-                n.workspace == group.id
-                    && n.window_id.is_some()
-                    && n.column_mode == ColumnMode::Window
-            });
-            let keyboard = if group.view == RowView::Windows {
-                KeyboardMode::None
-            } else if mixed {
-                KeyboardMode::OnDemand
-            } else {
-                KeyboardMode::Exclusive
-            };
-            if surface.window.keyboard_mode() != keyboard {
-                surface.window.set_keyboard_mode(keyboard);
-            }
             if group.id != state.selected_workspace {
+                let mixed = state.nodes.iter().any(|n| {
+                    n.workspace == group.id
+                        && n.window_id.is_some()
+                        && n.column_mode == ColumnMode::Window
+                });
                 surface.window.set_visible(group.view == RowView::Nodes);
                 let mut views = self.row_views.borrow_mut();
                 let saved = views
@@ -360,6 +334,7 @@ impl Shell {
                 let geometry = monitor.geometry();
                 saved.output_size = (geometry.width() as f64, geometry.height() as f64);
                 saved.transparent = true;
+                saved.native_nodes = true;
                 saved.chrome = 1.0;
                 saved.morphing = false;
                 saved.presentations.clear();
@@ -434,7 +409,7 @@ impl Shell {
             .title("FlowWM bar")
             .build();
         bar.add_css_class("flow-bar");
-        if !windowed {
+        if !windowed && !options.integrated {
             window.init_layer_shell();
             window.set_namespace(Some("flowwm-graph"));
             window.set_layer(Layer::Overlay);
@@ -609,9 +584,7 @@ impl Shell {
                 last_workspace: RefCell::new(String::new()),
                 row_views: Rc::new(RefCell::new(HashMap::new())),
                 row_surfaces: RefCell::new(HashMap::new()),
-                workspace_layers: options.integrated
-                    && !windowed
-                    && niri::workspace_layers_supported(),
+                native_nodes: options.integrated && !windowed,
                 displayed_row: RefCell::new(None),
                 windowed,
                 theme_monitors: RefCell::new(vec![]),
@@ -623,7 +596,8 @@ impl Shell {
                 return_window: Cell::new(None),
                 bar_geometry: RefCell::new(HashMap::new()),
                 fallback_content: root.clone(),
-                captures: super::collapse::Captures::new(engine.clone()),
+                captures: (!options.integrated || windowed)
+                    .then(|| super::collapse::Captures::new(engine.clone())),
                 chat: RefCell::new(None),
                 search_popup: RefCell::new(None),
                 centered: Cell::new(false),
@@ -711,7 +685,7 @@ impl Shell {
         clear(&self.inspector);
         self.inspector.set_visible(false);
         *self.panel.borrow_mut() = None;
-        if !self.windowed && self.graph_visible.get() {
+        if !self.windowed && !self.native_nodes && self.graph_visible.get() {
             let state = self.engine.snapshot().state;
             let mixed = state.nodes.iter().any(|n| {
                 n.workspace == state.selected_workspace
@@ -790,7 +764,7 @@ impl Shell {
         )
     }
     fn apply_insets(&self) {
-        if self.windowed || !self.integrated {
+        if self.windowed || !self.integrated || self.native_nodes {
             return;
         }
         let margins = self.current_insets();
@@ -832,6 +806,7 @@ impl Shell {
             .map(|m| m.geometry())
             .unwrap_or_else(|| gdk::Rectangle::new(0, 0, 1920, 1080));
         if !self.windowed
+            && !self.native_nodes
             && let Some(monitor) = monitor
         {
             self.window().set_monitor(Some(&monitor));
@@ -841,6 +816,7 @@ impl Shell {
         view.insets = insets;
         view.output_size = (geometry.width() as f64, geometry.height() as f64);
         view.transparent = !self.windowed;
+        view.native_nodes = self.native_nodes;
         view.desktop_rects = super::collapse::rectangles(
             &desktop,
             &self.engine.snapshot().state,
@@ -872,11 +848,19 @@ impl Shell {
         }
         surface.set_input_region(Some(&region));
     }
+    fn request_captures(&self, refresh: bool) {
+        if let Some(captures) = &self.captures {
+            captures.request(self.desktop.lock().unwrap().clone(), refresh);
+        }
+    }
     fn collect_images(&self) {
         if self.view.borrow().morphing {
             return;
         }
-        let images = std::mem::take(&mut *self.captures.ready.lock().unwrap());
+        let Some(captures) = &self.captures else {
+            return;
+        };
+        let images = std::mem::take(&mut *captures.ready.lock().unwrap());
         let state = self.engine.snapshot().state;
         let mut view = self.view.borrow_mut();
         for image in images {
@@ -905,7 +889,8 @@ impl Shell {
         self.transition_serial.set(self.transition_serial.get() + 1);
         let serial = self.transition_serial.get();
         let was_visible = self.graph_visible.replace(visible);
-        let was_mapped = self.window().is_visible();
+        let was_mapped =
+            self.window().is_visible() && (!self.native_nodes || !visible || was_visible);
         let chrome_from = if was_mapped {
             self.view.borrow().chrome
         } else {
@@ -1053,7 +1038,7 @@ impl Shell {
         self.content().set_opacity(1.0);
         self.window().set_opacity(1.0);
         self.bar.set_visible(false);
-        if !self.windowed {
+        if !self.windowed && !self.native_nodes {
             self.window().set_keyboard_mode(if visible {
                 KeyboardMode::Exclusive
             } else {
@@ -1126,7 +1111,7 @@ impl Shell {
                 (elapsed / duration).clamp(0.0, 1.0)
             };
             let eased = progress * progress * (3.0 - 2.0 * progress);
-            let fade = if duration == 0.0 {
+            let fade = if duration == 0.0 || shell.native_nodes {
                 0.0
             } else {
                 1.0 - ((elapsed - duration) / 65.0).clamp(0.0, 1.0)
@@ -1175,14 +1160,13 @@ impl Shell {
                     shell.view.borrow_mut().morphing = false;
                     shell.collect_images();
                     if visible {
-                        shell
-                            .captures
-                            .request(shell.desktop.lock().unwrap().clone(), !was_visible);
+                        shell.request_captures(!was_visible);
                     }
                     shell.input_region();
+                    shell.canvas().queue_draw();
                     if !visible {
                         shell.window().set_visible(false);
-                    } else if has_windows && !shell.windowed {
+                    } else if has_windows && !shell.windowed && !shell.native_nodes {
                         shell.window().set_keyboard_mode(KeyboardMode::OnDemand);
                         if let Some(id) = shell.return_window.get().filter(|id| {
                             shell.engine.snapshot().state.nodes.iter().any(|n| {
@@ -1242,8 +1226,15 @@ impl Shell {
             lookup_return: false,
         });
         self.refresh();
-        if self.workspace_layers && !was_visible {
-            self.window().set_visible(false);
+        if self.native_nodes
+            && !self
+                .row_surfaces
+                .borrow()
+                .contains_key(&state.selected_workspace)
+        {
+            return;
+        }
+        if self.native_nodes && !was_visible {
             self.graph_visible.set(false);
             self.view.borrow_mut().chrome = 0.0;
         }
@@ -1627,8 +1618,7 @@ impl Shell {
         }
         self.revision.set(snapshot.revision);
         if !self.graph_visible.get() {
-            self.captures
-                .request(self.desktop.lock().unwrap().clone(), false);
+            self.request_captures(false);
         }
         self.refresh_chat(state);
         self.pin_groups(state);
@@ -1681,7 +1671,7 @@ impl Shell {
             canvas::suspend(&self.view);
             if !previous.is_empty() {
                 let mut saved = self.view.borrow().clone();
-                if self.workspace_layers {
+                if self.native_nodes {
                     saved.presentations.clear();
                     saved.morphing = false;
                     saved.live_fade = 0.0;
@@ -1788,14 +1778,14 @@ impl Shell {
         self.content().set_opacity(1.0);
         self.window().set_opacity(1.0);
         self.bar.set_visible(false);
-        if !self.windowed {
+        if !self.windowed && !self.native_nodes {
             self.window().set_keyboard_mode(if visible {
                 KeyboardMode::Exclusive
             } else {
                 KeyboardMode::None
             });
         }
-        if self.workspace_layers {
+        if self.native_nodes {
             if visible
                 && !self
                     .row_surfaces
@@ -1884,8 +1874,7 @@ impl Shell {
                 });
             }
             self.collect_images();
-            self.captures
-                .request(self.desktop.lock().unwrap().clone(), false);
+            self.request_captures(false);
         } else if !self.integrated && !self.windowed {
             self.bar.present();
         }
@@ -1924,6 +1913,7 @@ impl Shell {
         }
     }
     fn show_error(&self, text: &str) {
+        eprintln!("FlowWM: {text}");
         self.error.set_text(text);
         self.error.set_visible(true);
     }
@@ -3032,6 +3022,11 @@ impl Shell {
         let window = self
             .app
             .active_window()
+            .filter(|window| {
+                !self.native_nodes
+                    || !self.graph_visible.get()
+                    || window.has_css_class("flow-dialog")
+            })
             .filter(|window| window.is_visible() && window.is_mapped())
             .unwrap_or_else(|| self.window().clone().upcast());
         let widget: gtk::Widget = window.clone().upcast();

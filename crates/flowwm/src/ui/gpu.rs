@@ -127,7 +127,118 @@ fn graph_key(width: i32, height: i32, state: &State, revision: u64, view: &View)
     view.interaction_key().hash(&mut h);
     h.finish()
 }
+fn window_geometry(node: &Node, view: &View) -> (Rect, Rect, f64) {
+    let p = view.position(node);
+    let t = progress(view, node);
+    let graph = Rect {
+        x: view.pan_x + p.x * view.zoom,
+        y: view.pan_y + p.y * view.zoom,
+        width: WIDTH * view.zoom,
+        height: node_height(node) * view.zoom,
+    };
+    let mut rect = view
+        .desktop_rects
+        .get(&node.id)
+        .copied()
+        .unwrap_or(graph)
+        .interpolate(graph, t);
+    if node.closed_window() {
+        rect = graph;
+        rect.y += 48. * view.zoom * (1. - view.chrome);
+    }
+    (graph, rect, t)
+}
+fn window_content(rect: Rect, t: f64, zoom: f64) -> Rect {
+    Rect {
+        x: rect.x + 10. * zoom * t,
+        y: rect.y + 70. * zoom * t,
+        width: rect.width - 20. * zoom * t,
+        height: rect.height - 110. * zoom * t,
+    }
+}
+fn native_canvas_region(state: &State, view: &View, width: i32, height: i32) -> gtk::cairo::Region {
+    let holes = gtk::cairo::Region::create();
+    for node in canvas::ordered_nodes(state) {
+        if node.window_id.is_none() && !node.desktop_window {
+            continue;
+        }
+        let (_, rect, t) = window_geometry(node, view);
+        // A later card's labels and ports must cover previews belonging to earlier cards.
+        let cover = Rect {
+            x: rect.x - 8. * view.zoom,
+            y: rect.y - 16. * view.zoom,
+            width: rect.width + 16. * view.zoom,
+            height: rect.height + 32. * view.zoom,
+        };
+        let _ = holes.subtract_rectangle(&cover.integer());
+        if node.window_id.is_some() {
+            let _ = holes.union_rectangle(&window_content(rect, t, view.zoom).integer());
+        }
+    }
+    let region =
+        gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(0, 0, width, height));
+    let _ = region.subtract(&holes);
+    region
+}
+
+pub fn native_windows(state: &State, view: &View) -> Vec<niri_ipc::node_row::NodeWindow> {
+    canvas::ordered_nodes(state)
+        .iter()
+        .filter_map(|node| {
+            let id = node.window_id?;
+            let (_, rect, t) = window_geometry(node, view);
+            let content = window_content(rect, t, view.zoom);
+            Some(niri_ipc::node_row::NodeWindow {
+                id,
+                bounds: (content.x, content.y, content.width, content.height),
+                expanded: node.column_mode == ColumnMode::Window && t < 0.001,
+                opacity: if !view.query.is_empty() && !canvas::matches_query(node, &view.query) {
+                    0.25
+                } else {
+                    1.0
+                },
+            })
+        })
+        .collect()
+}
+
 pub fn render(
+    snapshot: &gtk::Snapshot,
+    width: i32,
+    height: i32,
+    state: &State,
+    revision: u64,
+    view: &View,
+    cache: &mut Cache,
+) {
+    if view.native_nodes {
+        let scene = gtk::Snapshot::new();
+        render_inner(&scene, width, height, state, revision, view, cache);
+        if let Some(scene) = scene.to_node() {
+            let region = native_canvas_region(state, view, width, height);
+            for i in 0..region.num_rectangles() {
+                let r = region.rectangle(i);
+                snapshot.push_clip(&graphene::Rect::new(
+                    r.x() as f32,
+                    r.y() as f32,
+                    r.width() as f32,
+                    r.height() as f32,
+                ));
+                snapshot.append_node(&scene);
+                snapshot.pop();
+            }
+        }
+        if canvas::has_foreground(view) {
+            let c =
+                snapshot.append_cairo(&graphene::Rect::new(0., 0., width as f32, height as f32));
+            canvas::draw_foreground(&c, view);
+        }
+    } else {
+        render_inner(snapshot, width, height, state, revision, view, cache);
+    }
+}
+
+fn render_inner(
     snapshot: &gtk::Snapshot,
     width: i32,
     height: i32,
@@ -159,7 +270,7 @@ pub fn render(
                 height: texture.height() as f64 * scale,
             }),
         );
-    } else {
+    } else if !view.native_nodes {
         backdrop.append_color(
             &color(view.theme.surface),
             &graphene::Rect::new(0.0, 0.0, width as f32, height as f32),
@@ -202,26 +313,7 @@ pub fn render(
         if node.window_id.is_none() && !node.desktop_window {
             continue;
         }
-        let p = view.position(node);
-        let t = progress(view, node);
-        let graph = Rect {
-            x: view.pan_x + p.x * view.zoom,
-            y: view.pan_y + p.y * view.zoom,
-            width: WIDTH * view.zoom,
-            height: node_height(node) * view.zoom,
-        };
-        let mut rect = view
-            .desktop_rects
-            .get(&node.id)
-            .copied()
-            .unwrap_or(graph)
-            .interpolate(graph, t);
-        if node.closed_window() {
-            // History has no native rectangle to morph from. Reveal the whole
-            // compact card together, including its outline, from slightly below.
-            rect = graph;
-            rect.y += 48.0 * view.zoom * (1.0 - view.chrome);
-        }
+        let (graph, rect, t) = window_geometry(node, view);
         if rect.x > width as f64 + 12.0
             || rect.x + rect.width < -12.0
             || rect.y > height as f64 + 12.0
@@ -292,12 +384,7 @@ pub fn render(
             &bounds(rect),
         );
         snapshot.pop();
-        let content = Rect {
-            x: rect.x + 10.0 * view.zoom * t,
-            y: rect.y + 70.0 * view.zoom * t,
-            width: rect.width - 20.0 * view.zoom * t,
-            height: rect.height - 110.0 * view.zoom * t,
-        };
+        let content = window_content(rect, t, view.zoom);
         if let Some(texture) = view.image_textures.get(&node.id) {
             let scale = (content.width / texture.width() as f64)
                 .min(content.height / texture.height() as f64);
@@ -343,8 +430,64 @@ pub fn render(
         snapshot.pop();
     }
     // Selection and cut gestures must be above GPU window cards and previews.
-    if canvas::has_foreground(view) {
+    if !view.native_nodes && canvas::has_foreground(view) {
         let c = snapshot.append_cairo(&graphene::Rect::new(0.0, 0.0, width as f32, height as f32));
         canvas::draw_foreground(&c, view);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn overlapping_cards_keep_their_headers_and_ports_above_live_previews() {
+        let cwd = std::path::PathBuf::from("/tmp");
+        let mut state = State::empty(cwd.clone());
+        let mut first = Node::new(
+            &state.selected_workspace,
+            NodeKind::Window,
+            cwd.clone(),
+            Position::default(),
+        );
+        first.window_id = Some(1);
+        let mut second = Node::new(
+            &state.selected_workspace,
+            NodeKind::Window,
+            cwd,
+            Position { x: 0., y: 120. },
+        );
+        second.window_id = Some(2);
+        state.nodes = vec![first, second];
+        let mut view = View::default();
+        view.zoom = 1.;
+        view.pan_x = 0.;
+        view.pan_y = 0.;
+        view.native_nodes = true;
+        let region = native_canvas_region(&state, &view, 500, 500);
+        assert!(
+            !region.contains_point(30, 80),
+            "the first preview is transparent"
+        );
+        assert!(
+            region.contains_point(30, 150),
+            "the later header covers the earlier preview"
+        );
+        assert!(
+            region.contains_point(146, 115),
+            "the later top port remains visible"
+        );
+        assert!(
+            !region.contains_point(30, 200),
+            "the later preview remains transparent"
+        );
+        state.nodes[1].window_id = None;
+        state.nodes[1].desktop_window = true;
+        let region = native_canvas_region(&state, &view, 500, 500);
+        assert!(
+            region.contains_point(30, 150),
+            "closed history cards also cover previews"
+        );
     }
 }

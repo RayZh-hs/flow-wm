@@ -2,6 +2,10 @@
 workspace "FlowWM test 1"
 workspace "FlowWM test 2"
 
+hotkey-overlay {
+    skip-at-startup
+}
+
 binds {
     Mod+Tab repeat=false allow-inhibiting=false { spawn "flowwm" "toggle"; }
     Mod+Space repeat=false { spawn "flowwm" "new"; }

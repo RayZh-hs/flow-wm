@@ -21,25 +21,10 @@ impl WlrLayerShellHandler for State {
         &mut self,
         surface: WlrLayerSurface,
         wl_output: Option<WlOutput>,
-        layer: Layer,
+        _layer: Layer,
         namespace: String,
     ) {
-        let bound_workspace = niri_ipc::workspace_layer::workspace_id(&namespace);
-        if namespace.starts_with(niri_ipc::workspace_layer::PREFIX) && bound_workspace.is_none() {
-            surface.send_close();
-            return;
-        }
-        if bound_workspace.is_some() && layer != Layer::Overlay {
-            surface.send_close();
-            return;
-        }
-        let output = if let Some(id) = bound_workspace {
-            self.niri
-                .layout
-                .workspaces()
-                .find(|(_, _, ws)| ws.id().get() == id)
-                .and_then(|(mon, _, _)| mon.map(|mon| mon.output().clone()))
-        } else if let Some(wl_output) = &wl_output {
+        let output = if let Some(wl_output) = &wl_output {
             self.niri.output_from_resource(wl_output)
         } else {
             self.niri.layout.active_output().cloned()
@@ -187,7 +172,7 @@ impl State {
             // https://github.com/niri-wm/niri/issues/641
             let on_demand = layer.cached_state().keyboard_interactivity
                 == wlr_layer::KeyboardInteractivity::OnDemand;
-            if was_unmapped && on_demand && self.niri.workspace_layer_active(layer) {
+            if was_unmapped && on_demand {
                 // I guess it'd make sense to check that no higher-layer on-demand surface
                 // has focus, but Smithay's Layer doesn't implement Ord so this would be a
                 // little annoying.

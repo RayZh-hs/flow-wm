@@ -75,6 +75,10 @@ impl CompositorHandler for State {
             return;
         }
 
+        if self.node_row_handle_commit(surface, &root_surface) {
+            return;
+        }
+
         if surface == &root_surface {
             // This is a root surface commit. It might have mapped a previously-unmapped toplevel.
             if let Entry::Occupied(entry) = self.niri.unmapped_windows.entry(surface.clone()) {

@@ -48,7 +48,7 @@ def main():
                 run(*cargo(name, "test"))
                 run(*cargo(name, "clippy", "--all-targets", "--", "-D", "warnings"))
             elif name == "niri":
-                run(*cargo(name, "test", "--lib", "workspace_layers"))
+                run(*cargo(name, "test", "--lib", "node_rows"))
                 run(*cargo(name, "test", "--lib", "tests::layer_shell"))
                 run(*cargo(name, "test", "-p", "niri-ipc"))
             else:
@@ -69,14 +69,20 @@ def main():
     with tempfile.TemporaryDirectory(prefix="flowwm-nested-", dir=parent_runtime) as temporary:
         environment["XDG_RUNTIME_DIR"] = temporary
         data = Path(temporary) / "data" if args.smoke else ROOT / "artifacts/nested/data"
-        command = [str(compositor), "--config", str(ROOT / "config/nested.kdl"), "--",
-                   str(app), "--data-dir", str(data), "start", "--dms", "--background"]
+        command = [str(compositor), "--config", str(ROOT / "config/nested.kdl")]
+        shell = None
         print("+ " + shlex.join(command), flush=True)
         process = subprocess.Popen(command, env=environment)
         try:
+            from smoke_native import wait
+            niri_socket = wait(lambda: next(Path(temporary).glob("niri.*.sock"), None), process)
+            child_environment = environment.copy()
+            child_environment["NIRI_SOCKET"] = str(niri_socket)
+            child_environment["WAYLAND_DISPLAY"] = niri_socket.name.split(".")[1]
+            shell = subprocess.Popen([str(app), "--data-dir", str(data), "start", "--dms", "--background"], env=child_environment)
             if args.smoke:
                 from smoke_native import run as smoke
-                smoke(ROOT, temporary, process, app, environment)
+                smoke(ROOT, temporary, process, app, child_environment)
             else:
                 process.wait()
         except KeyboardInterrupt:
@@ -90,6 +96,12 @@ def main():
                     channel.sendall((json.dumps({"op": "ui", "command": {"action": "quit"}}) + "\n").encode())
             except OSError:
                 pass
+            if shell is not None and shell.poll() is None:
+                try:
+                    shell.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    shell.terminate()
+                    shell.wait(timeout=5)
             if process.poll() is None:
                 process.terminate()
                 process.wait(timeout=10)
