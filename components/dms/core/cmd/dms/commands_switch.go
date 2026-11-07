@@ -212,9 +212,9 @@ func runSwaps(ctx context.Context, swapper distros.VariantSwapper, swaps []distr
 // restartShellAfterSwitch stops the shell before restoring, or the running one would migrate the
 // restored settings and save them back. A plain restart would also reload the old binary's QML.
 func restartShellAfterSwitch(restore string) error {
-	managed := runSystemctl("--user", "is-active", "--quiet", dmsSystemdUnit) == nil
+	managed := runSystemctl("--user", "is-active", "--quiet", dmsSystemdUnit()) == nil
 	if managed {
-		if err := runSystemctl("--user", "stop", dmsSystemdUnit); err != nil {
+		if err := runSystemctl("--user", "stop", dmsSystemdUnit()); err != nil {
 			return fmt.Errorf("stopping the shell: %w", err)
 		}
 	} else {
@@ -230,7 +230,7 @@ func restartShellAfterSwitch(restore string) error {
 	}
 
 	if managed {
-		if err := runSystemctl("--user", "start", dmsSystemdUnit); err != nil {
+		if err := runSystemctl("--user", "start", dmsSystemdUnit()); err != nil {
 			return fmt.Errorf("starting the shell: %w", err)
 		}
 	} else {

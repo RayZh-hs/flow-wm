@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=FlowWM
+Comment=Native node and window desktop for collaborative workflows
+Exec=@SESSION@ login
+TryExec=/usr/bin/python3
+Type=Application

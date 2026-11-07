@@ -26,6 +26,9 @@ var systemdEnableCmd = &cobra.Command{
 	Short: "Start dms.service with the compositor session",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if dmsSystemdUnit() != "dms.service" {
+			return fmt.Errorf("FlowWM manages its own shell through flowwm-session.target")
+		}
 		wm, err := systemdCompositor()
 		if err != nil {
 			return err
@@ -39,7 +42,7 @@ var systemdEnableCmd = &cobra.Command{
 		if !now {
 			return nil
 		}
-		if err := runSystemctl("--user", "start", dmsSystemdUnit); err != nil {
+		if err := runSystemctl("--user", "start", dmsSystemdUnit()); err != nil {
 			return err
 		}
 		fmt.Println("dms.service started")
@@ -52,6 +55,9 @@ var systemdDisableCmd = &cobra.Command{
 	Short: "Stop starting dms.service with any compositor session",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if dmsSystemdUnit() != "dms.service" {
+			return fmt.Errorf("FlowWM manages its own shell through flowwm-session.target")
+		}
 		removed, err := config.DisableSession()
 		if err != nil {
 			return err
@@ -65,7 +71,7 @@ var systemdDisableCmd = &cobra.Command{
 		if !now {
 			return nil
 		}
-		return runSystemctl("--user", "stop", dmsSystemdUnit)
+		return runSystemctl("--user", "stop", dmsSystemdUnit())
 	},
 }
 
@@ -74,6 +80,10 @@ var systemdStatusCmd = &cobra.Command{
 	Short: "Show which compositor sessions start dms.service",
 	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
+		if dmsSystemdUnit() != "dms.service" {
+			fmt.Println("flowwm-dms.service: managed by flowwm-session.target")
+			return
+		}
 		state := getServiceState("dms", true)
 		if !state.exists {
 			fmt.Println("dms.service: not installed")
@@ -99,7 +109,7 @@ func systemdLifecycleCmd(verb string) *cobra.Command {
 		Short: strings.ToUpper(verb[:1]) + verb[1:] + " dms.service",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runSystemctl("--user", verb, dmsSystemdUnit)
+			return runSystemctl("--user", verb, dmsSystemdUnit())
 		},
 	}
 }

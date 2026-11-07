@@ -1,7 +1,9 @@
 # Integrated development
 
-FlowWM is the coordination repository for the workflow service, compositor fork,
-and desktop shell fork. A commit here records all three source trees together.
+FlowWM is a hard fork of niri with native node workflows and its own desktop shell.
+This repository owns the compositor, workflow service, and DMS integration. A
+commit here records all three source trees together; ordinary Niri and DMS
+installations remain independent.
 
 ```text
 crates/flowwm/       workflow engine, CLI, GTK canvas, application tests
@@ -35,7 +37,9 @@ python3 scripts/dev.py nested --smoke
 
 `test` runs FlowWM's tests and strict Clippy, the native node-row and existing
 layer-shell compositor tests, the IPC crate tests, and DMS's FlowWM catalog tests.
-`cargo test --locked` at the root runs just the application tests. For a complete
+`cargo test --locked` at the root runs just the application tests. Session isolation
+regressions run with `python3 -m unittest discover -s scripts -p 'test_install.py'`;
+DMS service routing is covered by `go test ./cmd/dms` from `components/dms/core`. For a complete
 compositor suite, use:
 
 ```sh
@@ -49,11 +53,11 @@ python3 scripts/dev.py build dms
 ```
 
 QML development uses `components/dms/quickshell` directly; it does not require
-rebuilding the Go CLI on every edit. The application installer defaults to the
-plugin in that directory:
+rebuilding the Go CLI on every edit. Explicit installation copies the binaries
+and QML into an installed snapshot:
 
 ```sh
-python3 scripts/dev.py build flowwm --release
+python3 scripts/dev.py build all --release
 python3 scripts/install.py --skip-build
 ```
 
@@ -84,10 +88,21 @@ Canvases must be absent from both the application window list and the layer stac
 The runner exposes both compositor and GTK logs and uses the nested Wayland socket
 for every child, including control commands and compositor captures.
 
-Changing the compositor binary does not replace a running Wayland session.
-Build and validate in the nested runner, then use `target/niri/release/niri
---session` as the compositor command for the next graphical login. Integrated FlowWM refuses a compositor without the native node-row contract;
-build and start the matching compositor before updating the live shell.
+Builds never update the installed desktop or a running Wayland session. Validate
+in the nested runner, then explicitly install a complete snapshot with
+`python3 scripts/install.py --skip-build`. The FlowWM login entry always uses
+`~/.local/bin/flowwm-session login`, which selects the installed snapshot. It must
+never point at `target/`. Use `--rollback` to select the previous installation for
+the next login. Services and children stay pinned to the snapshot selected at login.
+
+FlowWM uses `flowwm-compositor.service`, `flowwm-session.target`, `flowwm.service`,
+and `flowwm-dms.service`. Niri keeps `niri.service` and its original `dms.service`.
+FlowWM's DMS uses its private configuration, state, cache, plugin, and generated
+Niri settings under `~/.local/state/flowwm/desktop/`. The original DMS service skips
+startup while the FlowWM compositor is active. No shared compositor command is
+switched between the two profiles, and the workflow service is not enabled for
+ordinary graphical sessions. Integrated FlowWM refuses a compositor without the
+native node-row contract.
 
 ## Source updates
 

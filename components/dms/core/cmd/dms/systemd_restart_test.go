@@ -8,6 +8,7 @@ import (
 )
 
 func TestTrySystemdRestart(t *testing.T) {
+	t.Setenv("FLOWWM_SESSION", "")
 	tests := []struct {
 		name        string
 		running     bool
@@ -57,5 +58,38 @@ func TestTrySystemdRestart(t *testing.T) {
 				t.Fatalf("unexpected start in calls %q", calls)
 			}
 		})
+	}
+}
+
+func TestFlowWMRestartIsIsolated(t *testing.T) {
+	t.Setenv("FLOWWM_SESSION", "1")
+	original, originalRunning := runSystemctl, shellRunning
+	t.Cleanup(func() { runSystemctl, shellRunning = original, originalRunning })
+	shellRunning = func() bool { return false }
+	for _, active := range []bool{true, false} {
+		var calls []string
+		runSystemctl = func(args ...string) error {
+			call := strings.Join(args, " ")
+			calls = append(calls, call)
+			if !active {
+				return errors.New("inactive")
+			}
+			return nil
+		}
+		handled, err := trySystemdRestart()
+		if err != nil || handled != active {
+			t.Fatalf("active=%v: handled=%v err=%v calls=%q", active, handled, err, calls)
+		}
+		for _, call := range calls {
+			if strings.HasSuffix(call, " dms.service") {
+				t.Fatalf("FlowWM touched Niri's DMS: %s", call)
+			}
+		}
+		if active && !slices.Contains(calls, "--user restart flowwm-dms.service") {
+			t.Fatalf("did not restart FlowWM shell: %q", calls)
+		}
+		if !active && slices.ContainsFunc(calls, func(c string) bool { return strings.Contains(c, " start ") }) {
+			t.Fatalf("started FlowWM shell outside its desktop: %q", calls)
+		}
 	}
 }

@@ -1,198 +1,236 @@
 #!/usr/bin/env python3
-"""Install the native shell and its DMS integration for the current user."""
+"""Explicitly install an independent FlowWM runtime; development builds never update it."""
 import argparse
-import datetime
+from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import shutil
-import shlex
 import subprocess
-import time
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
-def run(*args, **kwargs):
-    return subprocess.run(args, check=True, text=True, **kwargs)
+def run(*arguments, **kwargs):
+    print("+ " + " ".join(map(str, arguments)), flush=True)
+    return subprocess.run(list(map(str, arguments)), check=True, text=True, **kwargs)
+
+
+def atomic_text(path, content, mode=0o644):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
+    temporary = Path(temporary)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(content)
+        temporary.chmod(mode)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def point(path, target):
+    temporary = path.with_name(path.name + ".new")
+    temporary.unlink(missing_ok=True)
+    temporary.symlink_to(target, target_is_directory=True)
+    temporary.replace(path)
+
+
+def widget_id(widget):
+    return widget if isinstance(widget, str) else widget.get("id")
+
+
+def prepare_profile(config, state, cache, bundle, user_config, user_state, user_cache, launcher):
+    config.mkdir(parents=True, exist_ok=True)
+    for original in user_config.iterdir():
+        if original.name in ("dms", "DankMaterialShell", "niri") or (config / original.name).exists():
+            continue
+        (config / original.name).symlink_to(original, target_is_directory=original.is_dir())
+    for name in ("dms", "niri"):
+        if not (config / name).exists():
+            shutil.copytree(user_config / name, config / name, symlinks=True)
+    for destination, original in [(state, user_state), (cache, user_cache)]:
+        destination.mkdir(parents=True, exist_ok=True)
+        if not (destination / "dms").exists() and (original / "dms").exists():
+            shutil.copytree(original / "dms", destination / "dms", symlinks=True)
+        (destination / "dms").mkdir(exist_ok=True)
+        if not (destination / "DankMaterialShell").is_symlink():
+            (destination / "DankMaterialShell").symlink_to("dms", target_is_directory=True)
+    if not (config / "DankMaterialShell").is_symlink():
+        (config / "DankMaterialShell").symlink_to("dms", target_is_directory=True)
+    # Old installs included absolute references to the user's Niri tree.
+    for path in (config / "niri").rglob("*.kdl"):
+        text = path.read_text()
+        text = text.replace(str(user_config / "niri"), str(config / "niri"))
+        atomic_text(path, text)
+    niri_config = config / "niri/config.kdl"
+    text = niri_config.read_text()
+    if 'include "flowwm.kdl"' not in text:
+        text += '\n// FlowWM workflow bindings belong only to this profile.\ninclude "flowwm.kdl"\n'
+    atomic_text(niri_config, text)
+    flowwm = str(launcher.with_name("flowwm"))
+    atomic_text(config / "niri/flowwm.kdl", (ROOT / "config/dms-niri.kdl").read_text().replace('"flowwm"', json.dumps(flowwm)))
+    overwrite = config / "niri/dms-overwrite.kdl"
+    text = overwrite.read_text()
+    for key, action, direction in [("Left", "focus-column-left", "left"), ("Right", "focus-column-right", "right"), ("Up", "focus-window-up", "up"), ("Down", "focus-window-down", "down")]:
+        text = re.sub(rf'(?m)^(\s*Mod\+{key}\s*)\{{\s*{action};\s*\}}',
+                      lambda m: m[1] + '{ spawn ' + json.dumps(flowwm) + ' "navigate" "' + direction + '"; }', text)
+    text = re.sub(r'(?m)^(\s*(?:Mod\+Space|Alt\+Space)[^\n{]*)\{\s*spawn "dms" "ipc" "call" "spotlight" "toggle";\s*\}',
+                  lambda m: m[1] + '{ spawn ' + json.dumps(flowwm) + ' "launcher"; }', text)
+    atomic_text(overwrite, text)
+    preferences = config / "dms/settings.json"
+    settings = json.loads(preferences.read_text())
+    for bar in settings.get("barConfigs", []):
+        if not bar.get("enabled", True):
+            continue
+        widgets = bar.setdefault("leftWidgets", [])
+        if not any(widget_id(w) == "flowwm" for w in widgets):
+            index = next((i for i, w in enumerate(widgets) if widget_id(w) == "workspaceSwitcher"), 0)
+            widgets.insert(index + 1, "flowwm")
+        break
+    atomic_text(preferences, json.dumps(settings, indent=2) + "\n")
+    plugins = config / "dms/plugin_settings.json"
+    enabled = json.loads(plugins.read_text())
+    enabled["flowwm"] = {**enabled.get("flowwm", {}), "enabled": True}
+    atomic_text(plugins, json.dumps(enabled, indent=2) + "\n")
+    plugin = config / "dms/plugins/flowwm"
+    plugin.parent.mkdir(parents=True, exist_ok=True)
+    if not plugin.exists() and not plugin.is_symlink():
+        plugin.symlink_to(bundle / "shell/PLUGINS/FlowWM", target_is_directory=True)
+
+
+def install_units(config, launcher, user_home):
+    units = config / "systemd/user"
+    command = json.dumps(str(launcher))
+    atomic_text(units / "flowwm-compositor.service", f'''[Unit]
+Description=FlowWM window manager
+BindsTo=graphical-session.target
+Before=graphical-session.target
+Wants=graphical-session-pre.target xdg-desktop-autostart.target flowwm-session.target
+Before=xdg-desktop-autostart.target
+After=graphical-session-pre.target
+
+[Service]
+Type=notify
+Slice=session.slice
+ExecStart={command} compositor
+Environment=FLOWWM_SESSION=1
+WorkingDirectory={user_home}
+''')
+    atomic_text(units / "flowwm-session.target", '''[Unit]
+Description=FlowWM desktop session
+Requires=flowwm-compositor.service
+Wants=flowwm.service flowwm-dms.service
+After=flowwm-compositor.service graphical-session.target
+PartOf=graphical-session.target
+''')
+    for name, operation, service_type in [("flowwm", "shell", "simple"), ("flowwm-dms", "dms", "notify")]:
+        extra = "" if name == "flowwm" else "NotifyAccess=main\nEnvironment=QS_DISABLE_CRASH_HANDLER=1\nExecReload=/bin/kill -USR1 $MAINPID\nRestartForceExitStatus=TEMPFAIL\nSuccessExitStatus=TEMPFAIL\nTimeoutStartSec=90s\n"
+        atomic_text(units / f"{name}.service", f'''[Unit]
+Description=FlowWM {operation}
+PartOf=graphical-session.target flowwm-session.target
+Requisite=graphical-session.target flowwm-compositor.service
+After=graphical-session.target flowwm-compositor.service
+
+[Service]
+Type={service_type}
+{extra}ExecStart={command} {operation}
+Environment=GDK_BACKEND=wayland
+WorkingDirectory={user_home}
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=8
+''')
+    # Niri keeps its original DMS service; FlowWM has a separate DMS service.
+    atomic_text(units / "dms.service.d/flowwm-isolation.conf", '''[Service]
+ExecCondition=/bin/sh -c "! /usr/bin/systemctl --user --quiet is-active flowwm-compositor.service"
+''')
+    link = units / "graphical-session.target.wants/flowwm.service"
+    if link.is_symlink():
+        run("systemctl", "--user", "disable", "flowwm.service")
+    run("systemctl", "--user", "daemon-reload")
+    run("systemd-analyze", "--user", "verify", "flowwm-compositor.service", "flowwm.service", "flowwm-dms.service", "flowwm-session.target", "dms.service")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--skip-build", action="store_true")
-    parser.add_argument("--dms-root", type=Path)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--skip-build", action="store_true", help="install already built binaries")
+    mode.add_argument("--rollback", action="store_true", help="select the previous installed snapshot for the next login")
     args = parser.parse_args()
-    repo = Path(__file__).resolve().parents[1]
-    dms = (args.dms_root or repo / "components/dms").resolve()
-    plugin = dms / "quickshell/PLUGINS/FlowWM"
-    if not (plugin / "plugin.json").is_file():
-        parser.error(f"The FlowWM plugin is missing from {plugin}")
+    user_home = Path.home()
+    user_config = Path(os.environ.get("XDG_CONFIG_HOME", user_home / ".config"))
+    user_state = Path(os.environ.get("XDG_STATE_HOME", user_home / ".local/state"))
+    user_cache = Path(os.environ.get("XDG_CACHE_HOME", user_home / ".cache"))
+    user_data = Path(os.environ.get("XDG_DATA_HOME", user_home / ".local/share"))
+    installed = user_data / "flowwm/installed"
+    if args.rollback:
+        current, previous = installed / "current", installed / "previous"
+        if not current.is_symlink() or not previous.is_symlink():
+            parser.error("no previous installed snapshot is available")
+        before, after = current.resolve(strict=True), previous.resolve(strict=True)
+        point(current, after)
+        point(previous, before)
+        print(f"Next FlowWM login will use {after}. The running session is unchanged.")
+        return
     if not args.skip_build:
-        run("cargo", "build", "--release", "--locked", cwd=repo)
-    binary = repo / "target/release/flowwm"
-    if not binary.is_file():
-        parser.error("Build the release binary first")
-
-    home = Path.home()
-    config = Path(os.environ.get("XDG_CONFIG_HOME", home / ".config"))
-    data = Path(os.environ.get("XDG_DATA_HOME", home / ".local/share"))
-    state = Path(os.environ.get("XDG_STATE_HOME", home / ".local/state"))
-    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    backup_dir = state / "flowwm/install-backups" / stamp
-    backup_dir.mkdir(parents=True)
-    records = []
-
-    def backup(path):
-        path = Path(path)
-        record = {"path": str(path), "existed": path.exists() or path.is_symlink()}
-        if path.is_symlink():
-            record["symlink"] = os.readlink(path)
-            if path.is_file():
-                target = backup_dir / f"{len(records):02d}-{path.name}"
-                shutil.copy2(path, target)
-                record["backup"] = str(target)
-        elif path.is_file():
-            target = backup_dir / f"{len(records):02d}-{path.name}"
-            shutil.copy2(path, target)
-            record["backup"] = str(target)
-        elif path.is_dir():
-            raise RuntimeError(f"Expected a file or plugin symlink: {path}")
-        records.append(record)
-        (backup_dir / "manifest.json").write_text(json.dumps(records, indent=2) + "\n")
-
-    def write(path, text):
-        backup(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(path.name + ".flowwm-tmp")
-        temporary.write_text(text)
-        temporary.replace(path)
-
-    installed = home / ".local/bin/flowwm"
-    for name in ("flowwm", "flowwm-shell"):
-        destination = installed.with_name(name)
-        backup(destination)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_name(name + ".new")
-        shutil.copy2(binary.with_name(name), temporary)
-        temporary.chmod(0o755)
-        temporary.replace(destination)
-
-    desktop = data / "applications/dev.flowwm.Shell.desktop"
-    write(desktop, (repo / "crates/flowwm/data/dev.flowwm.Shell.desktop").read_text().replace("Exec=flowwm nodes", f"Exec={installed} nodes"))
-    icon = data / "icons/hicolor/scalable/apps/dev.flowwm.Shell.svg"
-    write(icon, (repo / "crates/flowwm/data/dev.flowwm.Shell.svg").read_text())
-    plugin_link = config / "DankMaterialShell/plugins/flowwm"
-    backup(plugin_link)
-    plugin_link.parent.mkdir(parents=True, exist_ok=True)
-    if plugin_link.is_symlink():
-        plugin_link.unlink()
-    plugin_link.symlink_to(plugin, target_is_directory=True)
-
-    # Keep the active OCR deployment; only teach its title widget about graph mode.
-    environment = run("systemctl", "--user", "show", "dms.service", "-p", "Environment", "--value", capture_output=True).stdout
-    deployed = next((Path(value.split("=", 1)[1]) for value in shlex.split(environment) if value.startswith("DMS_SHELL_DIR=")), dms / "quickshell")
-    for shell_root in dict.fromkeys([dms / "quickshell", deployed]):
-        candidates = [shell_root / "Modules/DBar/Widgets/FocusedApp.qml", shell_root / "Modules/DankBar/Widgets/FocusedApp.qml"]
-        focused = next((path for path in candidates if path.exists() and "BasePill {" in path.read_text()), None)
-        if focused is None:
-            raise RuntimeError(f"Cannot integrate the DMS focused title in {shell_root}")
-        source = focused.read_text()
-        if "readonly property bool flowGraphVisible:" not in source:
-            source = source.replace("    property var widgetData: null", "    readonly property bool flowGraphVisible: PluginService.pluginDaemonInstances?.flowwm?.catalog?.presentation?.graph_visible ?? false\n\n    property var widgetData: null", 1)
-            source = source.replace("width: hasWindowsOnCurrentWorkspace ?", "width: !flowGraphVisible && hasWindowsOnCurrentWorkspace ?", 1)
-            source = source.replace("height: hasWindowsOnCurrentWorkspace ?", "height: !flowGraphVisible && hasWindowsOnCurrentWorkspace ?", 1)
-            source = source.replace("visible: hasWindowsOnCurrentWorkspace &&", "visible: !flowGraphVisible && hasWindowsOnCurrentWorkspace &&", 1)
-        if "readonly property real naturalPrimarySize:" in source and "readonly property real naturalPrimarySize: flowGraphVisible" not in source:
-            source = source.replace("readonly property real naturalPrimarySize: ", "readonly property real naturalPrimarySize: flowGraphVisible ? 0 : ", 1)
-        if source != focused.read_text():
-            write(focused, source)
-
-    unit = config / "systemd/user/flowwm.service"
-    write(unit, f"""[Unit]
-Description=FlowWM native workflow shell for Niri and DMS
-PartOf=graphical-session.target
-After=graphical-session.target niri.service
-Requisite=graphical-session.target
-
-[Service]
-Type=simple
-ExecStart={installed} start --dms --background
-WorkingDirectory={repo}
-Environment=GDK_BACKEND=wayland
-Restart=on-failure
-RestartSec=2
-TimeoutStopSec=8
-
-[Install]
-WantedBy=graphical-session.target
-""")
-
-    niri = config / "niri"
-    bindings = niri / "flowwm.kdl"
-    write(bindings, (repo / "config/dms-niri.kdl").read_text().replace('"flowwm"', json.dumps(str(installed))))
-    overrides = niri / "dms-overwrite.kdl"
-    text = overrides.read_text()
-    for key, action, direction in [("Left", "focus-column-left", "left"), ("Right", "focus-column-right", "right"), ("Up", "focus-window-up", "up"), ("Down", "focus-window-down", "down")]:
-        pattern = rf'(?m)^(\s*Mod\+{key}\s*)\{{\s*{action};\s*\}}'
-        text = re.sub(pattern, lambda match: match[1] + '{ spawn ' + json.dumps(str(installed)) + ' "navigate" "' + direction + '"; }', text)
-    pattern = r'(?m)^(\s*(?:Mod\+Space|Alt\+Space)[^\n{]*)\{\s*spawn "dms" "ipc" "call" "spotlight" "toggle";\s*\}'
-    text = re.sub(pattern, lambda match: match[1] + '{ spawn ' + json.dumps(str(installed)) + ' "launcher"; }', text)
-    write(overrides, text)
-    root_config = niri / "config.kdl"
-    root_text = root_config.read_text()
-    if 'include "flowwm.kdl"' not in root_text:
-        root_text += '\n// Native workflow graph and DMS lookup.\ninclude "flowwm.kdl"\n'
-    staged = niri / ".flowwm-validate.kdl"
-    staged.write_text(root_text)
+        run("cargo", "build", "--release", "--locked", cwd=ROOT)
+        run("cargo", "build", "--manifest-path", ROOT / "components/niri/Cargo.toml", "--target-dir", ROOT / "target/niri", "--release", "--locked", cwd=ROOT)
+        run("make", "build", cwd=ROOT / "components/dms/core")
+    commit = subprocess.check_output(["git", "rev-parse", "--short=12", "HEAD"], cwd=ROOT, text=True).strip()
+    versions = installed / "versions"
+    versions.mkdir(parents=True, exist_ok=True)
+    version = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ") + "-" + commit
+    bundle = versions / version
+    bundle.mkdir()
     try:
-        run("niri", "validate", "-c", str(staged))
-    finally:
-        staged.unlink(missing_ok=True)
-    write(root_config, root_text)
-
-    backup(config / "DankMaterialShell/settings.json")
-    backup(config / "DankMaterialShell/plugin_settings.json")
-    run("systemctl", "--user", "daemon-reload")
-    run("systemctl", "--user", "enable", "--now", "flowwm.service")
-    def ipc_call(target, *arguments):
-        output = run("dms", "ipc", "call", target, *arguments, capture_output=True).stdout.strip()
-        if any(word in output for word in ("_FAILED", "_FAILURE", "Target not found.", "Too few arguments", "Function not found.", "ERROR:")):
-            raise RuntimeError(output)
-        return output
-
-    ipc_call("plugin-scan", "scan")
-    for _ in range(30):
-        if "flowwm\t" in ipc_call("plugin-scan", "list"):
-            break
-        time.sleep(0.1)
-    else:
-        raise RuntimeError("DMS did not discover the FlowWM plugin")
-    ipc_call("plugins", "enable", "flowwm")
-    ipc_call("plugin-scan", "reload", "flowwm")
-    for _ in range(30):
-        try:
-            status = json.loads(ipc_call("flowwm", "status"))
-            if status.get("online"):
-                break
-        except (RuntimeError, json.JSONDecodeError):
-            pass
-        time.sleep(0.1)
-    else:
-        raise RuntimeError("The DMS FlowWM bridge is not online")
-    if ipc_call("flowwm", "installWidget") != "CONFIGURED":
-        raise RuntimeError("DMS could not configure the Nodes bar widget")
-    run("systemctl", "--user", "restart", "flowwm.service")
-    for _ in range(50):
-        try:
-            if json.loads(ipc_call("flowwm", "status")).get("online"):
-                break
-        except (RuntimeError, json.JSONDecodeError):
-            pass
-        time.sleep(0.1)
-    else:
-        raise RuntimeError("FlowWM restarted but its DMS bridge did not reconnect")
-    if shutil.which("update-desktop-database"):
-        run("update-desktop-database", str(data / "applications"))
-    print(f"Installed: {installed}\nDMS plugin: {plugin_link}\nBackups: {backup_dir}")
+        (bundle / "bin").mkdir()
+        sources = {"niri": ROOT / "target/niri/release/niri", "flowwm": ROOT / "target/release/flowwm",
+                   "flowwm-shell": ROOT / "target/release/flowwm-shell", "dms.real": ROOT / "components/dms/core/bin/dms"}
+        for name, source in sources.items():
+            shutil.copy2(source, bundle / "bin" / name)
+            (bundle / "bin" / name).chmod(0o755)
+        shutil.copytree(ROOT / "components/dms/quickshell", bundle / "shell", symlinks=False,
+                        ignore=shutil.ignore_patterns(".git", ".github", "tests", "__pycache__"))
+        shutil.copy2(ROOT / "scripts/session.py", bundle / "session.py")
+        profile = user_state / "flowwm/desktop"
+        config, state, cache = (profile / name for name in ("config", "state", "cache"))
+        metadata = {"commit": commit, "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)), "installed_at": version, "config": str(config), "state": str(state),
+                    "cache": str(cache), "workflow_data": str(user_data / "flowwm"),
+                    "sha256": {name: hashlib.sha256((bundle / "bin" / name).read_bytes()).hexdigest() for name in sources}}
+        atomic_text(bundle / "installation.json", json.dumps(metadata, indent=2) + "\n")
+        launcher = user_home / ".local/bin/flowwm-session"
+        prepare_profile(config, state, cache, bundle, user_config, user_state, user_cache, launcher)
+        wrapper = '#!/usr/bin/env python3\nimport os, sys\nfrom pathlib import Path\np=Path(__file__).resolve().parents[1]/"session.py"\nos.execv(sys.executable,[sys.executable,str(p),"dms-cli",*sys.argv[1:]])\n'
+        atomic_text(bundle / "bin/dms", wrapper, 0o755)
+        run(bundle / "bin/niri", "validate", "--config", config / "niri/config.kdl")
+        run(bundle / "bin/dms.real", "version")
+        current = installed / "current"
+        loader = f'''#!/usr/bin/env python3
+import os, sys
+from pathlib import Path
+current=Path({str(current)!r})
+pinned=os.environ.get("FLOWWM_INSTALL_ROOT")
+root=Path(pinned) if pinned and sys.argv[1:2] != ["login"] else current.resolve()
+script=root/"session.py"
+os.execv(sys.executable,[sys.executable,str(script),*sys.argv[1:]])
+'''
+        atomic_text(launcher, loader, 0o755)
+        cli = f'#!/bin/sh\nexec {json.dumps(str(launcher))} cli "$@"\n'
+        atomic_text(user_home / ".local/bin/flowwm", cli, 0o755)
+        install_units(user_config, launcher, user_home)
+        if current.is_symlink():
+            point(installed / "previous", current.resolve())
+        point(current, bundle)
+    except BaseException:
+        # Completed snapshots stay available for diagnosis; the current session is never restarted.
+        raise
+    print(f"Installed FlowWM snapshot: {bundle}")
+    print(f"Persistent FlowWM profile: {profile}")
+    print("The login screen uses the installed snapshot. Only an explicit install changes current.")
 
 
 if __name__ == "__main__":

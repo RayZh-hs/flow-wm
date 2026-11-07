@@ -1,6 +1,6 @@
 # FlowWM
 
-A native Rust workflow shell for Niri. Agents, shell commands, metrics, application windows, and your own work occupy the same persistent graph. Zoom out to orchestrate; expand a node to work in a real Niri-tiled window.
+FlowWM is a hard fork of niri that integrates node workflows directly into the window manager for collaboration and orchestration. Agents, shell commands, metrics, application windows, and your own work occupy the same persistent graph. Zoom out to orchestrate; expand a node to work in a native tiled window.
 
 The interface follows DMS's Material surfaces, rounded controls, and primary color. With DMS's dynamic theme enabled, FlowWM reads `~/.cache/DankMaterialShell/dms-colors.json` and follows palette changes. It also reads DMS's corner radius and explicit font family. Without DMS, it uses the DMS purple dark palette.
 
@@ -8,18 +8,49 @@ This repository develops FlowWM together with the Niri and DMS forks under `comp
 
 The application lives in `crates/flowwm`. See [integrated development](docs/development.md) for source updates, subtree export, build caches, and isolated compositor testing.
 
-## Install with DMS
+## Install the FlowWM desktop
 
-The user installer builds the Rust release, installs the desktop entry and icon, enables a graphical-session service, links the plugin from the DMS fork, and adds a Nodes widget to the enabled DMS bar:
+The installer builds and copies a matching compositor, workflow service, DMS binary,
+and DMS shell into a versioned installation. All FlowWM source changes live in this
+repository, including the compositor and shell under `components/`.
 
 ```sh
 python3 scripts/components.py bootstrap
 python3 scripts/install.py
 ```
 
-Run this inside your Niri/DMS session. It expects the existing Niri configuration to include `dms-overwrite.kdl`. The installer adds `flowwm.kdl`, routes the existing launcher and directional bindings through FlowWM, and validates the resulting Niri configuration. It backs up changed files under `~/.local/state/flowwm/install-backups/`. The service runs `flowwm start --dms --background`, so login opens your normal desktop and DMS remains the desktop bar. Existing graphs are preserved.
+The first installation copies your existing Niri and DMS preferences into a separate
+FlowWM profile under `~/.local/state/flowwm/desktop/`. It expects the Niri configuration
+to include `dms-overwrite.kdl`. Workflow bindings, the Nodes widget, plugin settings,
+generated Niri configuration, shell state, and theme caches belong to that profile.
+Your ordinary Niri login keeps its original DMS, shortcuts, and preferences. The
+FlowWM compositor, workflow service, and DMS run as separate user services, started
+only by the FlowWM session.
 
-The DMS plugin source lives at `components/dms/quickshell/PLUGINS/FlowWM/`. Its icon adapter supports the current `DIcon` widgets and the older deployed `DankIcon` widgets. The installer preserves the active DMS deployment and its other plugins. Build the compositor with `python3 scripts/dev.py build niri --release` and start the next graphical session with `target/niri/release/niri --session` before installing the new integrated shell. The application and compositor must both support the native node-row contract. Installing the application does not replace the running compositor.
+Installed snapshots live in `~/.local/share/flowwm/installed/versions/`. The stable
+`~/.local/bin/flowwm-session login` command selects `installed/current`; it never
+launches a binary or QML file from the source checkout. Builds and nested tests do
+not update this pointer. An explicit installation selects a new snapshot for the
+next login. An already running FlowWM session remains pinned to its own snapshot.
+
+```sh
+python3 scripts/install.py --skip-build   # explicitly install already built binaries
+python3 scripts/install.py --rollback    # select the previous installation for next login
+~/.local/bin/flowwm-session describe      # inspect installed paths and checksums
+```
+
+For a login-screen entry, install a Wayland session desktop file named **FlowWM**
+whose `Exec` is the absolute path to `~/.local/bin/flowwm-session login`. Keep the
+ordinary **Niri** entry launching `niri-session`. SDDM needs the file in its system
+Wayland session directory; it does not read user application desktop files. On this
+machine, the ignored `scripts/local-session.py` restores the original Niri profile
+with backups, prepares the independent installation, and publishes the entry with
+`--publish` using system authentication. Neither installer restarts the current desktop.
+
+The DMS plugin source lives at `components/dms/quickshell/PLUGINS/FlowWM/`. Each
+snapshot includes its own copy, so development edits cannot alter the installed UI.
+Integrated mode requires the matching native node-row compositor. Workflow data
+remains in `~/.local/share/flowwm/` and survives installation and session changes.
 
 Installed global shortcuts (`Super` is Niri's `Mod` key):
 
@@ -154,7 +185,7 @@ The graph assistant defaults to `mycodex`, resolving the local `~/Apps/Hooks/uti
 
 The assistant inherits that CLI's account and permission settings. It receives `FLOWWM_SOCKET` and the graph control interface so it can act on the intended FlowWM instance, including instances started with `--socket`. Regular workflow agent nodes retain their existing structured handoff and sandbox settings. The conversation adapter uses Codex's documented [JSON event stream and session resumption](https://learn.chatgpt.com/docs/non-interactive-mode).
 
-Global keybindings belong to Niri. The DMS installer configures them with backups. For manual standalone installation, [config/niri.kdl](config/niri.kdl) provides bindings for `flowwm toggle`, `flowwm new`, and `flowwm navigate`; merge these with your existing bindings and replace conflicting entries.
+Global keybindings belong to the compositor. The desktop installer configures them only in the private FlowWM profile. For manual standalone installation, [config/niri.kdl](config/niri.kdl) provides bindings for `flowwm toggle`, `flowwm new`, and `flowwm navigate`; merge these with your existing bindings and replace conflicting entries.
 
 ## Workflows
 
