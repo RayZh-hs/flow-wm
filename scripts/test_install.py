@@ -79,5 +79,205 @@ class LoginIsolation(unittest.TestCase):
             run.assert_not_called()
 
 
+class ReplaceSession(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.old = self.root / "old snapshot 'quoted'"
+        self.new = self.root / 'new snapshot'
+        for bundle in (self.old, self.new):
+            bundle.mkdir()
+            (bundle / 'installation.json').write_text('{}')
+        self.pin = str(self.old)
+        self.pids = {'flowwm-compositor.service': 100, 'flowwm.service': 101, 'flowwm-dms.service': 102}
+        self.environments = {pid: os.fsencode('FLOWWM_INSTALL_ROOT=' + self.pin) + b'\0'
+                             for pid in self.pids.values()}
+        self.calls = []
+        self.failed_roots = set()
+        self.overrides = {}
+        self.next_pid = 103
+        mock = patch.object(installer.subprocess, 'check_output', side_effect=self.query)
+        mock.start()
+        self.addCleanup(mock.stop)
+        mock = patch.object(installer, 'run', side_effect=self.command)
+        mock.start()
+        self.addCleanup(mock.stop)
+        mock = patch.object(installer.Path, 'read_bytes', autospec=True,
+                            side_effect=lambda path: self.environments[int(path.parts[2])])
+        mock.start()
+        self.addCleanup(mock.stop)
+
+    def query(self, command, **kwargs):
+        if command[0] == 'busctl':
+            return json.dumps({'type': 'as', 'data': ['FLOWWM_INSTALL_ROOT=' + self.pin]})
+        self.assertEqual(command[:3], ['systemctl', '--user', 'show'])
+        pid = self.pids.get(command[3], 0)
+        return f"ActiveState={'active' if pid else 'inactive'}\nMainPID={pid}\n"
+
+    def command(self, *command, **kwargs):
+        self.calls.append(command)
+        self.assertEqual(command[:2], ('systemctl', '--user'))
+        operation, *arguments = command[2:]
+        if operation == 'set-environment':
+            self.pin = arguments[0].partition('=')[2]
+        elif operation == 'stop':
+            for unit in arguments:
+                self.pids.pop(unit, None)
+        elif operation == 'start':
+            for unit in arguments:
+                if self.pin in self.failed_roots and unit == 'flowwm-dms.service':
+                    raise subprocess.CalledProcessError(1, command)
+                self.pids[unit] = self.next_pid
+                self.environments[self.next_pid] = os.fsencode(
+                    'FLOWWM_INSTALL_ROOT=' + self.overrides.get(unit, self.pin)) + b'\0'
+                self.next_pid += 1
+        else:
+            self.fail(f'Unexpected service operation: {operation}')
+
+    def test_reload_adopts_new_snapshot_and_preserves_compositor(self):
+        session = installer.running_session()
+        installer.replace_session(self.new, session)
+        self.assertEqual(self.pin, str(self.new))
+        self.assertEqual(self.pids['flowwm-compositor.service'], 100)
+        self.assertNotEqual(self.pids['flowwm.service'], 101)
+        self.assertNotEqual(self.pids['flowwm-dms.service'], 102)
+        self.assertEqual([c[2] for c in self.calls], ['stop', 'set-environment', 'start'])
+        for command in self.calls:
+            self.assertNotIn('flowwm-compositor.service', command)
+            self.assertNotIn('niri.service', command)
+            self.assertNotIn('dms.service', command)
+
+    def test_partial_start_failure_restores_previous_services_and_pin(self):
+        self.failed_roots.add(str(self.new))
+        with self.assertRaisesRegex(RuntimeError, 'previous services were restarted'):
+            installer.replace_session(self.new, installer.running_session())
+        self.assertEqual(self.pin, str(self.old))
+        installer.verify_services(self.old, 100)
+        self.assertEqual([c[2] for c in self.calls],
+                         ['stop', 'set-environment', 'start', 'stop', 'set-environment', 'start'])
+
+    def test_stale_service_environment_is_detected_and_restored(self):
+        self.overrides['flowwm-dms.service'] = str(self.old)
+        with self.assertRaisesRegex(RuntimeError, 'did not adopt the selected snapshot'):
+            installer.replace_session(self.new, installer.running_session())
+        self.assertEqual(self.pin, str(self.old))
+        installer.verify_services(self.old, 100)
+
+    def test_failed_recovery_reports_both_failures(self):
+        self.failed_roots.update((str(self.new), str(self.old)))
+        with self.assertRaisesRegex(RuntimeError, 'restoring the previous services also failed'):
+            installer.replace_session(self.new, installer.running_session())
+        self.assertEqual(self.pids['flowwm-compositor.service'], 100)
+
+    def test_changed_session_is_rejected_before_stopping_services(self):
+        session = installer.running_session()
+        self.pids['flowwm-compositor.service'] = 200
+        with self.assertRaisesRegex(RuntimeError, 'session changed during installation'):
+            installer.replace_session(self.new, session)
+        self.assertEqual(self.calls, [])
+
+    def test_requires_an_active_installed_session(self):
+        self.pids.pop('flowwm-compositor.service')
+        with self.assertRaisesRegex(RuntimeError, 'requires a running installed FlowWM session'):
+            installer.running_session()
+        self.pids['flowwm-compositor.service'] = 100
+        self.pin = str(self.root / 'missing')
+        with self.assertRaisesRegex(RuntimeError, 'no installed snapshot to restore'):
+            installer.running_session()
+        self.assertEqual(self.calls, [])
+
+
+class InstallReplace(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.home = self.root / 'home'
+        self.repo = self.root / 'repo'
+        for relative in ('target/release/flowwm', 'target/release/flowwm-shell',
+                         'target/niri/release/niri', 'components/dms/core/bin/dms',
+                         'components/dms/quickshell/PLUGINS/FlowWM/manifest.json',
+                         'scripts/session.py', 'config/dms-niri.kdl'):
+            path = self.repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('fixture\n')
+        self.installed = self.home / 'data/flowwm/installed'
+        self.old = self.installed / 'versions/old'
+        self.old.mkdir(parents=True)
+        (self.old / 'installation.json').write_text('{}')
+        (self.installed / 'current').symlink_to(self.old, target_is_directory=True)
+        self.environment = {'XDG_CONFIG_HOME': str(self.home / 'config'),
+                            'XDG_STATE_HOME': str(self.home / 'state'),
+                            'XDG_CACHE_HOME': str(self.home / 'cache'),
+                            'XDG_DATA_HOME': str(self.home / 'data')}
+        mocks = [patch.object(installer, 'ROOT', self.repo),
+                 patch.object(installer.Path, 'home', return_value=self.home),
+                 patch.dict(os.environ, self.environment),
+                 patch.object(installer, 'prepare_profile'),
+                 patch.object(installer, 'install_units'),
+                 patch.object(installer.subprocess, 'check_output',
+                              side_effect=lambda command, **kwargs: 'test-commit\n' if kwargs.get('text') else b'')]
+        for mock in mocks:
+            mock.start()
+            self.addCleanup(mock.stop)
+
+    def test_default_install_does_not_inspect_or_replace_the_session(self):
+        with patch('sys.argv', ['install.py', '--skip-build']), \
+             patch.object(installer, 'running_session') as session, \
+             patch.object(installer, 'replace_session') as replace, patch.object(installer, 'run'):
+            installer.main()
+        session.assert_not_called()
+        replace.assert_not_called()
+        self.assertNotEqual((self.installed / 'current').resolve(), self.old)
+
+    def test_skip_build_replace_runs_only_after_snapshot_is_complete(self):
+        def replaced(bundle, session):
+            self.assertEqual((self.installed / 'current').resolve(), bundle)
+            self.assertTrue((bundle / 'installation.json').is_file())
+            self.assertTrue((bundle / 'bin/flowwm-shell').is_file())
+            self.assertTrue((bundle / 'shell/PLUGINS/FlowWM/manifest.json').is_file())
+            self.assertEqual(session, (100, str(self.old)))
+        with patch('sys.argv', ['install.py', '--skip-build', '--replace']), \
+             patch.object(installer, 'running_session', return_value=(100, str(self.old))), \
+             patch.object(installer, 'replace_session', side_effect=replaced) as replace, \
+             patch.object(installer, 'run') as run:
+            installer.main()
+        replace.assert_called_once()
+        self.assertFalse(any(c.args[0] == 'cargo' for c in run.call_args_list))
+
+    def test_install_validation_failure_leaves_session_and_selection_untouched(self):
+        with patch('sys.argv', ['install.py', '--skip-build', '--replace']), \
+             patch.object(installer, 'running_session', return_value=(100, str(self.old))), \
+             patch.object(installer, 'replace_session') as replace, \
+             patch.object(installer, 'run', side_effect=subprocess.CalledProcessError(1, ['niri', 'validate'])):
+            with self.assertRaises(subprocess.CalledProcessError):
+                installer.main()
+        replace.assert_not_called()
+        self.assertEqual((self.installed / 'current').resolve(), self.old)
+
+    def test_rollback_replace_reloads_the_previous_snapshot(self):
+        previous = self.installed / 'versions/previous'
+        previous.mkdir()
+        (self.installed / 'previous').symlink_to(previous, target_is_directory=True)
+        with patch('sys.argv', ['install.py', '--rollback', '--replace']), \
+             patch.object(installer, 'running_session', return_value=(100, str(self.old))), \
+             patch.object(installer, 'replace_session') as replace:
+            installer.main()
+        replace.assert_called_once_with(previous, (100, str(self.old)))
+        self.assertEqual((self.installed / 'current').resolve(), previous)
+        self.assertEqual((self.installed / 'previous').resolve(), self.old)
+
+    def test_inactive_session_fails_before_build_or_install(self):
+        with patch('sys.argv', ['install.py', '--replace']), \
+             patch.object(installer, 'running_session', side_effect=RuntimeError('no active session')), \
+             patch.object(installer, 'run') as run:
+            with self.assertRaises(SystemExit) as failure:
+                installer.main()
+        self.assertEqual(failure.exception.code, 1)
+        run.assert_not_called()
+        self.assertEqual((self.installed / 'current').resolve(), self.old)
+
+
 if __name__ == '__main__':
     unittest.main()

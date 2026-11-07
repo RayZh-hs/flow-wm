@@ -31,13 +31,25 @@ Installed snapshots live in `~/.local/share/flowwm/installed/versions/`. The sta
 `~/.local/bin/flowwm-session login` command selects `installed/current`; it never
 launches a binary or QML file from the source checkout. Builds and nested tests do
 not update this pointer. An explicit installation selects a new snapshot for the
-next login. An already running FlowWM session remains pinned to its own snapshot.
+next login. An already running FlowWM session remains pinned to its own snapshot
+unless you pass `--replace`.
 
 ```sh
 python3 scripts/install.py --skip-build   # explicitly install already built binaries
 python3 scripts/install.py --rollback    # select the previous installation for next login
+python3 scripts/install.py --replace     # build, install, and reload FlowWM and DMS now
+python3 scripts/install.py --skip-build --replace  # reload already built release binaries
+python3 scripts/install.py --rollback --replace    # reload the previous installed snapshot
 ~/.local/bin/flowwm-session describe      # inspect installed paths and checksums
 ```
+
+`--replace` requires an active installed FlowWM session. It stops FlowWM and DMS,
+selects the installed snapshot for those services, and starts them again. Application
+windows stay open because the compositor keeps running; compositor updates take
+effect at the next login. Active workflow subprocesses stop during normal FlowWM
+shutdown. If replacement fails, the installer attempts to restart the previous
+services and reports the failure. Installation without `--replace` leaves running
+services on their existing snapshot.
 
 For a login-screen entry, install a Wayland session desktop file named **FlowWM**
 whose `Exec` is the absolute path to `~/.local/bin/flowwm-session login`. Keep the
@@ -45,7 +57,7 @@ ordinary **Niri** entry launching `niri-session`. SDDM needs the file in its sys
 Wayland session directory; it does not read user application desktop files. On this
 machine, the ignored `scripts/local-session.py` restores the original Niri profile
 with backups, prepares the independent installation, and publishes the entry with
-`--publish` using system authentication. Neither installer restarts the current desktop.
+`--publish` using system authentication. This migration does not restart the desktop.
 
 The DMS plugin source lives at `components/dms/quickshell/PLUGINS/FlowWM/`. Each
 snapshot includes its own copy, so development edits cannot alter the installed UI.

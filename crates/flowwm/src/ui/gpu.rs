@@ -96,8 +96,12 @@ fn graph_key(width: i32, height: i32, state: &State, revision: u64, view: &View)
     view.theme.font.hash(&mut h);
     for c in [
         view.theme.primary,
+        view.theme.on_primary,
+        view.theme.primary_container,
         view.theme.surface,
+        view.theme.surface_low,
         view.theme.surface_high,
+        view.theme.surface_highest,
         view.theme.text,
         view.theme.muted,
         view.theme.outline,

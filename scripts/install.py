@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+REPLACE_SERVICES = ("flowwm.service", "flowwm-dms.service")
 
 
 def run(*arguments, **kwargs):
@@ -155,12 +156,83 @@ ExecCondition=/bin/sh -c "! /usr/bin/systemctl --user --quiet is-active flowwm-c
     run("systemd-analyze", "--user", "verify", "flowwm-compositor.service", "flowwm.service", "flowwm-dms.service", "flowwm-session.target", "dms.service")
 
 
+def service_pid(unit):
+    output = subprocess.check_output(
+        ["systemctl", "--user", "show", unit, "--property=ActiveState,MainPID"], text=True)
+    properties = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+    return int(properties.get("MainPID", "0")) if properties.get("ActiveState") == "active" else 0
+
+
+def running_session():
+    pid = service_pid("flowwm-compositor.service")
+    if not pid:
+        raise RuntimeError("--replace requires a running installed FlowWM session. Select FlowWM at login first.")
+    # D-Bus returns environment values as JSON, including paths with spaces or quotes.
+    output = subprocess.check_output([
+        "busctl", "--user", "--json=short", "get-property", "org.freedesktop.systemd1",
+        "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", "Environment"], text=True)
+    root = next((value.partition("=")[2] for value in json.loads(output)["data"]
+                 if value.startswith("FLOWWM_INSTALL_ROOT=")), None)
+    if not root or not (Path(root) / "installation.json").is_file():
+        raise RuntimeError("The running FlowWM session has no installed snapshot to restore if replacement fails.")
+    return pid, root
+
+
+def verify_services(bundle, compositor_pid):
+    if service_pid("flowwm-compositor.service") != compositor_pid:
+        raise RuntimeError("The compositor changed while the services were reloading")
+    for unit in REPLACE_SERVICES:
+        pid = service_pid(unit)
+        if not pid:
+            raise RuntimeError(f"{unit} did not start")
+        environment = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+        if os.fsencode("FLOWWM_INSTALL_ROOT=" + str(bundle)) not in environment:
+            raise RuntimeError(f"{unit} did not adopt the selected snapshot; check its service overrides")
+
+
+def replace_session(bundle, session):
+    if running_session() != session:
+        raise RuntimeError("The running FlowWM session changed during installation; run --replace again.")
+    bundle = bundle.resolve()
+    previous = session[1]
+    print(f"Reloading FlowWM and DMS from {bundle}; application windows stay open.", flush=True)
+    try:
+        # Stop both services before the DMS launcher repoints its plugin to the new shell.
+        run("systemctl", "--user", "stop", *REPLACE_SERVICES)
+        run("systemctl", "--user", "set-environment", "FLOWWM_INSTALL_ROOT=" + str(bundle))
+        run("systemctl", "--user", "start", *REPLACE_SERVICES)
+        verify_services(bundle, session[0])
+    except BaseException as error:
+        print("Replacement failed; restoring the previous FlowWM and DMS snapshot.", flush=True)
+        try:
+            run("systemctl", "--user", "stop", *REPLACE_SERVICES)
+            run("systemctl", "--user", "set-environment", "FLOWWM_INSTALL_ROOT=" + previous)
+            run("systemctl", "--user", "start", *REPLACE_SERVICES)
+            verify_services(previous, session[0])
+        except BaseException as recovery:
+            raise RuntimeError(f"Replacement failed ({error}); restoring the previous services also failed ({recovery}). "
+                               "The compositor was not restarted. Inspect flowwm.service and flowwm-dms.service.") from error
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            raise
+        raise RuntimeError(f"Replacement failed ({error}). The previous services were restarted; "
+                           "the selected snapshot is still installed for the next login.") from error
+    print("FlowWM and DMS are using the selected snapshot. Compositor updates take effect at the next login.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--skip-build", action="store_true", help="install already built binaries")
     mode.add_argument("--rollback", action="store_true", help="select the previous installed snapshot for the next login")
+    parser.add_argument("--replace", action="store_true",
+                        help="reload FlowWM and DMS using the selected snapshot, keeping the compositor and application windows open")
     args = parser.parse_args()
+    session = None
+    if args.replace:
+        try:
+            session = running_session()
+        except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+            parser.exit(1, f"Cannot replace the running session: {error}\n")
     user_home = Path.home()
     user_config = Path(os.environ.get("XDG_CONFIG_HOME", user_home / ".config"))
     user_state = Path(os.environ.get("XDG_STATE_HOME", user_home / ".local/state"))
@@ -174,7 +246,14 @@ def main():
         before, after = current.resolve(strict=True), previous.resolve(strict=True)
         point(current, after)
         point(previous, before)
-        print(f"Next FlowWM login will use {after}. The running session is unchanged.")
+        print(f"Next FlowWM login will use {after}.")
+        if args.replace:
+            try:
+                replace_session(after, session)
+            except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+                parser.exit(1, f"{error}\n")
+        else:
+            print("The running session is unchanged.")
         return
     if not args.skip_build:
         run("cargo", "build", "--release", "--locked", cwd=ROOT)
@@ -226,11 +305,16 @@ os.execv(sys.executable,[sys.executable,str(script),*sys.argv[1:]])
             point(installed / "previous", current.resolve())
         point(current, bundle)
     except BaseException:
-        # Completed snapshots stay available for diagnosis; the current session is never restarted.
+        # A failed installation must not reload any running services.
         raise
     print(f"Installed FlowWM snapshot: {bundle}")
     print(f"Persistent FlowWM profile: {profile}")
     print("The login screen uses the installed snapshot. Only an explicit install changes current.")
+    if args.replace:
+        try:
+            replace_session(bundle, session)
+        except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+            parser.exit(1, f"{error}\n")
 
 
 if __name__ == "__main__":

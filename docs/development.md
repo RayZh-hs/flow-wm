@@ -93,7 +93,22 @@ in the nested runner, then explicitly install a complete snapshot with
 `python3 scripts/install.py --skip-build`. The FlowWM login entry always uses
 `~/.local/bin/flowwm-session login`, which selects the installed snapshot. It must
 never point at `target/`. Use `--rollback` to select the previous installation for
-the next login. Services and children stay pinned to the snapshot selected at login.
+the next login. Services and children stay pinned to the snapshot selected at login
+unless you explicitly reload the shell services:
+
+```sh
+python3 scripts/install.py --skip-build --replace
+python3 scripts/install.py --rollback --replace
+```
+
+`--replace` reloads `flowwm.service` and `flowwm-dms.service` after installing or
+selecting a snapshot. It updates their `FLOWWM_INSTALL_ROOT` in the user service
+manager, verifies that both services adopt the snapshot, and attempts to restore
+the previous services if replacement fails. It requires an active installed FlowWM
+session and checks that the same compositor is still running before reloading.
+The compositor and application windows keep running; compositor updates require
+another login. Restarting FlowWM stops its active workflow subprocesses. Existing
+application processes retain their inherited environment.
 
 FlowWM uses `flowwm-compositor.service`, `flowwm-session.target`, `flowwm.service`,
 and `flowwm-dms.service`. Niri keeps `niri.service` and its original `dms.service`.

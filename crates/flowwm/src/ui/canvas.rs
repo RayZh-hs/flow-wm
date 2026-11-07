@@ -9,7 +9,7 @@ use gtk::{
     prelude::*,
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     rc::Rc,
 };
@@ -152,6 +152,7 @@ pub struct View {
     motion_serial: u64,
     camera_target: Option<(f64, f64, f64)>,
     space_down: bool,
+    empty_hover: Option<super::empty::Action>,
 }
 impl Default for View {
     fn default() -> Self {
@@ -190,6 +191,7 @@ impl Default for View {
             motion_serial: 0,
             camera_target: None,
             space_down: false,
+            empty_hover: None,
         }
     }
 }
@@ -265,6 +267,7 @@ pub fn suspend(view: &Rc<RefCell<View>>) {
     view.previews.clear();
     view.drag = None;
     view.preview = None;
+    view.empty_hover = None;
 }
 
 pub fn restore(view: &Rc<RefCell<View>>, mut saved: View) {
@@ -317,9 +320,10 @@ impl View {
     }
     pub fn interaction_key(&self) -> String {
         format!(
-            "{}:{}:{:?}",
+            "{}:{}:{:?}:{:?}",
             self.pointer.0,
             self.pointer.1,
+            self.empty_hover,
             self.drag.as_ref().map(|d| match d {
                 Drag::Box { start, end, .. } => format!("box:{start:?}:{end:?}"),
                 Drag::Cut { points } => format!("cut:{points:?}"),
@@ -595,6 +599,8 @@ fn make_scoped(
     area.set_cursor_from_name(Some("default"));
     let click = gtk::GestureClick::new();
     click.set_button(1);
+    let empty_pressed = Rc::new(Cell::new(None));
+    let pressed = empty_pressed.clone();
     let e = engine.clone();
     let v = view.clone();
     let cb = callback.clone();
@@ -603,6 +609,15 @@ fn make_scoped(
         a.grab_focus();
         let state = e.snapshot().state;
         let mut view = v.borrow_mut();
+        let action = (!view.space_down && workspace_empty(&state))
+            .then(|| super::empty::hit(a.width() as f64, a.height() as f64, x, y))
+            .flatten();
+        pressed.set(action);
+        if action.is_some() {
+            drop(view);
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            return;
+        }
         let (x, y) = view.world(x, y);
         let hit = state.nodes.iter().rev().find(|n| {
             n.workspace == state.selected_workspace && contains(n, &view.position(n), x, y)
@@ -634,7 +649,44 @@ fn make_scoped(
         }
         a.queue_draw();
     });
+    let e = engine.clone();
+    let cb = callback.clone();
+    let a = area.clone();
+    click.connect_released(move |_, _, x, y| {
+        if let Some(action) = empty_pressed.take()
+            && workspace_empty(&e.snapshot().state)
+            && super::empty::hit(a.width() as f64, a.height() as f64, x, y) == Some(action)
+        {
+            cb(action.canvas_action());
+        }
+    });
     area.add_controller(click);
+    let motion = gtk::EventControllerMotion::new();
+    let e = engine.clone();
+    let v = view.clone();
+    let a = area.clone();
+    motion.connect_motion(move |_, x, y| {
+        let hit = super::empty::hit(a.width() as f64, a.height() as f64, x, y);
+        let hover = hit.filter(|_| !v.borrow().space_down && workspace_empty(&e.snapshot().state));
+        if v.borrow().empty_hover != hover {
+            v.borrow_mut().empty_hover = hover;
+            a.set_cursor_from_name(Some(if hover.is_some() {
+                "pointer"
+            } else {
+                "default"
+            }));
+            a.queue_draw();
+        }
+    });
+    let v = view.clone();
+    let a = area.clone();
+    motion.connect_leave(move |_| {
+        if v.borrow_mut().empty_hover.take().is_some() {
+            a.set_cursor_from_name(Some("default"));
+            a.queue_draw();
+        }
+    });
+    area.add_controller(motion);
     let gesture = gtk::GestureDrag::new();
     gesture.set_button(1);
     let e = engine.clone();
@@ -648,6 +700,13 @@ fn make_scoped(
             cb(CanvasAction::Camera);
         }
         let state = e.snapshot().state;
+        if !panning
+            && workspace_empty(&state)
+            && super::empty::hit(a.width() as f64, a.height() as f64, x, y).is_some()
+        {
+            g.set_state(gtk::EventSequenceState::Denied);
+            return;
+        }
         let mut view = v.borrow_mut();
         view.motion_serial += 1;
         view.camera_target = None;
@@ -1112,6 +1171,12 @@ fn make_scoped(
 fn contains(node: &Node, p: &Position, x: f64, y: f64) -> bool {
     x >= p.x && x <= p.x + WIDTH && y >= p.y - 8.0 && y <= p.y + node_height(node) + 8.0
 }
+fn workspace_empty(state: &State) -> bool {
+    !state
+        .nodes
+        .iter()
+        .any(|node| node.workspace == state.selected_workspace)
+}
 pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
     let theme = &view.theme;
     c.select_font_face(
@@ -1354,53 +1419,28 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
     }
     c.push_group();
     if nodes.is_empty() {
+        super::empty::draw(c, width, height, theme, view.empty_hover);
+    } else {
+        text(c, 24.0, 30.0, "WORKFLOW", 10.0, theme.muted.rgb(), false);
         text(
             c,
-            width / 2.0 - 155.0,
-            height / 2.0 - 36.0,
-            "A workspace for how you work.",
-            21.0,
-            theme.text.rgb(),
-            false,
-        );
-        text(
-            c,
-            width / 2.0 - 155.0,
-            height / 2.0,
-            "Win+Space  new node · Tab  ask an agent",
-            13.0,
+            24.0,
+            height - 22.0,
+            "Tab  ask agent   /  search   F  focus   HJKL  select   WASD  move   ?  help",
+            11.0,
             theme.muted.rgb(),
             false,
         );
         text(
             c,
-            width / 2.0 - 155.0,
-            height / 2.0 + 29.0,
-            "Agents, shell commands, metrics, and you.",
-            12.0,
+            width - 72.0,
+            height - 22.0,
+            &format!("{}%", (view.zoom * 100.0) as i32),
+            11.0,
             theme.muted.rgb(),
-            false,
+            true,
         );
     }
-    text(c, 24.0, 30.0, "WORKFLOW", 10.0, theme.muted.rgb(), false);
-    text(
-        c,
-        24.0,
-        height - 22.0,
-        "Tab  ask agent   /  search   F  focus   HJKL  select   WASD  move   ?  help",
-        11.0,
-        theme.muted.rgb(),
-        false,
-    );
-    text(
-        c,
-        width - 72.0,
-        height - 22.0,
-        &format!("{}%", (view.zoom * 100.0) as i32),
-        11.0,
-        theme.muted.rgb(),
-        true,
-    );
     let _ = c.pop_group_to_source();
     let _ = c.paint_with_alpha(view.chrome);
     // Native columns remain real Niri clients. The layer has matching input holes.
