@@ -1,0 +1,96 @@
+name: Go CI
+
+on:
+  push:
+    branches:
+      - "**"
+    paths:
+      - "core/**"
+      - ".github/workflows/go-ci.yml"
+  pull_request:
+    branches: [master, main, "stable-*"]
+    paths:
+      - "core/**"
+      - ".github/workflows/go-ci.yml"
+
+concurrency:
+  group: go-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install flatpak
+        run: sudo apt-get update && sudo apt-get install -y flatpak
+
+      - name: Cache flatpak runtime
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/flatpak
+          key: flatpak-org.freedesktop.Platform-24.08
+
+      - name: Install a flatpak for tests
+        run: |
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak info org.freedesktop.Platform//24.08 >/dev/null 2>&1 || \
+            flatpak install --user -y org.freedesktop.Platform//24.08
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: ./core/go.mod
+          cache-dependency-path: ./core/go.sum
+
+      - name: Test
+        run: go test -race -v ./...
+
+      - name: Build dms
+        run: go build -v ./cmd/dms
+
+      - name: Build dms (embedded shell)
+        run: make build
+
+      - name: Build dms (distropkg)
+        run: go build -v -tags 'distro_binary withshell' ./cmd/dms
+
+      - name: Build duxinstall
+        run: go build -v ./cmd/duxinstall
+
+  build-freebsd:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: ./core/go.mod
+          cache-dependency-path: ./core/go.sum
+
+      - name: Build all packages
+        env:
+          GOOS: freebsd
+          CGO_ENABLED: 0
+        run: go build -v ./...
+
+      - name: Build dms (distropkg, embedded shell)
+        run: |
+          make sync-shell
+          GOOS=freebsd CGO_ENABLED=0 go build -v -tags 'distro_binary withshell' ./cmd/dms

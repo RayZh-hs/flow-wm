@@ -1,0 +1,38 @@
+name: Pre-commit Checks
+
+on:
+  push:
+  pull_request:
+    branches: [master, main, "stable-*"]
+jobs:
+  pre-commit-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install flatpak
+        run: sudo apt update && sudo apt install -y flatpak
+
+      - name: Add flathub
+        run: sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+
+      - name: Add a flatpak that mutagen could support
+        run: sudo flatpak install -y org.freedesktop.Platform/x86_64/24.08 app.zen_browser.zen
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+
+      - name: Download Go modules
+        working-directory: core
+        run: for attempt in 1 2 3; do go mod download && exit 0; sleep 15; done; exit 1
+
+      - name: run pre-commit hooks
+        uses: j178/prek-action@v2
+        env:
+          SKIP: qml-tests

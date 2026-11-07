@@ -1,0 +1,107 @@
+name: Point release
+
+# Cuts vX.Y.Z from stable-X.Y: runs the port audit (warn-only), bumps
+# quickshell/VERSION, tags, and dispatches the Release workflow. Distro
+# builds are dispatched separately.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Point release version (e.g. 1.5.1)"
+        required: true
+        type: string
+      notify_issues:
+        description: "Comment on open related/fixes issues asking reporters to retest"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: point-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Validate version and derive branch
+        id: derive
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must be X.Y.Z (got '$VERSION')"; exit 1
+          fi
+          echo "branch=stable-${VERSION%.*}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub App token
+        id: app_token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Checkout release branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.derive.outputs.branch }}
+          fetch-depth: 0
+          token: ${{ steps.app_token.outputs.token }}
+
+      - name: Preflight — verify Release workflow is dispatchable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${{ github.repository }}/actions/workflows/release.yml" \
+            --jq '.state' | grep -qx active ||
+            { echo "::error::release.yml is not dispatchable; aborting before any push"; exit 1; }
+
+      - name: Port audit (informational)
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: |
+          bash scripts/port-audit.sh "${{ steps.derive.outputs.branch }}" ||
+            echo "::warning::port audit failed; continuing"
+
+      - name: Bump VERSION, tag, and push
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          TAG: ${{ steps.derive.outputs.tag }}
+          BRANCH: ${{ steps.derive.outputs.branch }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::tag ${TAG} already exists"; exit 1
+          fi
+          git config user.name "dux-ci[bot]"
+          git config user.email "344434142+dux-ci[bot]@users.noreply.github.com"
+
+          echo "${TAG}" > quickshell/VERSION
+          git add quickshell/VERSION
+          git commit -m "bump VERSION to ${TAG}"
+          git tag "${TAG}"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" "HEAD:${BRANCH}" "refs/tags/${TAG}"
+
+      - name: Dispatch Release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run release.yml --ref "${{ steps.derive.outputs.tag }}" \
+            -f tag="${{ steps.derive.outputs.tag }}" \
+            -f notify_issues="${{ inputs.notify_issues }}"
+
+      - name: Next steps
+        run: |
+          {
+            echo "## ${{ steps.derive.outputs.tag }} tagged on ${{ steps.derive.outputs.branch }} — Release workflow dispatched"
+            echo ""
+            echo "Distro builds (COPR/OBS/PPA/XBPS) are dispatched by the Release workflow once the release is published."
+          } >> "$GITHUB_STEP_SUMMARY"

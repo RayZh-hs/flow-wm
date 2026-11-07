@@ -1,0 +1,70 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: end-of-file-fixer
+  - repo: local
+    hooks:
+      - id: qml-tests
+        name: shell logic and QML behavior tests
+        entry: python3 quickshell/tests/run-qml.py
+        language: system
+        types: []
+        files: ^(quickshell/|dux-qml-common$|Makefile$|core/Makefile$|scripts/shell-test-excludes\.txt$|flake\.nix$|\.pre-commit-config\.yaml$|\.github/workflows/(qml-tests|prek)\.yml$)
+        pass_filenames: false
+        require_serial: true
+  - repo: local
+    hooks:
+      - id: shellcheck
+        name: shellcheck
+        entry: shellcheck -e SC2164 -e SC2001 -e SC2012 -e SC2317
+        language: system
+        types: [shell]
+  - repo: local
+    hooks:
+      - id: go-mod-tidy
+        name: go mod tidy
+        entry: bash -c 'cd core && go mod tidy'
+        language: system
+        files: ^core/.*\.(go|mod|sum)$
+        pass_filenames: false
+      - id: nix-vendor-hash
+        name: update Nix vendor hash
+        entry: bash -c 'command -v nix >/dev/null 2>&1 || exit 0; scripts/update-vendor-hash.sh --stage'
+        language: system
+        files: ^core/go\.(mod|sum)$
+        pass_filenames: false
+  - repo: local
+    hooks:
+      - id: settings-search-index
+        name: settings search index is up to date
+        entry: bash -c 'python3 quickshell/translations/extract_settings_index.py >/dev/null || exit 1; if ! git diff --exit-code -- quickshell/translations/settings_search_index.json; then echo "settings_search_index.json is out of date; run quickshell/translations/extract_settings_index.py and stage the result" >&2; exit 1; fi'
+        language: system
+        files: ^quickshell/(Modules/Settings/.*\.qml|Common/SettingsTabs\.qml|Services/SettingsSearchService\.qml|translations/(extract_settings_index\.py|en\.json))$
+        pass_filenames: false
+  - repo: local
+    hooks:
+      - id: i18n-term-freeze
+        name: i18n term freeze (no new I18n.tr/qsTr terms)
+        entry: python3 quickshell/translations/check_term_freeze.py
+        language: system
+        files: ^quickshell/(.*\.qml|translations/(term_freeze\.json|check_term_freeze\.py|extract_translations\.py))$
+        pass_filenames: false
+  - repo: local
+    hooks:
+      - id: i18n-term-variants
+        name: i18n term variants (no case/punctuation duplicates)
+        entry: python3 quickshell/translations/check_term_variants.py
+        language: system
+        files: ^quickshell/(.*\.qml|translations/(check_term_variants\.py|extract_translations\.py))$
+        pass_filenames: false
+  - repo: local
+    hooks:
+      - id: no-console-in-qml
+        name: no console.* in QML (use Log service)
+        entry: bash -c 'if grep -nE "console\.(log|error|info|warn|debug)" "$@"; then echo "Use the Log service (log.info/warn/error/debug/fatal) instead of console.*" >&2; exit 1; fi' --
+        language: system
+        files: ^quickshell/.*\.qml$
+        exclude: ^quickshell/(Services/Log\.qml$|dms-plugins/|PLUGINS/|tests/)
