@@ -1,0 +1,84 @@
+name: Update stable branch
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  update-stable:
+    # skip prerelease tags
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub App token
+        id: app_token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app_token.outputs.token }}
+
+      - name: Push to stable branch
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: |
+          set -euo pipefail
+          # don't roll stable backwards
+          if git fetch origin stable --quiet 2>/dev/null; then
+            stable_tag=$(git describe --tags --abbrev=0 FETCH_HEAD 2>/dev/null || echo "v0.0.0")
+            newest=$(printf '%s\n%s\n' "$stable_tag" "${GITHUB_REF_NAME}" | sort -V | tail -1)
+            if [ "$newest" != "${GITHUB_REF_NAME}" ]; then
+              echo "skipping: ${GITHUB_REF_NAME} is older than stable (${stable_tag})"
+              exit 0
+            fi
+          fi
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" HEAD:refs/heads/stable --force
+
+  cut-release-branch:
+    # create stable-X.Y at each vX.Y.0 tag
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub App token
+        id: app_token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app_token.outputs.token }}
+
+      - name: Create release branch
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v([0-9]+)\.([0-9]+)\.0$ ]]; then
+            echo "not a vX.Y.0 tag, no release branch to cut"
+            exit 0
+          fi
+          branch="stable-${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          if git ls-remote --exit-code origin "refs/heads/${branch}" >/dev/null 2>&1; then
+            echo "${branch} already exists"
+            exit 0
+          fi
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" "HEAD:refs/heads/${branch}"
+          echo "created ${branch} at ${GITHUB_REF_NAME}"
+          GH_TOKEN="${{ secrets.GITHUB_TOKEN }}" gh label create "port ${branch}" \
+            --repo "${{ github.repository }}" \
+            --description "Auto-port merged PR to ${branch}" --color 0e8a16 ||
+            echo "label 'port ${branch}' may already exist"

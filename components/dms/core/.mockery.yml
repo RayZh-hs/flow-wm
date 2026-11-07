@@ -1,0 +1,85 @@
+dir: internal/mocks/{{.InterfaceDirRelative}}
+structname: Mock{{.InterfaceName}}
+pkgname: '{{.SrcPackageName}}'
+filename: 'mock_{{.InterfaceName}}.go'
+template: testify
+template-data:
+  unroll-variadic: true
+packages:
+  github.com/duxlabs-dev/dux-shell/core/internal/geolocation:
+    config:
+      dir: internal/mocks/geolocation
+      pkgname: mocks_geolocation
+    interfaces:
+      Client: {}
+  github.com/duxlabs-dev/dux-shell/core/internal/server/cups:
+    config:
+      dir: internal/mocks/cups
+      pkgname: mocks_cups
+    interfaces:
+      CUPSClientInterface: {}
+      PkHelper:
+        config:
+          dir: internal/mocks/cups_pkhelper
+          pkgname: mocks_cups_pkhelper
+  github.com/duxlabs-dev/dux-shell/core/internal/server/evdev:
+    config:
+      dir: internal/mocks/evdev
+      pkgname: mocks_evdev
+    interfaces:
+      EvdevDevice: {}
+  github.com/duxlabs-dev/dux-shell/core/internal/server/network:
+    config:
+      dir: internal/mocks/network
+      pkgname: mocks_network
+    interfaces:
+      Backend: {}
+  github.com/duxlabs-dev/dux-shell/core/internal/server/wlcontext:
+    config:
+      dir: internal/mocks/wlcontext
+      pkgname: mocks_wlcontext
+    interfaces:
+      WaylandContext: {}
+  github.com/duxlabs-dev/dux-shell/core/internal/utils:
+    config:
+      dir: internal/mocks/utils
+      pkgname: mocks_utils
+    interfaces:
+      AppChecker: {}
+  github.com/duxlabs-dev/dux-shell/core/internal/version:
+    config:
+      dir: internal/mocks/version
+      pkgname: mocks_version
+    interfaces:
+      VersionFetcher: {}
+  github.com/duxlabs-dev/dux-go/wayland/client:
+    config:
+      dir: internal/mocks/wlclient
+      pkgname: mocks_wlclient
+    interfaces:
+      WaylandDisplay: {}
+  github.com/duxlabs-dev/dux-shell/core/internal/plugins:
+    interfaces:
+      GitClient: {}
+  github.com/duxlabs-dev/dux-shell/core/internal/server/brightness:
+    config:
+      dir: internal/mocks/brightness
+      pkgname: mocks_brightness
+    interfaces:
+      DBusConn: {}
+  github.com/Wifx/gonetworkmanager/v2:
+    interfaces:
+      AccessPoint: {}
+      ActiveConnection: {}
+      Connection: {}
+      Device: {}
+      DeviceWireless: {}
+      IP4Config: {}
+      NetworkManager: {}
+      Settings: {}
+  github.com/godbus/dbus/v5:
+    interfaces:
+      BusObject: {}
+  net:
+    interfaces:
+      Conn: {}

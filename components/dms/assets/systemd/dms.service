@@ -1,0 +1,23 @@
+[Unit]
+Description=Dux Shell (DMS)
+PartOf=graphical-session.target
+After=graphical-session.target
+Requisite=graphical-session.target
+
+[Service]
+Type=notify
+BusName=org.freedesktop.Notifications
+NotifyAccess=main
+Environment=QS_DISABLE_CRASH_HANDLER=1
+ExecStart=/usr/bin/dms run --session
+ExecReload=/bin/kill -USR1 $MAINPID
+LimitNOFILE=16384:infinity
+Restart=on-failure
+RestartForceExitStatus=TEMPFAIL
+SuccessExitStatus=TEMPFAIL
+RestartSec=1.23
+TimeoutStartSec=90s
+TimeoutStopSec=10
+
+[Install]
+WantedBy=graphical-session.target
