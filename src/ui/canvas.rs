@@ -8,13 +8,19 @@ use gtk::{
     gdk, glib,
     prelude::*,
 };
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 
 pub const WIDTH: f64 = 292.0;
 pub const HEIGHT: f64 = 154.0;
 pub fn node_height(node: &Node) -> f64 {
-    if node.kind == NodeKind::Window || node.window_id.is_some() {
-        HEIGHT + 60.0
+    if node.closed_window() {
+        super::layout::CLOSED_HEIGHT
+    } else if node.kind == NodeKind::Window || node.window_id.is_some() {
+        HEIGHT + 120.0
     } else {
         HEIGHT
     }
@@ -84,18 +90,56 @@ pub enum CanvasAction {
     Edit(String),
     Delete(String),
     Run(String),
-    Windows,
+    Chat,
+    Search,
+    Help,
+    ClearHistory,
+    Camera,
+    Escape,
 }
 #[derive(Clone)]
 enum Drag {
-    Node { id: String, origin: Position },
-    Pan { x: f64, y: f64 },
-    Wire { source: String },
+    Node,
+    Pan {
+        x: f64,
+        y: f64,
+    },
+    Wire {
+        source: String,
+    },
+    Box {
+        start: (f64, f64),
+        end: (f64, f64),
+        additive: bool,
+    },
+    Cut {
+        points: Vec<(f64, f64)>,
+    },
 }
 #[derive(Clone)]
 pub struct View {
+    pub gpu: bool,
     pub theme: Theme,
     pub selected: Option<String>,
+    pub selection: HashSet<String>,
+    pub query: String,
+    pub numbers: bool,
+    pub images: HashMap<String, cairo::ImageSurface>,
+    pub wallpaper: Option<cairo::ImageSurface>,
+    pub image_textures: HashMap<String, gdk::Texture>,
+    pub wallpaper_texture: Option<gdk::Texture>,
+    pub desktop_rects: HashMap<String, super::collapse::Rect>,
+    pub presentations: HashMap<String, f64>,
+    pub live_fade: f64,
+    pub chrome: f64,
+    pub insets: [i32; 4],
+    pub output_size: (f64, f64),
+    pub transparent: bool,
+    pub morphing: bool,
+    pub previews: HashMap<String, Position>,
+    pub presented_positions: HashMap<String, Position>,
+    pub arrangement: super::layout::Arrangement,
+    origins: HashMap<String, Position>,
     pub zoom: f64,
     pub pan_x: f64,
     pub pan_y: f64,
@@ -110,8 +154,28 @@ pub struct View {
 impl Default for View {
     fn default() -> Self {
         Self {
+            gpu: false,
             theme: Theme::load(),
             selected: None,
+            selection: HashSet::new(),
+            query: String::new(),
+            numbers: false,
+            images: HashMap::new(),
+            wallpaper: None,
+            image_textures: HashMap::new(),
+            wallpaper_texture: None,
+            desktop_rects: HashMap::new(),
+            presentations: HashMap::new(),
+            live_fade: 0.0,
+            chrome: 1.0,
+            insets: [0; 4],
+            output_size: (1920.0, 1080.0),
+            transparent: false,
+            morphing: false,
+            previews: HashMap::new(),
+            presented_positions: HashMap::new(),
+            arrangement: super::layout::Arrangement::default(),
+            origins: HashMap::new(),
             zoom: 0.9,
             pan_x: 60.0,
             pan_y: 60.0,
@@ -126,7 +190,7 @@ impl Default for View {
     }
 }
 
-pub fn animate_camera(area: &gtk::DrawingArea, view: &Rc<RefCell<View>>, target: &View) {
+pub fn animate_camera(area: &super::surface::Surface, view: &Rc<RefCell<View>>, target: &View) {
     let mut current = view.borrow_mut();
     current.motion_serial += 1;
     let serial = current.motion_serial;
@@ -169,7 +233,10 @@ pub fn animate_camera(area: &gtk::DrawingArea, view: &Rc<RefCell<View>>, target:
         }
     });
 }
-pub fn fit_animated(area: &gtk::DrawingArea, view: &Rc<RefCell<View>>, state: &State) {
+pub fn fit_animated(area: &super::surface::Surface, view: &Rc<RefCell<View>>, state: &State) {
+    view.borrow_mut()
+        .arrangement
+        .update(state, area.width(), area.height());
     if area.width() < 100 || area.height() < 100 {
         return;
     }
@@ -177,10 +244,11 @@ pub fn fit_animated(area: &gtk::DrawingArea, view: &Rc<RefCell<View>>, state: &S
     target.fit(state, area.width() as f64, area.height() as f64);
     animate_camera(area, view, &target);
 }
-pub fn fit_immediate(area: &gtk::DrawingArea, view: &Rc<RefCell<View>>, state: &State) {
+pub fn fit_immediate(area: &super::surface::Surface, view: &Rc<RefCell<View>>, state: &State) {
     let mut view = view.borrow_mut();
     view.motion_serial += 1;
     view.camera_target = None;
+    view.arrangement.update(state, area.width(), area.height());
     view.fit(state, area.width() as f64, area.height() as f64);
     area.queue_draw();
 }
@@ -189,11 +257,13 @@ pub fn suspend(view: &Rc<RefCell<View>>) {
     view.motion_serial += 1;
     view.camera_target = None;
     view.space_down = false;
+    view.numbers = false;
+    view.previews.clear();
     view.drag = None;
     view.preview = None;
 }
 pub fn navigate(
-    area: &gtk::DrawingArea,
+    area: &super::surface::Surface,
     view: &Rc<RefCell<View>>,
     state: &State,
     direction: &str,
@@ -204,27 +274,67 @@ pub fn navigate(
     animate_camera(area, view, &target);
     id
 }
-pub fn focus_node(area: &gtk::DrawingArea, view: &Rc<RefCell<View>>, state: &State, id: &str) {
+pub fn focus_node(
+    area: &super::surface::Surface,
+    view: &Rc<RefCell<View>>,
+    state: &State,
+    id: &str,
+) {
     let Some(node) = state.node(id) else {
         return;
     };
     let mut target = view.borrow().clone();
     target.zoom = target.zoom.clamp(0.85, 1.2);
-    target.pan_x = area.width() as f64 / 2.0 - (node.position.x + WIDTH / 2.0) * target.zoom;
+    let position = target.position(node);
+    target.pan_x = area.width() as f64 / 2.0 - (position.x + WIDTH / 2.0) * target.zoom;
     target.pan_y =
-        area.height() as f64 / 2.0 - (node.position.y + node_height(node) / 2.0) * target.zoom;
+        area.height() as f64 / 2.0 - (position.y + node_height(node) / 2.0) * target.zoom;
     animate_camera(area, view, &target);
 }
 impl View {
+    pub fn interaction_key(&self) -> String {
+        format!(
+            "{}:{}:{:?}",
+            self.pointer.0,
+            self.pointer.1,
+            self.drag.as_ref().map(|d| match d {
+                Drag::Box { start, end, .. } => format!("box:{start:?}:{end:?}"),
+                Drag::Cut { points } => format!("cut:{points:?}"),
+                Drag::Wire { source } => format!("wire:{source}"),
+                _ => String::new(),
+            })
+        )
+    }
     pub fn world(&self, x: f64, y: f64) -> (f64, f64) {
         ((x - self.pan_x) / self.zoom, (y - self.pan_y) / self.zoom)
     }
     pub fn position(&self, node: &Node) -> Position {
+        if let Some(position) = self.previews.get(&node.id) {
+            return position.clone();
+        }
         self.preview
             .as_ref()
             .filter(|(id, _)| id == &node.id)
             .map(|(_, p)| p.clone())
-            .unwrap_or_else(|| node.position.clone())
+            .unwrap_or_else(|| {
+                let base = self.arrangement.position(node);
+                let offset = self
+                    .presented_positions
+                    .get(&node.id)
+                    .cloned()
+                    .unwrap_or_default();
+                Position {
+                    x: base.x + offset.x,
+                    y: base.y + offset.y,
+                }
+            })
+    }
+    pub fn stored_position(&self, node: &Node, position: &Position) -> Position {
+        let shown = self.position(node);
+        Position {
+            x: node.position.x + position.x - shown.x,
+            y: node.position.y + position.y - shown.y,
+        }
     }
     pub fn fit(&mut self, state: &State, width: f64, height: f64) {
         let nodes: Vec<_> = state
@@ -240,19 +350,19 @@ impl View {
         }
         let min_x = nodes
             .iter()
-            .map(|n| n.position.x)
+            .map(|n| self.arrangement.position(n).x)
             .fold(f64::INFINITY, f64::min);
         let min_y = nodes
             .iter()
-            .map(|n| n.position.y)
+            .map(|n| self.arrangement.position(n).y)
             .fold(f64::INFINITY, f64::min);
         let max_x = nodes
             .iter()
-            .map(|n| n.position.x + WIDTH)
+            .map(|n| self.arrangement.position(n).x + WIDTH)
             .fold(f64::NEG_INFINITY, f64::max);
         let max_y = nodes
             .iter()
-            .map(|n| n.position.y + node_height(n))
+            .map(|n| self.arrangement.position(n).y + node_height(n))
             .fold(f64::NEG_INFINITY, f64::max);
         self.zoom = ((width - 160.0) / (max_x - min_x))
             .min((height - 160.0) / (max_y - min_y))
@@ -270,7 +380,7 @@ impl View {
         let nodes: Vec<_> = state
             .nodes
             .iter()
-            .filter(|n| n.workspace == state.selected_workspace)
+            .filter(|n| n.workspace == state.selected_workspace && matches_query(n, &self.query))
             .collect();
         let current = self.selected.as_deref().and_then(|id| state.node(id));
         let target = if let Some(current) = current {
@@ -278,8 +388,10 @@ impl View {
                 .iter()
                 .filter(|n| n.id != current.id)
                 .filter_map(|n| {
-                    let dx = n.position.x - current.position.x;
-                    let dy = n.position.y - current.position.y;
+                    let p = self.position(n);
+                    let origin = self.position(current);
+                    let dx = p.x - origin.x;
+                    let dy = p.y - origin.y;
                     let (forward, sideways) = match direction {
                         "up" => (-dy, dx),
                         "down" => (dy, dx),
@@ -295,45 +407,49 @@ impl View {
         };
         let target = target?;
         self.selected = Some(target.id.clone());
-        let left = target.position.x * self.zoom + self.pan_x;
-        let top = target.position.y * self.zoom + self.pan_y;
+        let position = self.position(target);
+        let left = position.x * self.zoom + self.pan_x;
+        let top = position.y * self.zoom + self.pan_y;
         if left < 30.0 || left + WIDTH * self.zoom > width - 30.0 {
-            self.pan_x = width / 2.0 - (target.position.x + WIDTH / 2.0) * self.zoom;
+            self.pan_x = width / 2.0 - (position.x + WIDTH / 2.0) * self.zoom;
         }
         if top < 30.0 || top + node_height(target) * self.zoom > height - 30.0 {
-            self.pan_y = height / 2.0 - (target.position.y + node_height(target) / 2.0) * self.zoom;
+            self.pan_y = height / 2.0 - (position.y + node_height(target) / 2.0) * self.zoom;
         }
         Some(target.id.clone())
     }
 }
 
-pub fn make(engine: Engine, view: Rc<RefCell<View>>, callback: Callback) -> gtk::DrawingArea {
-    let area = gtk::DrawingArea::builder()
-        .hexpand(true)
-        .vexpand(true)
-        .focusable(true)
-        .build();
-    area.set_cursor_from_name(Some("default"));
+pub fn make(
+    engine: Engine,
+    view: Rc<RefCell<View>>,
+    callback: Callback,
+) -> super::surface::Surface {
     let e = engine.clone();
     let v = view.clone();
-    area.set_draw_func(move |_, context, width, height| {
+    let cache = RefCell::new(super::gpu::Cache::default());
+    let area = super::surface::Surface::new(move |snapshot, width, height| {
         let started = std::time::Instant::now();
-        draw(
-            context,
-            width as f64,
-            height as f64,
-            &e.snapshot().state,
+        let state = e.snapshot();
+        super::gpu::render(
+            snapshot,
+            width,
+            height,
+            &state.state,
+            state.revision,
             &v.borrow(),
+            &mut cache.borrow_mut(),
         );
         e.performance.record("canvas_draw", started.elapsed());
     });
+    area.set_cursor_from_name(Some("default"));
     let click = gtk::GestureClick::new();
     click.set_button(1);
     let e = engine.clone();
     let v = view.clone();
     let cb = callback.clone();
     let a = area.clone();
-    click.connect_pressed(move |_, count, x, y| {
+    click.connect_pressed(move |gesture, count, x, y| {
         a.grab_focus();
         let state = e.snapshot().state;
         let mut view = v.borrow_mut();
@@ -341,7 +457,23 @@ pub fn make(engine: Engine, view: Rc<RefCell<View>>, callback: Callback) -> gtk:
         let hit = state.nodes.iter().rev().find(|n| {
             n.workspace == state.selected_workspace && contains(n, &view.position(n), x, y)
         });
-        view.selected = hit.map(|n| n.id.clone());
+        let additive = gesture
+            .current_event_state()
+            .contains(gdk::ModifierType::SHIFT_MASK);
+        if !additive && hit.is_none_or(|n| !view.selection.contains(&n.id)) {
+            view.selection.clear();
+        }
+        if let Some(node) = hit {
+            if additive && view.selection.contains(&node.id) {
+                view.selection.remove(&node.id);
+            } else {
+                view.selection.insert(node.id.clone());
+            }
+        }
+        view.selected = hit
+            .filter(|n| view.selection.contains(&n.id))
+            .map(|n| n.id.clone())
+            .or_else(|| view.selection.iter().next().cloned());
         let selected = view.selected.clone();
         drop(view);
         cb(CanvasAction::Select(selected));
@@ -358,41 +490,60 @@ pub fn make(engine: Engine, view: Rc<RefCell<View>>, callback: Callback) -> gtk:
     let e = engine.clone();
     let v = view.clone();
     let a = area.clone();
-    gesture.connect_drag_begin(move |_, x, y| {
+    let cb = callback.clone();
+    gesture.connect_drag_begin(move |g, x, y| {
         a.grab_focus();
+        let panning = v.borrow().space_down;
+        if panning {
+            cb(CanvasAction::Camera);
+        }
         let state = e.snapshot().state;
         let mut view = v.borrow_mut();
         view.motion_serial += 1;
         view.camera_target = None;
         let (wx, wy) = view.world(x, y);
         view.pointer = (wx, wy);
-        if view.space_down {
+        if panning {
             view.drag = Some(Drag::Pan {
                 x: view.pan_x,
                 y: view.pan_y,
             });
         } else if let Some(node) = state.nodes.iter().find(|n| {
             n.workspace == state.selected_workspace
-                && ((wx - n.position.x - WIDTH / 2.0).hypot(wy - n.position.y - node_height(n))
-                    < 16.0)
+                && (wx - view.position(n).x - WIDTH / 2.0)
+                    .hypot(wy - view.position(n).y - node_height(n))
+                    < 12.0
         }) {
             view.drag = Some(Drag::Wire {
                 source: node.id.clone(),
             });
-        } else if let Some(node) =
-            state.nodes.iter().rev().find(|n| {
-                n.workspace == state.selected_workspace && contains(n, &n.position, wx, wy)
-            })
-        {
+        } else if let Some(node) = state.nodes.iter().rev().find(|n| {
+            n.workspace == state.selected_workspace && contains(n, &view.position(n), wx, wy)
+        }) {
+            if !view.selection.contains(&node.id) {
+                view.selection.clear();
+                view.selection.insert(node.id.clone());
+            }
             view.selected = Some(node.id.clone());
-            view.drag = Some(Drag::Node {
-                id: node.id.clone(),
-                origin: node.position.clone(),
-            });
+            view.origins = state
+                .nodes
+                .iter()
+                .filter(|n| view.selection.contains(&n.id))
+                .map(|n| (n.id.clone(), view.position(n)))
+                .collect();
+            view.drag = Some(Drag::Node);
         } else {
-            view.drag = Some(Drag::Pan {
-                x: view.pan_x,
-                y: view.pan_y,
+            let additive = g
+                .current_event_state()
+                .contains(gdk::ModifierType::SHIFT_MASK);
+            if !additive {
+                view.selection.clear();
+                view.selected = None;
+            }
+            view.drag = Some(Drag::Box {
+                start: (wx, wy),
+                end: (wx, wy),
+                additive,
             });
         }
     });
@@ -401,15 +552,22 @@ pub fn make(engine: Engine, view: Rc<RefCell<View>>, callback: Callback) -> gtk:
     gesture.connect_drag_update(move |g, dx, dy| {
         let mut view = v.borrow_mut();
         match view.drag.clone() {
-            Some(Drag::Node { id, origin }) => {
-                let zoom = view.zoom;
-                view.preview = Some((
-                    id,
-                    Position {
-                        x: ((origin.x + dx / zoom) / GRID).round() * GRID,
-                        y: ((origin.y + dy / zoom) / GRID).round() * GRID,
-                    },
-                ));
+            Some(Drag::Node) => {
+                let dx = (dx / view.zoom / GRID).round() * GRID;
+                let dy = (dy / view.zoom / GRID).round() * GRID;
+                view.previews = view
+                    .origins
+                    .iter()
+                    .map(|(id, p)| {
+                        (
+                            id.clone(),
+                            Position {
+                                x: p.x + dx,
+                                y: p.y + dy,
+                            },
+                        )
+                    })
+                    .collect();
             }
             Some(Drag::Pan { x, y }) => {
                 view.pan_x = x + dx;
@@ -420,7 +578,19 @@ pub fn make(engine: Engine, view: Rc<RefCell<View>>, callback: Callback) -> gtk:
                     view.pointer = view.world(x + dx, y + dy);
                 }
             }
-            None => {}
+            Some(Drag::Box {
+                start, additive, ..
+            }) => {
+                if let Some((x, y)) = g.start_point() {
+                    let end = view.world(x + dx, y + dy);
+                    view.drag = Some(Drag::Box {
+                        start,
+                        end,
+                        additive,
+                    });
+                }
+            }
+            _ => {}
         }
         a.queue_draw();
     });
@@ -429,26 +599,56 @@ pub fn make(engine: Engine, view: Rc<RefCell<View>>, callback: Callback) -> gtk:
     let a = area.clone();
     let cb = callback.clone();
     gesture.connect_drag_end(move |_, _, _| {
+        let state = e.snapshot().state;
         let mut view = v.borrow_mut();
-        if let Some((id, position)) = view.preview.take() {
-            e.dispatch(Control::Move { id, position });
-        }
-        if let Some(Drag::Wire { source }) = view.drag.take() {
-            let state = e.snapshot().state;
-            let (x, y) = view.pointer;
-            if let Some(target) = state.nodes.iter().find(|n| {
-                n.workspace == state.selected_workspace
-                    && n.id != source
-                    && (contains(n, &n.position, x, y)
-                        || (x - n.position.x - WIDTH / 2.0).hypot(y - n.position.y) < 20.0)
-            }) {
-                e.dispatch(Control::Connect {
-                    source,
-                    target: target.id.clone(),
-                });
+        let moves = std::mem::take(&mut view.previews);
+        for (id, position) in moves {
+            if let Some(node) = state.node(&id) {
+                let position = view.stored_position(node, &position);
+                e.dispatch(Control::Move { id, position });
             }
         }
-        view.drag = None;
+        match view.drag.take() {
+            Some(Drag::Wire { source }) => {
+                let (x, y) = view.pointer;
+                if let Some(target) = state.nodes.iter().find(|n| {
+                    n.workspace == state.selected_workspace
+                        && n.id != source
+                        && contains(n, &view.position(n), x, y)
+                }) {
+                    e.dispatch(Control::Connect {
+                        source,
+                        target: target.id.clone(),
+                    });
+                }
+            }
+            Some(Drag::Box { start, end, .. }) => {
+                for n in state
+                    .nodes
+                    .iter()
+                    .filter(|n| n.workspace == state.selected_workspace)
+                {
+                    if intersects(
+                        (
+                            start.0.min(end.0),
+                            start.1.min(end.1),
+                            start.0.max(end.0),
+                            start.1.max(end.1),
+                        ),
+                        n,
+                        &view.position(n),
+                    ) {
+                        view.selection.insert(n.id.clone());
+                    }
+                }
+                view.selected = ordered_nodes(&state)
+                    .into_iter()
+                    .find(|n| view.selection.contains(&n.id))
+                    .map(|n| n.id.clone());
+            }
+            _ => {}
+        }
+        view.origins.clear();
         let selected = view.selected.clone();
         drop(view);
         cb(CanvasAction::Select(selected));
@@ -458,7 +658,9 @@ pub fn make(engine: Engine, view: Rc<RefCell<View>>, callback: Callback) -> gtk:
     let pan = gtk::GestureDrag::new();
     pan.set_button(2);
     let v = view.clone();
+    let cb = callback.clone();
     pan.connect_drag_begin(move |_, _, _| {
+        cb(CanvasAction::Camera);
         let mut v = v.borrow_mut();
         v.motion_serial += 1;
         v.camera_target = None;
@@ -480,10 +682,73 @@ pub fn make(engine: Engine, view: Rc<RefCell<View>>, callback: Callback) -> gtk:
     let v = view.clone();
     pan.connect_drag_end(move |_, _, _| v.borrow_mut().drag = None);
     area.add_controller(pan);
+    let cut = gtk::GestureDrag::new();
+    cut.set_button(3);
+    let v = view.clone();
+    let a = area.clone();
+    cut.connect_drag_begin(move |_, x, y| {
+        a.grab_focus();
+        let mut v = v.borrow_mut();
+        let p = v.world(x, y);
+        v.drag = Some(Drag::Cut { points: vec![p] });
+    });
+    let v = view.clone();
+    let a = area.clone();
+    cut.connect_drag_update(move |g, dx, dy| {
+        let mut v = v.borrow_mut();
+        if let Some((x, y)) = g.start_point() {
+            let p = v.world(x + dx, y + dy);
+            if let Some(Drag::Cut { points }) = &mut v.drag {
+                points.push(p);
+            }
+        }
+        a.queue_draw();
+    });
+    let v = view.clone();
+    let e = engine.clone();
+    let a = area.clone();
+    cut.connect_drag_end(move |_, _, _| {
+        let points = match v.borrow_mut().drag.take() {
+            Some(Drag::Cut { points }) => points,
+            _ => return,
+        };
+        let state = e.snapshot().state;
+        let view = v.borrow();
+        for node in state
+            .nodes
+            .iter()
+            .filter(|n| n.workspace == state.selected_workspace)
+        {
+            for source in &node.dependencies {
+                if let Some(parent) = state.node(source)
+                    && wire_cut(parent, node, &points, &view)
+                {
+                    e.dispatch(Control::Disconnect {
+                        source: source.clone(),
+                        target: node.id.clone(),
+                    });
+                }
+            }
+        }
+        for watcher in state.watchers.iter().filter(|w| w.enabled) {
+            if let (Some(a), Some(b)) = (state.node(&watcher.source), state.node(&watcher.target))
+                && a.workspace == state.selected_workspace
+                && wire_cut(a, b, &points, &view)
+            {
+                e.dispatch(Control::DeleteWatcher {
+                    id: watcher.id.clone(),
+                });
+            }
+        }
+        a.queue_draw();
+    });
+    area.add_controller(cut);
     let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
     let v = view.clone();
     let a = area.clone();
+    let cb = callback.clone();
     scroll.connect_scroll(move |controller, dx, dy| {
+        cb(CanvasAction::Camera);
         let mut target = v.borrow().clone();
         if let Some((zoom, x, y)) = target.camera_target {
             target.zoom = zoom;
@@ -509,16 +774,81 @@ pub fn make(engine: Engine, view: Rc<RefCell<View>>, callback: Callback) -> gtk:
     let a = area.clone();
     key.connect_key_pressed(move |_, key, _, modifiers| {
         let selected = v.borrow().selected.clone();
-        match key {
-            gdk::Key::space => v.borrow_mut().space_down = true,
-            gdk::Key::Tab => cb(CanvasAction::Add),
-            gdk::Key::Return => {
-                if let Some(id) = selected {
-                    cb(CanvasAction::Open(id));
+        let state = e.snapshot().state;
+        let alt = modifiers.contains(gdk::ModifierType::ALT_MASK);
+        if matches!(key, gdk::Key::Alt_L | gdk::Key::Alt_R) {
+            v.borrow_mut().numbers = true;
+            a.queue_draw();
+            return glib::Propagation::Stop;
+        }
+        if let Some(number) = key.to_unicode().and_then(|c| c.to_digit(10))
+            && (alt || v.borrow().space_down)
+        {
+            let index = if number == 0 { 9 } else { number as usize - 1 };
+            if let Some(target) = ordered_nodes(&state).get(index) {
+                if v.borrow().space_down {
+                    if let Some(source) = selected.filter(|id| id != &target.id) {
+                        if target.dependencies.contains(&source) {
+                            e.dispatch(Control::Disconnect {
+                                source,
+                                target: target.id.clone(),
+                            });
+                        } else if state
+                            .node(&source)
+                            .is_some_and(|n| n.dependencies.contains(&target.id))
+                        {
+                            e.dispatch(Control::Disconnect {
+                                source: target.id.clone(),
+                                target: source,
+                            });
+                        } else {
+                            e.dispatch(Control::Connect {
+                                source,
+                                target: target.id.clone(),
+                            });
+                        }
+                    }
+                } else {
+                    cb(CanvasAction::Camera);
+                    v.borrow_mut().selection = HashSet::from([target.id.clone()]);
+                    cb(CanvasAction::Select(Some(target.id.clone())));
+                    focus_node(&a, &v, &state, &target.id);
                 }
             }
-            gdk::Key::Delete | gdk::Key::BackSpace => {
+            a.queue_draw();
+            return glib::Propagation::Stop;
+        }
+        match key {
+            gdk::Key::space
+                if modifiers
+                    .intersects(gdk::ModifierType::SUPER_MASK | gdk::ModifierType::META_MASK) =>
+            {
+                cb(CanvasAction::Add)
+            }
+            gdk::Key::space => {
+                v.borrow_mut().space_down = true;
+                v.borrow_mut().numbers = true;
+                a.queue_draw();
+            }
+            gdk::Key::Tab | gdk::Key::ISO_Left_Tab => cb(CanvasAction::Chat),
+            gdk::Key::slash => cb(CanvasAction::Search),
+            gdk::Key::question => cb(CanvasAction::Help),
+            gdk::Key::Return | gdk::Key::KP_Enter => {
                 if let Some(id) = selected {
+                    if modifiers.contains(gdk::ModifierType::SHIFT_MASK) {
+                        cb(CanvasAction::Edit(id));
+                    } else {
+                        cb(CanvasAction::Open(id));
+                    }
+                }
+            }
+            gdk::Key::BackSpace if alt => cb(CanvasAction::ClearHistory),
+            gdk::Key::Delete | gdk::Key::BackSpace => {
+                let mut ids = v.borrow().selection.clone();
+                if let Some(id) = selected {
+                    ids.insert(id);
+                }
+                for id in ids {
                     cb(CanvasAction::Delete(id));
                 }
             }
@@ -532,32 +862,67 @@ pub fn make(engine: Engine, view: Rc<RefCell<View>>, callback: Callback) -> gtk:
                     cb(CanvasAction::Run(id));
                 }
             }
-            gdk::Key::Escape => cb(CanvasAction::Windows),
-            gdk::Key::h | gdk::Key::Home => {
-                fit_animated(&a, &v, &e.snapshot().state);
+            gdk::Key::Escape => cb(CanvasAction::Escape),
+            gdk::Key::f => {
+                cb(CanvasAction::Camera);
+                if let Some(id) = selected {
+                    focus_node(&a, &v, &state, &id);
+                } else {
+                    fit_animated(&a, &v, &state);
+                }
             }
-            gdk::Key::Up | gdk::Key::Down | gdk::Key::Left | gdk::Key::Right => {
-                let direction = match key {
-                    gdk::Key::Up => "up",
-                    gdk::Key::Down => "down",
-                    gdk::Key::Left => "left",
-                    _ => "right",
-                };
-                if modifiers.contains(gdk::ModifierType::SHIFT_MASK) {
-                    if let Some(id) = selected
-                        && let Some(n) = e.snapshot().state.node(&id)
-                    {
-                        let mut p = n.position.clone();
-                        match direction {
-                            "up" => p.y -= GRID,
-                            "down" => p.y += GRID,
-                            "left" => p.x -= GRID,
+            gdk::Key::Home => {
+                cb(CanvasAction::Camera);
+                fit_animated(&a, &v, &state);
+            }
+            gdk::Key::w | gdk::Key::a | gdk::Key::s | gdk::Key::d => {
+                let mut ids = v.borrow().selection.clone();
+                if let Some(id) = selected {
+                    ids.insert(id);
+                }
+                for id in ids {
+                    if let Some(node) = state.node(&id) {
+                        let mut p = node.position.clone();
+                        match key {
+                            gdk::Key::w => p.y -= GRID,
+                            gdk::Key::s => p.y += GRID,
+                            gdk::Key::a => p.x -= GRID,
                             _ => p.x += GRID,
-                        };
+                        }
                         e.dispatch(Control::Move { id, position: p });
                     }
+                }
+            }
+            gdk::Key::h
+            | gdk::Key::j
+            | gdk::Key::k
+            | gdk::Key::l
+            | gdk::Key::Up
+            | gdk::Key::Down
+            | gdk::Key::Left
+            | gdk::Key::Right => {
+                let direction = match key {
+                    gdk::Key::k | gdk::Key::Up => "up",
+                    gdk::Key::j | gdk::Key::Down => "down",
+                    gdk::Key::h | gdk::Key::Left => "left",
+                    _ => "right",
+                };
+                if modifiers.contains(gdk::ModifierType::SHIFT_MASK)
+                    && let Some(id) = selected
+                    && let Some(node) = state.node(&id)
+                {
+                    let mut p = node.position.clone();
+                    match direction {
+                        "up" => p.y -= GRID,
+                        "down" => p.y += GRID,
+                        "left" => p.x -= GRID,
+                        _ => p.x += GRID,
+                    }
+                    e.dispatch(Control::Move { id, position: p });
                 } else {
-                    let id = navigate(&a, &v, &e.snapshot().state, direction);
+                    cb(CanvasAction::Camera);
+                    let id = navigate(&a, &v, &state, direction);
+                    v.borrow_mut().selection = id.clone().into_iter().collect();
                     cb(CanvasAction::Select(id));
                 }
                 a.queue_draw();
@@ -567,11 +932,30 @@ pub fn make(engine: Engine, view: Rc<RefCell<View>>, callback: Callback) -> gtk:
         glib::Propagation::Stop
     });
     let v = view.clone();
+    let a = area.clone();
     key.connect_key_released(move |_, key, _, _| {
         if key == gdk::Key::space {
             v.borrow_mut().space_down = false;
+            v.borrow_mut().numbers = false;
+            a.queue_draw();
+        }
+        if matches!(key, gdk::Key::Alt_L | gdk::Key::Alt_R) {
+            v.borrow_mut().numbers = false;
+            a.queue_draw();
         }
     });
+    let v = view.clone();
+    let a = area.clone();
+    let focus = gtk::EventControllerFocus::new();
+    focus.connect_leave(move |_| {
+        let mut v = v.borrow_mut();
+        v.space_down = false;
+        v.numbers = false;
+        v.drag = None;
+        v.previews.clear();
+        a.queue_draw();
+    });
+    area.add_controller(focus);
     area.add_controller(key);
     area
 }
@@ -585,9 +969,35 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
         cairo::FontSlant::Normal,
         cairo::FontWeight::Normal,
     );
-    theme.surface.source(c);
+    // Every scene uses the same wallpaper crop, including the portions beneath the DMS bar.
+    let _ = c.save();
+    c.set_operator(cairo::Operator::Source);
+    c.set_source_rgba(0.0, 0.0, 0.0, 0.0);
     let _ = c.paint();
+    c.set_operator(cairo::Operator::Over);
+    if !view.gpu
+        && let Some(wallpaper) = &view.wallpaper
+    {
+        let (ow, oh) = view.output_size;
+        let scale = (ow / wallpaper.width() as f64).max(oh / wallpaper.height() as f64);
+        c.translate(
+            (ow - wallpaper.width() as f64 * scale) / 2.0 - view.insets[3] as f64,
+            (oh - wallpaper.height() as f64 * scale) / 2.0 - view.insets[0] as f64,
+        );
+        c.scale(scale, scale);
+        let _ = c.set_source_surface(wallpaper, 0.0, 0.0);
+        let _ = c.paint();
+    } else if !view.gpu {
+        theme.surface.source(c);
+        let _ = c.paint();
+    }
+    let _ = c.restore();
+    let _ = c.save();
+    c.push_group();
     draw_grid(c, view);
+    let _ = c.pop_group_to_source();
+    let _ = c.paint_with_alpha(0.32 * view.chrome);
+    let _ = c.restore();
     let _ = c.save();
     c.translate(view.pan_x, view.pan_y);
     c.scale(view.zoom, view.zoom);
@@ -597,6 +1007,7 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
         .filter(|n| n.workspace == state.selected_workspace)
         .collect();
     let by_id: HashMap<_, _> = state.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    c.push_group();
     for node in &nodes {
         let to = view.position(node);
         for dependency in &node.dependencies {
@@ -671,24 +1082,127 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
         );
         let _ = c.stroke();
     }
+    let _ = c.pop_group_to_source();
+    let _ = c.paint_with_alpha(view.chrome);
+    let ordered = ordered_nodes(state);
     for node in &nodes {
+        if view.gpu && (node.window_id.is_some() || node.desktop_window) {
+            continue;
+        }
         let p = view.position(node);
-        if p.x * view.zoom + view.pan_x > width + 12.0
-            || (p.x + WIDTH) * view.zoom + view.pan_x < -12.0
-            || p.y * view.zoom + view.pan_y > height + 12.0
-            || (p.y + node_height(node)) * view.zoom + view.pan_y < -12.0
+        let progress = view.presentations.get(&node.id).copied().unwrap_or(
+            if node.column_mode == ColumnMode::Node {
+                1.0
+            } else {
+                0.0
+            },
+        );
+        let native = view.desktop_rects.get(&node.id);
+        let visible_rect = native
+            .map(|native| {
+                let (x, y) = view.world(native.x, native.y);
+                super::collapse::Rect {
+                    x,
+                    y,
+                    width: native.width / view.zoom,
+                    height: native.height / view.zoom,
+                }
+                .interpolate(
+                    super::collapse::Rect {
+                        x: p.x,
+                        y: p.y,
+                        width: WIDTH,
+                        height: node_height(node),
+                    },
+                    progress,
+                )
+            })
+            .unwrap_or(super::collapse::Rect {
+                x: p.x,
+                y: p.y,
+                width: WIDTH,
+                height: node_height(node),
+            });
+        if visible_rect.x * view.zoom + view.pan_x > width + 12.0
+            || (visible_rect.x + visible_rect.width) * view.zoom + view.pan_x < -12.0
+            || visible_rect.y * view.zoom + view.pan_y > height + 12.0
+            || (visible_rect.y + visible_rect.height) * view.zoom + view.pan_y < -12.0
         {
             continue;
         }
-        draw_node(
-            c,
-            node,
-            &view.position(node),
-            view.selected.as_deref() == Some(&node.id),
-            theme,
+        let selected =
+            view.selected.as_deref() == Some(&node.id) || view.selection.contains(&node.id);
+        let matches = matches_query(node, &view.query);
+        let _ = c.save();
+        c.rectangle(
+            visible_rect.x - 10.0 / view.zoom,
+            visible_rect.y - 16.0 / view.zoom,
+            visible_rect.width + 20.0 / view.zoom,
+            visible_rect.height + 32.0 / view.zoom,
         );
+        c.clip();
+        c.push_group();
+        if node.closed_window() {
+            c.translate(0.0, 48.0 * (1.0 - view.chrome));
+            draw_node(c, node, &p, selected, theme);
+        } else if node.window_id.is_some() || node.desktop_window {
+            draw_window_node(c, node, &p, visible_rect, progress, selected, view);
+        } else {
+            draw_node(c, node, &p, selected, theme);
+        }
+        if !view.query.is_empty() && matches {
+            rounded(
+                c,
+                p.x - 5.0,
+                p.y - 5.0,
+                WIDTH + 10.0,
+                node_height(node) + 10.0,
+                theme.radius + 5.0,
+            );
+            theme.primary.source(c);
+            c.set_line_width(2.0 / view.zoom);
+            let _ = c.stroke();
+        }
+        if view.numbers
+            && let Some(index) = ordered
+                .iter()
+                .position(|n| n.id == node.id)
+                .filter(|i| *i < 10)
+        {
+            rounded(c, p.x + WIDTH - 32.0, p.y - 13.0, 28.0, 26.0, 8.0);
+            theme.primary.source(c);
+            let _ = c.fill();
+            text(
+                c,
+                p.x + WIDTH - 22.0,
+                p.y + 5.0,
+                &((index + 1) % 10).to_string(),
+                14.0,
+                theme.on_primary.rgb(),
+                true,
+            );
+        }
+        let _ = c.pop_group_to_source();
+        let alpha = if node.closed_window() {
+            view.chrome
+        } else {
+            1.0
+        };
+        let _ = c.paint_with_alpha(
+            alpha
+                * if !view.query.is_empty() && !matches {
+                    0.25
+                } else {
+                    1.0
+                },
+        );
+        let _ = c.restore();
     }
     let _ = c.restore();
+    if !view.gpu {
+        draw_foreground(c, view);
+    }
+    c.push_group();
     if nodes.is_empty() {
         text(
             c,
@@ -703,7 +1217,7 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
             c,
             width / 2.0 - 155.0,
             height / 2.0,
-            "Press Tab to create your first node.",
+            "Win+Space  new node · Tab  ask an agent",
             13.0,
             theme.muted.rgb(),
             false,
@@ -723,7 +1237,7 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
         c,
         24.0,
         height - 22.0,
-        "Tab  add     Enter  expand     E  edit     R  run     H  frame all",
+        "Tab  ask agent   /  search   F  focus   HJKL  select   WASD  move   ?  help",
         11.0,
         theme.muted.rgb(),
         false,
@@ -737,8 +1251,217 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
         theme.muted.rgb(),
         true,
     );
+    let _ = c.pop_group_to_source();
+    let _ = c.paint_with_alpha(view.chrome);
+    // Native columns remain real Niri clients. The layer has matching input holes.
+    if !view.gpu && !view.morphing {
+        for node in &nodes {
+            if node.column_mode == ColumnMode::Window
+                && let Some(rect) = view.desktop_rects.get(&node.id)
+            {
+                let _ = c.save();
+                c.rectangle(rect.x, rect.y, rect.width, rect.height);
+                c.set_operator(cairo::Operator::Clear);
+                let _ = c.fill();
+                let _ = c.restore();
+            }
+        }
+    }
 }
-fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, theme: &Theme) {
+
+pub(super) fn has_foreground(view: &View) -> bool {
+    matches!(view.drag, Some(Drag::Box { .. } | Drag::Cut { .. }))
+}
+
+pub(super) fn draw_foreground(c: &Context, view: &View) {
+    let theme = &view.theme;
+    let _ = c.save();
+    c.translate(view.pan_x, view.pan_y);
+    c.scale(view.zoom, view.zoom);
+    if let Some(Drag::Box { start, end, .. }) = &view.drag {
+        c.rectangle(
+            start.0.min(end.0),
+            start.1.min(end.1),
+            (end.0 - start.0).abs(),
+            (end.1 - start.1).abs(),
+        );
+        theme.primary.alpha(c, 0.13);
+        let _ = c.fill_preserve();
+        theme.primary.alpha(c, 0.8);
+        c.set_line_width(1.0 / view.zoom);
+        let _ = c.stroke();
+    }
+    if let Some(Drag::Cut { points }) = &view.drag {
+        if let Some(start) = points.first() {
+            c.move_to(start.0, start.1);
+            for p in &points[1..] {
+                c.line_to(p.0, p.1);
+            }
+        }
+        theme.error.source(c);
+        c.set_line_width(2.0 / view.zoom);
+        let _ = c.stroke();
+    }
+    let _ = c.restore();
+}
+fn draw_window_node(
+    c: &Context,
+    n: &Node,
+    p: &Position,
+    rect: super::collapse::Rect,
+    progress: f64,
+    selected: bool,
+    view: &View,
+) {
+    let theme = &view.theme;
+    let t = progress.clamp(0.0, 1.0);
+    let radius = theme.radius * (1.0 - t) / view.zoom + theme.radius * t;
+    let _ = c.save();
+    if t < 0.001 {
+        // Fade the old capture to the live client after geometry reaches its endpoint.
+        let _ = c.save();
+        c.rectangle(rect.x, rect.y, rect.width, rect.height);
+        c.set_operator(cairo::Operator::Clear);
+        let _ = c.fill();
+        let _ = c.restore();
+        c.push_group();
+    }
+    rounded(c, rect.x, rect.y, rect.width, rect.height, radius);
+    theme.surface_high.alpha(c, t);
+    let _ = c.fill_preserve();
+    let accent = if selected {
+        theme.primary
+    } else {
+        theme.outline
+    };
+    c.set_source_rgb(
+        theme.primary.0 + (accent.0 - theme.primary.0) * t,
+        theme.primary.1 + (accent.1 - theme.primary.1) * t,
+        theme.primary.2 + (accent.2 - theme.primary.2) * t,
+    );
+    c.set_line_width(
+        (2.0 * (1.0 - t) + (if selected { 1.4 } else { 1.0 }) * view.zoom * t) / view.zoom,
+    );
+    let _ = c.stroke();
+    let content = super::collapse::Rect {
+        x: rect.x + 10.0 * t,
+        y: rect.y + 70.0 * t,
+        width: rect.width - 20.0 * t,
+        height: rect.height - 110.0 * t,
+    };
+    if let Some(image) = view.images.get(&n.id) {
+        let _ = c.save();
+        rounded(
+            c,
+            content.x,
+            content.y,
+            content.width,
+            content.height,
+            (radius - 2.0 * t).max(0.0),
+        );
+        c.clip();
+        let scale =
+            (content.width / image.width() as f64).min(content.height / image.height() as f64);
+        c.translate(
+            content.x + (content.width - image.width() as f64 * scale) / 2.0,
+            content.y + (content.height - image.height() as f64 * scale) / 2.0,
+        );
+        c.scale(scale, scale);
+        let _ = c.set_source_surface(image, 0.0, 0.0);
+        c.source().set_filter(cairo::Filter::Bilinear);
+        let _ = c.paint();
+        let _ = c.restore();
+    }
+    if t > 0.0 {
+        let _ = c.save();
+        c.push_group();
+        // Clip the existing card renderer to metadata and ports; the image and outline are shared.
+        c.rectangle(p.x - 8.0, p.y - 8.0, WIDTH + 16.0, 77.0);
+        c.rectangle(p.x - 8.0, p.y + node_height(n) - 39.0, WIDTH + 16.0, 48.0);
+        c.clip();
+        draw_node(c, n, p, selected, theme);
+        let _ = c.pop_group_to_source();
+        let _ = c.paint_with_alpha(((t - 0.6) / 0.4).clamp(0.0, 1.0));
+        let _ = c.restore();
+    }
+    if t < 0.001 {
+        let _ = c.pop_group_to_source();
+        let _ = c.paint_with_alpha(view.live_fade);
+    }
+    let _ = c.restore();
+}
+
+pub fn matches_query(node: &Node, query: &str) -> bool {
+    let text = format!("{} {} {}", node.title, node.kind.label(), node.command).to_lowercase();
+    query
+        .to_lowercase()
+        .split_whitespace()
+        .all(|word| text.contains(word))
+}
+pub fn ordered_nodes(state: &State) -> Vec<&Node> {
+    let mut nodes: Vec<_> = state
+        .nodes
+        .iter()
+        .filter(|n| n.workspace == state.selected_workspace)
+        .collect();
+    nodes.sort_by(|a, b| {
+        a.position
+            .x
+            .total_cmp(&b.position.x)
+            .then(a.position.y.total_cmp(&b.position.y))
+            .then(a.id.cmp(&b.id))
+    });
+    nodes
+}
+fn intersects((left, top, right, bottom): (f64, f64, f64, f64), node: &Node, p: &Position) -> bool {
+    p.x <= right && p.x + WIDTH >= left && p.y <= bottom && p.y + node_height(node) >= top
+}
+fn crossing(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)) -> bool {
+    fn cross(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
+        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+    }
+    let (ab_c, ab_d, cd_a, cd_b) = (
+        cross(a, b, c),
+        cross(a, b, d),
+        cross(c, d, a),
+        cross(c, d, b),
+    );
+    ab_c * ab_d <= 0.0
+        && cd_a * cd_b <= 0.0
+        && a.0.min(b.0) <= c.0.max(d.0)
+        && c.0.min(d.0) <= a.0.max(b.0)
+        && a.1.min(b.1) <= c.1.max(d.1)
+        && c.1.min(d.1) <= a.1.max(b.1)
+}
+fn wire_cut(parent: &Node, node: &Node, points: &[(f64, f64)], view: &View) -> bool {
+    let from = view.position(parent);
+    let to = view.position(node);
+    let a = (from.x + WIDTH / 2.0, from.y + node_height(parent));
+    let b = (to.x + WIDTH / 2.0, to.y);
+    let bend = ((b.1 - a.1).abs() * 0.5).max(50.0);
+    let curve = |t: f64| {
+        let u = 1.0 - t;
+        (
+            u * u * u * a.0 + 3.0 * u * u * t * a.0 + 3.0 * u * t * t * b.0 + t * t * t * b.0,
+            u * u * u * a.1
+                + 3.0 * u * u * t * (a.1 + bend)
+                + 3.0 * u * t * t * (b.1 - bend)
+                + t * t * t * b.1,
+        )
+    };
+    (0..32).any(|i| {
+        points.windows(2).any(|line| {
+            crossing(
+                curve(i as f64 / 32.0),
+                curve((i + 1) as f64 / 32.0),
+                line[0],
+                line[1],
+            )
+        })
+    })
+}
+
+pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, theme: &Theme) {
     let (x, y) = (p.x, p.y);
     let height = node_height(n);
     let accent = theme.primary.rgb();
@@ -795,7 +1518,7 @@ fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, theme: &Theme)
         c,
         x + WIDTH - 72.0,
         y + 31.0,
-        if n.desktop_window && n.window_id.is_none() {
+        if n.closed_window() {
             "Closed"
         } else if n.window_id.is_some() && n.kind == NodeKind::Window {
             "Open"
@@ -815,6 +1538,10 @@ fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, theme: &Theme)
         theme.text.rgb(),
         false,
     );
+    if n.closed_window() {
+        draw_ports(c, x, y, height, theme);
+        return;
+    }
     if n.kind == NodeKind::Metric && !n.metric.samples.is_empty() {
         let value = n.metric.samples.last().unwrap().value;
         text(
@@ -909,6 +1636,10 @@ fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, theme: &Theme)
         theme.muted.rgb(),
         true,
     );
+    draw_ports(c, x, y, height, theme);
+}
+fn draw_ports(c: &Context, x: f64, y: f64, height: f64, theme: &Theme) {
+    let accent = theme.primary.rgb();
     for py in [y, y + height] {
         c.new_sub_path();
         c.arc(x + WIDTH / 2.0, py, 5.0, 0.0, std::f64::consts::TAU);
@@ -947,7 +1678,7 @@ fn sparkline(c: &Context, samples: &[Sample], rect: (f64, f64, f64, f64), rgb: (
     c.set_line_width(1.8);
     let _ = c.stroke();
 }
-fn rounded(c: &Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
+pub(super) fn rounded(c: &Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
     c.new_sub_path();
     c.arc(x + w - r, y + r, r, -std::f64::consts::FRAC_PI_2, 0.0);
     c.arc(x + w - r, y + h - r, r, 0.0, std::f64::consts::FRAC_PI_2);
@@ -967,7 +1698,15 @@ fn rounded(c: &Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
     );
     c.close_path();
 }
-fn text(c: &Context, x: f64, y: f64, text: &str, size: f64, rgb: (f64, f64, f64), mono: bool) {
+pub(super) fn text(
+    c: &Context,
+    x: f64,
+    y: f64,
+    text: &str,
+    size: f64,
+    rgb: (f64, f64, f64),
+    mono: bool,
+) {
     let _ = c.save();
     if mono {
         c.select_font_face(
@@ -1005,6 +1744,60 @@ mod rendering_tests {
     fn pixel(bytes: &[u8], width: usize, x: usize, y: usize) -> u32 {
         let offset = (y * width + x) * 4;
         u32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    }
+    #[test]
+    fn cut_stroke_crosses_the_rendered_bezier_and_ignores_distant_strokes() {
+        let state = State::empty("/tmp".into());
+        let a = Node::new(
+            &state.selected_workspace,
+            NodeKind::Shell,
+            "/tmp".into(),
+            Position { x: 100.0, y: 700.0 },
+        );
+        let b = Node::new(
+            &state.selected_workspace,
+            NodeKind::Shell,
+            "/tmp".into(),
+            Position { x: 460.0, y: 700.0 },
+        );
+        assert!(wire_cut(
+            &a,
+            &b,
+            &[(426.0, 680.0), (426.0, 900.0)],
+            &View::default()
+        ));
+        assert!(!wire_cut(
+            &a,
+            &b,
+            &[(0.0, 0.0), (20.0, 20.0)],
+            &View::default()
+        ));
+        assert!(!crossing((0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (3.0, 3.0)));
+    }
+    #[test]
+    fn search_keeps_spatial_navigation_on_matching_nodes() {
+        let mut state = State::empty("/tmp".into());
+        for (title, x) in [("Editor", 0.0), ("Browser", 360.0), ("Editor tests", 720.0)] {
+            let mut node = Node::new(
+                &state.selected_workspace,
+                NodeKind::Shell,
+                "/tmp".into(),
+                Position { x, y: 0.0 },
+            );
+            node.title = title.into();
+            state.nodes.push(node);
+        }
+        let mut view = View {
+            query: "editor".into(),
+            selected: Some(state.nodes[0].id.clone()),
+            ..View::default()
+        };
+        assert_eq!(
+            view.navigate(&state, "right", 1200.0, 800.0),
+            Some(state.nodes[2].id.clone())
+        );
+        assert!(matches_query(&state.nodes[2], "EDITOR tests"));
+        assert!(!matches_query(&state.nodes[1], "editor"));
     }
     #[test]
     fn grid_cache_tracks_pan_zoom_and_palette() {
@@ -1064,5 +1857,108 @@ mod rendering_tests {
         }
         let large = raster(100, 300, |c| draw(c, 100.0, 300.0, &state, &view));
         assert_eq!(first, large);
+    }
+
+    #[test]
+    fn dragging_an_arranged_card_commits_the_displayed_delta_once() {
+        let mut state = State::empty("/tmp".into());
+        let mut node = Node::new(
+            &state.selected_workspace,
+            NodeKind::Window,
+            "/tmp".into(),
+            Position { x: 2200.0, y: 80.0 },
+        );
+        node.desktop_window = true;
+        state.nodes.push(node);
+        let mut view = View::default();
+        view.arrangement.update(&state, 1200, 800);
+        view.presented_positions
+            .insert(state.nodes[0].id.clone(), Position { x: 40.0, y: 60.0 });
+        let shown = view.position(&state.nodes[0]);
+        assert!(contains(
+            &state.nodes[0],
+            &shown,
+            shown.x + 20.0,
+            shown.y + 20.0
+        ));
+        let stored = view.stored_position(
+            &state.nodes[0],
+            &Position {
+                x: shown.x + 20.0,
+                y: shown.y - 40.0,
+            },
+        );
+        assert_eq!(stored.x, state.nodes[0].position.x + 20.0);
+        assert_eq!(stored.y, state.nodes[0].position.y - 40.0);
+    }
+
+    #[test]
+    #[ignore = "requires a GTK display; run explicitly inside Niri or Xvfb"]
+    fn gpu_history_reveals_as_a_compact_card_and_selection_is_above_it() {
+        gtk::init().unwrap();
+        let mut state = State::empty("/tmp".into());
+        let mut node = Node::new(
+            &state.selected_workspace,
+            NodeKind::Window,
+            "/tmp".into(),
+            Position { x: 80.0, y: 100.0 },
+        );
+        node.desktop_window = true;
+        node.title = "Closed window".into();
+        state.nodes.push(node);
+        let mut view = View {
+            zoom: 1.0,
+            pan_x: 0.0,
+            pan_y: 0.0,
+            theme: Theme::default(),
+            ..View::default()
+        };
+        let mut cache = super::super::gpu::Cache::default();
+        let mut render = |state: &State, view: &View| {
+            raster(500, 400, |c| {
+                let snapshot = gtk::Snapshot::new();
+                super::super::gpu::render(&snapshot, 500, 400, state, 1, view, &mut cache);
+                snapshot.to_node().unwrap().draw(c);
+            })
+        };
+        let visible = render(&state, &view);
+        assert_eq!(node_height(&state.nodes[0]), 78.0);
+        assert_ne!(
+            pixel(&visible, 500, 200, 140),
+            pixel(&visible, 500, 200, 220)
+        );
+        view.chrome = 0.0;
+        let hidden = render(&state, &view);
+        assert_eq!(pixel(&hidden, 500, 200, 140), pixel(&hidden, 500, 200, 220));
+        view.chrome = 0.5;
+        let entering = render(&state, &view);
+        assert_eq!(
+            pixel(&entering, 500, 200, 110),
+            pixel(&hidden, 500, 200, 110)
+        );
+        assert_ne!(
+            pixel(&entering, 500, 200, 140),
+            pixel(&hidden, 500, 200, 140)
+        );
+        view.chrome = 1.0;
+        view.drag = Some(Drag::Box {
+            start: (50.0, 130.0),
+            end: (400.0, 160.0),
+            additive: false,
+        });
+        let selected = render(&state, &view);
+        // Both the tint and the rectangle edge must cross the GPU card's body.
+        assert_ne!(
+            pixel(&visible, 500, 200, 145),
+            pixel(&selected, 500, 200, 145)
+        );
+        assert_ne!(
+            pixel(&visible, 500, 200, 130),
+            pixel(&selected, 500, 200, 130)
+        );
+        assert_eq!(
+            pixel(&visible, 500, 200, 120),
+            pixel(&selected, 500, 200, 120)
+        );
     }
 }

@@ -62,37 +62,104 @@ pub enum UiCommand {
     RunGroup,
     Help,
     BarGeometry { output: String, insets: [i32; 4] },
+    RefreshImages,
+    AgentChat,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Control {
     Status,
-    Create { node: Box<Node> },
-    Update { node: Box<Node> },
-    Move { id: String, position: Position },
-    MoveToWorkspace { id: String, workspace: String },
-    Connect { source: String, target: String },
-    Disconnect { source: String, target: String },
-    Delete { id: String },
-    Run { id: String, downstream: bool },
+    Create {
+        node: Box<Node>,
+    },
+    Update {
+        node: Box<Node>,
+    },
+    Move {
+        id: String,
+        position: Position,
+    },
+    MoveToWorkspace {
+        id: String,
+        workspace: String,
+    },
+    Connect {
+        source: String,
+        target: String,
+    },
+    Disconnect {
+        source: String,
+        target: String,
+    },
+    Delete {
+        id: String,
+    },
+    Run {
+        id: String,
+        downstream: bool,
+    },
     RunWorkspace,
-    Stop { id: String },
-    Approve { id: String, output: Option<String> },
-    Reject { id: String },
-    CreateWorkspace { name: String, cwd: PathBuf },
-    SelectWorkspace { id: String },
-    Notes { text: String },
-    HumanProgress { id: String, text: String },
-    SaveRecipe { name: String, nodes: Vec<String> },
-    ImportRecipe { recipe: Recipe },
-    Instantiate { id: String },
-    Watch { watcher: Watcher },
-    DeleteWatcher { id: String },
-    Ui { command: UiCommand },
+    Stop {
+        id: String,
+    },
+    Approve {
+        id: String,
+        output: Option<String>,
+    },
+    Reject {
+        id: String,
+    },
+    CreateWorkspace {
+        name: String,
+        cwd: PathBuf,
+    },
+    SelectWorkspace {
+        id: String,
+    },
+    Notes {
+        text: String,
+    },
+    HumanProgress {
+        id: String,
+        text: String,
+    },
+    SaveRecipe {
+        name: String,
+        nodes: Vec<String>,
+    },
+    ImportRecipe {
+        recipe: Recipe,
+    },
+    Instantiate {
+        id: String,
+    },
+    Watch {
+        watcher: Watcher,
+    },
+    DeleteWatcher {
+        id: String,
+    },
+    Ui {
+        command: UiCommand,
+    },
     Shutdown,
-    SyncDesktop { desktop: crate::niri::Desktop },
-    BindRow { workspace: String, row: Row },
+    SyncDesktop {
+        desktop: crate::niri::Desktop,
+    },
+    BindRow {
+        workspace: String,
+        row: Row,
+    },
+    ColumnMode {
+        id: String,
+        mode: crate::model::ColumnMode,
+    },
+    ClearHistory,
+    Chat {
+        id: String,
+        text: String,
+    },
 }
 
 #[derive(Clone)]
@@ -174,6 +241,8 @@ impl Engine {
                 state,
                 store,
                 runs: HashMap::new(),
+                suppressed_windows: HashSet::new(),
+                pending_deletions: HashSet::new(),
                 generation: 0,
                 revision: 0,
                 error: None,
@@ -259,6 +328,8 @@ struct Runtime {
     state: State,
     store: Store,
     runs: HashMap<String, Run>,
+    suppressed_windows: HashSet<u64>,
+    pending_deletions: HashSet<String>,
     generation: u64,
     revision: u64,
     error: Option<String>,
@@ -339,9 +410,14 @@ impl Runtime {
                     }
                 }
                 Ok(Message::Request(Request {
-                    control: Control::SyncDesktop { desktop },
+                    control: Control::SyncDesktop { mut desktop },
                     reply,
                 })) => {
+                    self.suppressed_windows
+                        .retain(|id| desktop.windows.iter().any(|w| w.id == *id));
+                    desktop
+                        .windows
+                        .retain(|w| !self.suppressed_windows.contains(&w.id));
                     let changed = crate::groups::synchronize(&mut self.state, &desktop);
                     if changed {
                         self.revision += 1;
@@ -529,14 +605,80 @@ impl Runtime {
             Control::Disconnect { source, target } => {
                 let node = self.state.node_mut(&target).context("Node not found")?;
                 ensure!(
-                    !node.status.active(),
+                    !node.status.active() || node.desktop_window,
                     "Stop the target before changing its inputs"
                 );
                 node.dependencies.retain(|d| d != &source);
             }
             Control::Delete { id } => {
-                ensure!(!self.runs.contains_key(&id), "Process is still stopping");
-                self.state.remove(&id)?;
+                let mut candidate = self.state.clone();
+                candidate.node_mut(&id).context("Node not found")?.status = Status::Stopped;
+                candidate.remove(&id)?;
+                if let Some(run) = self.runs.get(&id) {
+                    run.cancel.store(true, Ordering::Relaxed);
+                    self.state.node_mut(&id).unwrap().status = Status::Stopped;
+                    self.pending_deletions.insert(id);
+                    return Ok(json!({"stopping":true}));
+                }
+                if let Some(node) = self.state.node(&id).filter(|n| n.desktop_window)
+                    && let Some(window) = node.window_id
+                {
+                    crate::niri::request(niri_ipc::Request::Action(
+                        niri_ipc::Action::CloseWindow { id: Some(window) },
+                    ))?;
+                    // Focus/title events can arrive before the asynchronous close acknowledgement.
+                    self.suppressed_windows.insert(window);
+                }
+                self.state = candidate;
+            }
+            Control::ColumnMode { id, mode } => {
+                let node = self.state.node(&id).context("Node not found")?;
+                let column = node.column.clone().unwrap_or_else(|| node.id.clone());
+                let workspace = node.workspace.clone();
+                for node in &mut self.state.nodes {
+                    if node.workspace == workspace
+                        && node.column.as_ref().unwrap_or(&node.id) == &column
+                    {
+                        node.column_mode = mode;
+                    }
+                }
+            }
+            Control::ClearHistory => {
+                let ids: Vec<_> = self
+                    .state
+                    .nodes
+                    .iter()
+                    .filter(|n| {
+                        n.workspace == self.state.selected_workspace
+                            && (n.desktop_window
+                                || (n.kind == NodeKind::Window && n.window_match.is_some()))
+                            && n.window_id.is_none()
+                    })
+                    .map(|n| n.id.clone())
+                    .collect();
+                for id in ids {
+                    // A closed input still used by an executing workflow is retained.
+                    let _ = self.state.remove(&id);
+                }
+            }
+            Control::Chat { id, text } => {
+                ensure!(
+                    !text.trim().is_empty() && text.len() <= 64_000,
+                    "Enter a message (up to 64 KB)"
+                );
+                ensure!(!self.runs.contains_key(&id), "This agent is still working");
+                let node = self.state.node_mut(&id).context("Agent node not found")?;
+                ensure!(node.kind == NodeKind::Agent, "Select an agent node");
+                ensure!(!node.status.active(), "This agent is still working");
+                node.chat.push(ChatMessage {
+                    role: "user".into(),
+                    text: text.clone(),
+                });
+                if node.chat.len() > 100 {
+                    node.chat.drain(..node.chat.len() - 100);
+                }
+                node.command = text;
+                node.status = Status::Queued;
             }
             Control::Run { id, downstream } => {
                 ensure!(self.state.node(&id).is_some(), "Node not found");
@@ -630,6 +772,7 @@ impl Runtime {
                     cwd,
                     notes: String::new(),
                     row: None,
+                    window_array: false,
                 };
                 self.state.selected_workspace = workspace.id.clone();
                 self.state.workspaces.push(workspace);
@@ -804,6 +947,11 @@ impl Runtime {
         }
     }
     fn launch(&mut self, id: &str) -> Result<()> {
+        let context = self
+            .state
+            .node(id)
+            .filter(|n| !n.chat.is_empty())
+            .map(|n| crate::agent::graph_context(&self.state, &n.workspace));
         let schema_path = self.store.directory().join("agent-result.schema.json");
         let inputs: Vec<_> = self
             .state
@@ -835,10 +983,12 @@ impl Runtime {
         }
         ensure!(node.cwd.is_dir(), "Working directory no longer exists");
         let agent = node.kind == NodeKind::Agent;
-        if agent {
+        if agent && context.is_none() {
             std::fs::write(&schema_path, AGENT_SCHEMA)?;
         }
-        let mut command = if agent {
+        let mut command = if context.is_some() {
+            crate::agent::Config::load()?.process(node)
+        } else if agent {
             let mut c = Command::new("codex");
             c.args([
                 "exec",
@@ -867,6 +1017,11 @@ impl Runtime {
             .current_dir(&node.cwd)
             .env("FLOWWM_INPUTS", serde_json::to_string(&inputs)?)
             .env("FLOWWM_NODE_ID", id)
+            .env("FLOWWM_SOCKET", crate::agent::socket())
+            .env(
+                "FLOWWM_CLI",
+                std::env::current_exe()?.with_file_name("flowwm"),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -888,7 +1043,9 @@ impl Runtime {
                 serde_json::to_string_pretty(&inputs)?
             )
         };
-        if agent {
+        if let Some(context) = context {
+            prompt = format!("{context}\n\nUser request:\n{}", node.command);
+        } else if agent {
             prompt.push_str("\n\nFlowWM workflow contract: return the required JSON object. Set outcome to success only when this step's goal is achieved. Set outcome to issue if blocked, uncertain, or if an issue requires attention; this pauses success branches. Put a complete downstream handoff in summary, and file paths in artifacts. Do not conceal issues to keep the pipeline moving.");
         }
         if let Some(mut stdin) = child.stdin.take() {
@@ -978,6 +1135,11 @@ impl Runtime {
             && let Ok(value) = serde_json::from_str::<Value>(line)
         {
             match value["type"].as_str().unwrap_or("") {
+                "thread.started" => {
+                    if !node.chat.is_empty() {
+                        node.agent_session = value["thread_id"].as_str().map(str::to_string);
+                    }
+                }
                 "item.completed" | "item.started" => {
                     let item = &value["item"];
                     match item["type"].as_str().unwrap_or("") {
@@ -1026,6 +1188,12 @@ impl Runtime {
     }
     fn finish(&mut self, id: &str, success: bool, error: Option<String>) {
         self.runs.remove(id);
+        if self.pending_deletions.remove(id) {
+            if let Err(error) = self.state.remove(id) {
+                self.error = Some(error.to_string());
+            }
+            return;
+        }
         let Some(node) = self.state.node_mut(id) else {
             return;
         };
@@ -1043,7 +1211,12 @@ impl Runtime {
             );
             return;
         }
-        if node.kind == NodeKind::Agent {
+        if node.kind == NodeKind::Agent && !node.chat.is_empty() {
+            node.chat.push(ChatMessage {
+                role: "assistant".into(),
+                text: node.output.clone(),
+            });
+        } else if node.kind == NodeKind::Agent {
             match agent_result(&node.output) {
                 Ok(result) if result.outcome == AgentOutcome::Issue => {
                     node.status = Status::Failed;

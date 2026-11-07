@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod catalog;
 pub mod engine;
 pub mod extensions;

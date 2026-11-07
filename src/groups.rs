@@ -81,6 +81,7 @@ pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
                     cwd,
                     notes: String::new(),
                     row: None,
+                    window_array: false,
                 });
                 changed = true;
                 state.workspaces.len() - 1
@@ -101,7 +102,9 @@ pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
         }
     }
     let mut seen = HashSet::new();
-    for window in &desktop.windows {
+    let mut ordered: Vec<_> = desktop.windows.iter().collect();
+    ordered.sort_by_key(|w| (w.workspace_id, w.layout.pos_in_scrolling_layout, w.id));
+    for window in ordered {
         let Some(group) = state.workspaces.iter().find(|g| {
             g.row
                 .as_ref()
@@ -145,22 +148,14 @@ pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
             let right = state
                 .nodes
                 .iter()
-                .filter(|n| n.workspace == group_id && !n.desktop_window)
+                .filter(|n| n.workspace == group_id)
                 .map(|n| n.position.x + 360.0)
                 .fold(100.0, f64::max);
-            let count = state
-                .nodes
-                .iter()
-                .filter(|n| n.workspace == group_id && n.desktop_window)
-                .count();
             let mut node = Node::new(
                 &group_id,
                 NodeKind::Window,
                 cwd,
-                Position {
-                    x: right + (count % 2) as f64 * 360.0,
-                    y: 80.0 + (count / 2) as f64 * 240.0,
-                },
+                Position { x: right, y: 80.0 },
             );
             node.desktop_window = true;
             state.nodes.push(node);
@@ -203,6 +198,78 @@ pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
                 node.status = Status::Stopped;
             }
             changed = true;
+        }
+    }
+    // Migrate the former two-column grid once. User positioning survives all later events.
+    for group in &mut state.workspaces {
+        if !group.window_array {
+            let start = state
+                .nodes
+                .iter()
+                .filter(|n| n.workspace == group.id && !n.desktop_window)
+                .map(|n| n.position.x + 360.0)
+                .fold(100.0, f64::max);
+            let mut windows: Vec<_> = state
+                .nodes
+                .iter_mut()
+                .filter(|n| n.workspace == group.id && n.desktop_window)
+                .collect();
+            windows.sort_by_key(|n| {
+                desktop
+                    .windows
+                    .iter()
+                    .find(|w| Some(w.id) == n.window_id)
+                    .and_then(|w| w.layout.pos_in_scrolling_layout)
+                    .unwrap_or((usize::MAX, usize::MAX))
+            });
+            for (index, node) in windows.into_iter().enumerate() {
+                node.position = Position {
+                    x: start + index as f64 * 360.0,
+                    y: 80.0,
+                };
+            }
+            group.window_array = true;
+            changed = true;
+        }
+    }
+    // Reconcile column membership without tying persistent identities to shifting indices.
+    let mut columns = std::collections::HashMap::new();
+    let mut used_columns = HashSet::new();
+    for window in &desktop.windows {
+        let Some((index, _)) = window.layout.pos_in_scrolling_layout else {
+            continue;
+        };
+        let Some(node) = state.nodes.iter().find(|n| n.window_id == Some(window.id)) else {
+            continue;
+        };
+        columns
+            .entry((window.workspace_id, index))
+            .or_insert_with(|| {
+                let mut column = node.column.clone().unwrap_or_else(|| node.id.clone());
+                if !used_columns.insert((node.workspace.clone(), column.clone())) {
+                    column = if used_columns.insert((node.workspace.clone(), node.id.clone())) {
+                        node.id.clone()
+                    } else {
+                        id()
+                    };
+                }
+                (column, node.column_mode)
+            });
+    }
+    for window in &desktop.windows {
+        let Some((index, _)) = window.layout.pos_in_scrolling_layout else {
+            continue;
+        };
+        let Some((column, mode)) = columns.get(&(window.workspace_id, index)) else {
+            continue;
+        };
+        if let Some(node) = state
+            .nodes
+            .iter_mut()
+            .find(|n| n.window_id == Some(window.id))
+        {
+            changed |= assign(&mut node.column, Some(column.clone()));
+            changed |= assign(&mut node.column_mode, *mode);
         }
     }
     changed

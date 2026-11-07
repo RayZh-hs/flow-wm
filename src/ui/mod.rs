@@ -1,6 +1,9 @@
 mod canvas;
 mod collapse;
+mod gpu;
+mod layout;
 mod shell;
+mod surface;
 pub mod theme;
 pub use shell::run;
 #[derive(Clone, Copy, Default)]

@@ -26,14 +26,19 @@ Installed global shortcuts (`Super` is Niri's `Mod` key):
 | Super + Shift + Tab | Return to windows |
 | Super + Shift + Space | Find a node using DMS Spotlight |
 | Super + Alt + Space | Create a node using DMS Spotlight |
-| Super + Space / Alt + Space | Open the normal DMS launcher |
+| Super + Space | Create a node while the graph is focused; open DMS on the desktop |
+| Alt + Space | Open DMS (node creation while the graph is focused) |
 | Super + arrows | Navigate nodes in the graph; use the existing column/window navigation on the desktop |
 
 Left-click the DMS Nodes widget to toggle the graph; right-click it to find a node. In graph view, the DMS bar shows the active row and group, node/window counts, and controls for creation, framing, recipes, notes, running the group, and help. The normal focused-application title returns in windows view. Integrated mode has no separate FlowWM header or workspace footer: the canvas fills the screen directly below DMS. The bar reports its actual geometry to the native app, including fractional scaling.
 
 Each Niri workspace row is a node group. Changing rows selects the corresponding graph, and choosing a group in DMS changes the actual Niri row. Existing application windows are imported automatically; opening and closing them updates their node presentations. Window IDs distinguish applications with identical titles. Moving a window between rows moves its connected workflow component with it, preserving its edges. Rows with workflow nodes receive a workspace name so Niri keeps the group when its last visible window closes. The trailing empty Niri row stays available for new groups.
 
-Super+Tab collapses the current row's visible window presentations into their graph nodes; returning to windows reverses the transition. Applications and agents continue running. Native GTK outlines and titles animate with GPU transforms while the cached graph fades in. Opening the graph performs no screen capture, image encoding, or image readback. Niri builds that omit tiled-window coordinates use a column-layout estimate for the outlines. The graph follows DMS's primary color, surfaces, font, corner radius, and reduced-motion preference.
+Super+Tab shrinks the live windows on the current row into a horizontal array of nodes. Closed windows appear as compact title cards in a grid beneath the live row, fading in and rising gently from below. The grid chooses its column count from the available screen space so history does not stretch the live row across the canvas. Each live window's captured contents, outline width, outline color, and corner radius morph together; labels and IO appear as it reaches its node. Returning reverses the motion, then fades the capture into the live application over 65 ms. GTK's retained GPU renderer transforms cached textures and borders; capture, decoding, and pixel conversion run on a worker and never delay keyboard input or graph mapping. Window snapshots preserve transparency. A fresh snapshot is requested after the opening motion, so capture does not compete with the transition. The default motion is 120 ms and follows DMS's reduced-motion preference.
+
+The graph uses the WM wallpaper, with DMS's monitor crop and bar insets. It reads the active wallpaper from `~/.local/state/DankMaterialShell/session.json`; `FLOWWM_WALLPAPER` can select an image for another wallpaper manager. Window snapshots use Niri's Mutter-compatible one-frame screencast and `gst-launch-1.0` (`pipewiresrc`, `videoconvert`, and `pngenc`), so the clipboard and screenshot notifications are untouched. On Arch, install `gst-plugin-pipewire`, `gst-plugins-base`, and `gst-plugins-good`. Captures use a private runtime directory and are deleted after decoding. If capture is unavailable, window nodes retain their title and outline. Niri builds that omit tiled-window coordinates use a column-layout estimate.
+
+Presentation belongs to each column: Shift+Enter on a window node offers Node or Window. Enter centers and focuses its native Niri window, while neighboring columns remain nodes on the wallpaper. The graph leaves matching visual and input holes for live columns, so mouse and keyboard interaction reaches the real application. Super+Tab collapses the row again. Zooming, panning, or framing also collapses expanded columns before moving the camera, keeping graph cards and native window geometry aligned. Selecting a node highlights it without opening a sidebar or changing the canvas geometry; box selection and connection-cutting gestures render above all cards. Manual node moves survive ordinary graph updates; opening or closing windows and changing the viewport rearrange the live row and history grid.
 
 In DMS Spotlight, use these prefixes:
 
@@ -112,23 +117,39 @@ In DMS mode, nodes expand on their group's existing Niri row. Standalone mode as
 
 | Input | Action |
 | --- | --- |
-| Tab | Create with DMS in integrated mode; native macro palette in standalone mode |
-| Ctrl + P | Find a node with DMS |
-| Ctrl + Tab | Return to windows |
-| Arrows / Super + arrows | Navigate nodes spatially |
-| Shift + arrows | Move a node on the grid |
-| Drag a node | Reposition it on the grid |
-| Drag a bottom port onto another node | Connect a workflow input |
-| Enter / double click | Expand a node into a native window |
-| E | Edit parameters |
+| Tab | Open a minimal FlowGraph assistant; Tab in the popup detaches its session into a node |
+| Win + Space | Create a node |
+| / | Search; matching nodes stay highlighted and spatial navigation follows matches |
+| F / Home | Focus selection / frame all nodes |
+| H J K L / arrows | Select left / down / up / right |
+| W A S D / Shift + arrows | Move selection by one grid block |
+| Alt + 1…9, 0 | Select one of the first ten nodes; hold Alt to see numbers |
+| Alt + Backspace | Remove closed window history on the current row |
+| Backspace / Delete | Delete selection; cancel running work and close live desktop window nodes |
+| Enter / double click | Center and focus a window column; expand workflow output as a native window |
+| Shift + Enter / E | Node settings, including window column presentation |
+| Space + 1…9, 0 | Toggle a connection with that node |
+| Escape | Dismiss the current popup, clear search, then deselect; stay in graph view |
+| ? | Show shortcuts |
+| Left drag on background | Box select; Shift adds to selection |
+| Drag selected nodes | Move the selection together on the grid |
+| Drag a bottom port | Connect a workflow input |
+| Right drag | Cut workflow connections |
+| Middle drag / Space + drag | Pan |
+| Scroll | Zoom at the pointer |
 | R | Run the selected node |
-| Delete | Delete an inactive node |
-| Mouse wheel | Zoom |
-| Middle drag / drag the background | Pan |
-| H / Home | Frame the graph |
-| Escape | Return to Niri windows |
 
-Global keybindings belong to Niri. The DMS installer configures them with backups. For manual standalone installation, [config/niri.kdl](config/niri.kdl) provides bindings for `flowwm toggle` and `flowwm navigate`; merge these with your existing bindings and replace conflicting entries.
+Tab opens a small conversation popup inspired by [Typeless](https://www.typeless.com/). Enter sends a request with the current row's FlowGraph context. Tab dismisses the popup and selects its persistent node while the task continues. Escape dismisses the popup without stopping work. Open the agent node's output window and choose **Continue conversation** to return to the chat; later messages resume the same CLI session. Conversation history and session identity survive FlowWM restarts. A new Tab session starts a fresh conversation.
+
+The graph assistant defaults to `mycodex`, resolving the local `~/Apps/Hooks/utils/mycodex.py` wrapper when present. The popup's settings button configures `~/.config/flowwm/agent.json`, whose `command` is an executable plus fixed arguments, passed directly without shell evaluation:
+
+```json
+{"command": ["/path/to/mycodex"]}
+```
+
+The assistant inherits that CLI's account and permission settings. It receives `FLOWWM_SOCKET` and the graph control interface so it can act on the intended FlowWM instance, including instances started with `--socket`. Regular workflow agent nodes retain their existing structured handoff and sandbox settings. The conversation adapter uses Codex's documented [JSON event stream and session resumption](https://learn.chatgpt.com/docs/non-interactive-mode).
+
+Global keybindings belong to Niri. The DMS installer configures them with backups. For manual standalone installation, [config/niri.kdl](config/niri.kdl) provides bindings for `flowwm toggle`, `flowwm new`, and `flowwm navigate`; merge these with your existing bindings and replace conflicting entries.
 
 ## Workflows
 
@@ -186,7 +207,7 @@ cp config/extensions/git-tools.json ~/.config/flowwm/extensions/
 
 Each macro registers a name, description, node kind, and initial prompt/script. Loading a manifest creates no processes; choosing a macro creates an idle node. [config/extensions/git-tools.json](config/extensions/git-tools.json) is an example. Runtime native renderer plugins are not supported in this version.
 
-The canvas's interaction references are SideFX's [network editor](https://www.sidefx.com/docs/houdini/network/nodes.html) and [network navigation](https://www.sidefx.com/docs/houdini/network/navigate.html): vertical ports, Tab creation, parameter inspection, wheel zoom, middle-button pan, and H to frame.
+The canvas uses vertical workflow ports, box selection, connection cutting, pointer-centered zoom, and middle-button panning. Conversation popups remain small and keep the graph visible.
 
 ## CLI and state
 
@@ -199,6 +220,7 @@ flowwm stop <node-id>
 flowwm approve <node-id> --output "Approved approach"
 flowwm windows
 flowwm nodes
+flowwm new
 flowwm search
 flowwm search create
 flowwm focus <node-id>

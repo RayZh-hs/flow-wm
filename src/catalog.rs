@@ -1,7 +1,7 @@
 use crate::{
     engine::{Presentation, Snapshot},
     extensions::Macro,
-    model::{NodeKind, Row, Status},
+    model::{ColumnMode, NodeKind, Row, Status},
 };
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +14,8 @@ pub struct CatalogNode {
     pub status: Status,
     pub summary: String,
     pub window_id: Option<u64>,
+    pub column: Option<String>,
+    pub column_mode: ColumnMode,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CatalogWorkspace {
@@ -58,6 +60,8 @@ impl Catalog {
                     kind: n.kind,
                     status: n.status,
                     window_id: n.window_id,
+                    column: n.column.clone(),
+                    column_mode: n.column_mode,
                     summary: n
                         .command
                         .lines()

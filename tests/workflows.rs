@@ -486,3 +486,102 @@ fn a_data_directory_has_one_writer_even_with_different_sockets() {
     drop(retained);
     assert!(Store::new(dir.path().into()).is_ok());
 }
+
+#[test]
+fn column_presentation_is_shared_and_history_clear_preserves_open_windows() {
+    let f = Fixture::new();
+    let mut first = f.node(NodeKind::Window, "");
+    first.desktop_window = true;
+    first.column = Some("column-a".into());
+    let mut second = f.node(NodeKind::Window, "");
+    second.desktop_window = true;
+    second.column = first.column.clone();
+    let mut other = f.node(NodeKind::Window, "");
+    other.desktop_window = true;
+    other.column = Some("column-b".into());
+    other.window_id = Some(123);
+    f.add(&first);
+    f.add(&second);
+    f.add(&other);
+    f.engine
+        .request(Control::ColumnMode {
+            id: first.id.clone(),
+            mode: ColumnMode::Window,
+        })
+        .unwrap();
+    let state = f.engine.snapshot().state;
+    assert_eq!(
+        state.node(&first.id).unwrap().column_mode,
+        ColumnMode::Window
+    );
+    assert_eq!(
+        state.node(&second.id).unwrap().column_mode,
+        ColumnMode::Window
+    );
+    assert_eq!(state.node(&other.id).unwrap().column_mode, ColumnMode::Node);
+    f.engine.request(Control::ClearHistory).unwrap();
+    let state = f.engine.snapshot().state;
+    assert!(state.node(&first.id).is_none() && state.node(&second.id).is_none());
+    assert!(state.node(&other.id).is_some());
+}
+
+#[test]
+fn live_desktop_windows_accept_connections_without_changing_workflow_edit_guards() {
+    let mut state = State::empty("/tmp".into());
+    let source = Node::new(
+        &state.selected_workspace,
+        NodeKind::Shell,
+        "/tmp".into(),
+        Position::default(),
+    );
+    let mut window = Node::new(
+        &state.selected_workspace,
+        NodeKind::Window,
+        "/tmp".into(),
+        Position::default(),
+    );
+    window.desktop_window = true;
+    window.status = Status::Running;
+    let mut job = Node::new(
+        &state.selected_workspace,
+        NodeKind::Shell,
+        "/tmp".into(),
+        Position::default(),
+    );
+    job.status = Status::Running;
+    state
+        .nodes
+        .extend([source.clone(), window.clone(), job.clone()]);
+    state.connect(&source.id, &window.id).unwrap();
+    assert!(state.connect(&source.id, &job.id).is_err());
+    state.remove(&window.id).unwrap();
+    state.validate().unwrap();
+}
+
+#[test]
+fn deleting_a_running_node_cancels_its_process_before_removing_the_node() {
+    let f = Fixture::new();
+    let node = f.node(NodeKind::Shell, "sleep 30");
+    f.add(&node);
+    f.run(&node.id, false);
+    f.wait(&node.id, Status::Running);
+    f.engine
+        .request(Control::Delete {
+            id: node.id.clone(),
+        })
+        .unwrap();
+    let start = Instant::now();
+    while f.engine.snapshot().state.node(&node.id).is_some() {
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "Deletion did not finish after cancellation"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    f.engine.snapshot().state.validate().unwrap();
+    // A later writer in the same directory can start after cancellation released its lock.
+    let next = f.node(NodeKind::Shell, "printf done");
+    f.add(&next);
+    f.run(&next.id, false);
+    f.wait(&next.id, Status::Done);
+}

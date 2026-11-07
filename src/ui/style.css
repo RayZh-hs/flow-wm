@@ -68,3 +68,12 @@ scrollbar slider { background: @flow_outline; min-width: 4px; min-height: 4px; b
 .collapse-window { background: alpha(@flow_surface_high, 0.95); border: 1px solid @flow_primary; border-radius: __RADIUS__; padding: 16px; }
 
 dropdown button { border: 1px solid @flow_outline; background: @flow_surface_high; border-radius: __RADIUS__; }
+
+.flow-shell { background: transparent; }
+.graph-surface { background: transparent; }
+.flow-chat, .flow-search { border-radius: 22px; }
+.chat-body { padding: 16px 20px; border-radius: 22px; background: @flow_surface_low; }
+.chat-entry { border-radius: 18px; padding: 10px 14px; background: @flow_surface; }
+.chat-status { font-size: 12px; color: @flow_muted; }
+.chat-transcript, .chat-transcript text { background: @flow_surface_low; color: @flow_text; }
+.chat-transcript { padding: 8px 2px; font-size: 13px; }

@@ -77,10 +77,14 @@ impl Default for Theme {
 impl Theme {
     pub fn paths() -> Vec<PathBuf> {
         let home = directories::BaseDirs::new().expect("home directory");
-        vec![
+        let mut paths = vec![
             home.cache_dir().join("DankMaterialShell/dms-colors.json"),
             home.config_dir().join("DankMaterialShell/settings.json"),
-        ]
+        ];
+        if let Some(state) = home.state_dir() {
+            paths.push(state.join("DankMaterialShell/session.json"));
+        }
+        paths
     }
     pub fn load() -> Self {
         let paths = Self::paths();

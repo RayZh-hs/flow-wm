@@ -89,6 +89,19 @@ pub struct Position {
     pub x: f64,
     pub y: f64,
 }
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ColumnMode {
+    #[default]
+    Node,
+    Window,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub role: String,
+    pub text: String,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Log {
     pub time: u64,
@@ -138,10 +151,25 @@ pub struct Node {
     pub window_id: Option<u64>,
     #[serde(default)]
     pub desktop_window: bool,
+    /// Stable graph column identity. Native windows in one Niri column share it.
+    #[serde(default)]
+    pub column: Option<String>,
+    #[serde(default)]
+    pub column_mode: ColumnMode,
+    #[serde(default)]
+    pub chat: Vec<ChatMessage>,
+    #[serde(default)]
+    pub agent_session: Option<String>,
     pub started_at: Option<u64>,
     pub finished_at: Option<u64>,
 }
 impl Node {
+    pub fn closed_window(&self) -> bool {
+        self.window_id.is_none()
+            && (self.desktop_window
+                || (self.kind == NodeKind::Window && self.window_match.is_some()))
+    }
+
     pub fn new(workspace: &str, kind: NodeKind, cwd: PathBuf, position: Position) -> Self {
         let (title, command) = match kind {
             NodeKind::Agent => (
@@ -176,6 +204,10 @@ impl Node {
             window_match: None,
             window_id: None,
             desktop_window: false,
+            column: None,
+            column_mode: ColumnMode::Node,
+            chat: vec![],
+            agent_session: None,
             started_at: None,
             finished_at: None,
         }
@@ -200,6 +232,8 @@ pub struct Workspace {
     pub notes: String,
     #[serde(default)]
     pub row: Option<Row>,
+    #[serde(default)]
+    pub window_array: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Row {
@@ -245,6 +279,7 @@ impl State {
             cwd,
             notes: String::new(),
             row: None,
+            window_array: false,
         };
         Self {
             version: 1,
@@ -300,7 +335,7 @@ impl State {
             "Move both nodes into the same workspace first"
         );
         ensure!(
-            !b.status.active(),
+            !b.status.active() || b.desktop_window,
             "Stop the target node before changing its inputs"
         );
         let mut todo = vec![source.to_string()];
@@ -414,6 +449,10 @@ impl State {
             n.window_match = None;
             n.window_id = None;
             n.desktop_window = false;
+            n.column = None;
+            n.column_mode = ColumnMode::Node;
+            n.chat.clear();
+            n.agent_session = None;
             n.cwd = PathBuf::from(".");
         }
         Ok(Recipe {
@@ -506,14 +545,16 @@ impl State {
         let node = self
             .node(id)
             .ok_or_else(|| anyhow::anyhow!("Node not found"))?;
-        if node.status.active() {
+        if node.status.active() && !node.desktop_window {
             bail!("Stop or resolve the node before deleting it");
         }
         ensure!(
             !self
                 .nodes
                 .iter()
-                .any(|n| n.dependencies.iter().any(|d| d == id) && n.status.active()),
+                .any(|n| n.dependencies.iter().any(|d| d == id)
+                    && n.status.active()
+                    && !n.desktop_window),
             "An active node depends on this node"
         );
         self.nodes.retain(|n| n.id != id);

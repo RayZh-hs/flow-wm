@@ -57,6 +57,8 @@ enum Cmd {
     Toggle,
     Nodes,
     Windows,
+    /// Create a node on the current graph row.
+    New,
     /// Find nodes in DMS Spotlight, or choose a node type to create.
     Search {
         #[arg(default_value = "nodes", value_parser = ["nodes", "create", "recipes"])]
@@ -169,6 +171,9 @@ fn main() -> Result<()> {
         }
         Cmd::Toggle => Control::Ui {
             command: UiCommand::Toggle,
+        },
+        Cmd::New => Control::Ui {
+            command: UiCommand::Palette,
         },
         Cmd::Nodes => Control::Ui {
             command: UiCommand::Nodes,
