@@ -1082,6 +1082,12 @@ impl State {
     pub fn send_initial_configure(&mut self, toplevel: &ToplevelSurface) {
         let _span = tracy_client::span!("State::send_initial_configure");
 
+        // GTK's map handler sets the canvas role after its initial empty commit.
+        // Recheck it before requesting a tiled buffer that would briefly appear in the canvas.
+        if self.node_row_handle_commit(toplevel.wl_surface(), toplevel.wl_surface()) {
+            return;
+        }
+
         let Some(unmapped) = self.niri.unmapped_windows.get_mut(toplevel.wl_surface()) else {
             error!("window must be present in unmapped_windows in send_initial_configure()");
             return;

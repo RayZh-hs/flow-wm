@@ -75,6 +75,54 @@ fn render(f: &mut Fixture) -> Vec<Rectangle<i32, Physical>> {
 }
 
 #[test]
+fn node_rows_use_canvas_geometry_when_gtk_sets_the_role_after_initial_commit() {
+    let mut f =
+        Fixture::with_config(Config::parse_mem(r#"output "headless-1" { scale 1.75; }"#).unwrap());
+    f.add_output(1, (3200, 2000));
+    let workspace = f.niri().layout.active_workspace().unwrap().id().get();
+    let client = f.add_client();
+    let panel = f.client(client).create_layer(None, Layer::Top, "panel");
+    let panel_surface = panel.surface.clone();
+    panel.set_configure_props(LayerConfigureProps {
+        anchor: Some(Anchor::Left | Anchor::Right | Anchor::Top),
+        size: Some((0, 44)),
+        exclusive_zone: Some(44),
+        ..Default::default()
+    });
+    panel.commit();
+    f.double_roundtrip(client);
+    let panel = f.client(client).layer(&panel_surface);
+    panel.attach_new_buffer();
+    panel.set_size(1829, 44);
+    panel.ack_last_and_commit();
+    f.double_roundtrip(client);
+
+    let win = f.client(client).create_window();
+    let surface = win.surface.clone();
+    // GTK sends its ordinary application ID and empty commit before our map handler sets the role.
+    win.xdg_toplevel.set_app_id("dev.flowwm.Shell".into());
+    win.commit();
+    win.xdg_toplevel.set_app_id(node_row::app_id(workspace));
+    f.double_roundtrip(client);
+
+    let win = f.client(client).window(&surface);
+    assert_eq!(
+        win.configures_received
+            .iter()
+            .map(|(_, c)| c.size)
+            .collect::<Vec<_>>(),
+        [(1829, 1099)],
+        "the first buffer must fill the canvas instead of a temporary half-width window"
+    );
+    win.attach_new_buffer();
+    win.set_size(1829, 1099);
+    win.ack_last_and_commit();
+    f.double_roundtrip(client);
+    assert!(f.niri().layout.active_workspace().unwrap().nodes_visible());
+    assert_eq!(f.niri().layout.windows().count(), 0);
+}
+
+#[test]
 fn egl_node_rows_replace_windows_and_follow_swipes_overview_and_lifecycle() {
     let mut f = Fixture::with_config(
         Config::parse_mem("workspace \"first\"\nworkspace \"second\"").unwrap(),
