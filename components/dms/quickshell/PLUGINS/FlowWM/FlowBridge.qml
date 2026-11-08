@@ -61,10 +61,12 @@ Scope {
         target: NotificationService
         function onDesktopNotification(notification) {
             if (!root.online || notification.appName === "FlowWM" || notification.urgency < 1) return;
-            const app = String(notification.hints?.["desktop-entry"] || notification.appName || "").replace(/\.desktop$/, "").toLowerCase();
+            const app = String(notification.desktopEntry || notification.hints?.["desktop-entry"] || notification.appName || "").replace(/\.desktop$/, "").toLowerCase();
             if (!app) return;
+            const entry = DesktopEntries.heuristicLookup(app);
+            const identities = [app, String(entry?.startupClass || "").toLowerCase()];
             const nodes = root.catalog.nodes || [];
-            nodes.filter(node => node.window_id && String(node.app_id || "").toLowerCase() === app).forEach(node => {
+            nodes.filter(node => node.window_id && identities.includes(String(node.app_id || "").toLowerCase())).forEach(node => {
                 if (NiriService.windows.some(window => window.id === node.window_id && window.is_focused)) return;
                 root.command(["send", JSON.stringify({op:"alert", id:node.id, message:notification.summary || notification.body || "", critical:notification.urgency === 2, notify:false})]);
             });
