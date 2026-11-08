@@ -2963,17 +2963,6 @@ impl Shell {
         if matches!(node.kind, NodeKind::Agent | NodeKind::Shell) {
             root.append(&review);
         }
-        let condition = Choice::new();
-        condition.append(Some("success"), "All inputs succeed");
-        condition.append(Some("failure"), "Any input fails · recovery branch");
-        condition.set_active_id(Some(if node.run_when == RunWhen::Success {
-            "success"
-        } else {
-            "failure"
-        }));
-        if !node.kind.primitive() {
-            field(&root, "Run when", &condition.widget);
-        }
         let interval = gtk::SpinButton::with_range(1.0, 86400.0, 1.0);
         interval.set_value(node.metric.interval_secs as f64);
         let unit = entry(&node.metric.unit);
@@ -2997,127 +2986,6 @@ impl Shell {
                 window_choice.set_active_id(Some(selector));
             }
             field(&root, "Native window", &window_choice.widget);
-        }
-        if !node.dependencies.is_empty() {
-            root.append(&label("INPUT CONNECTIONS", "eyebrow"));
-            for input in &node.dependencies {
-                let line = row(8);
-                let title = state
-                    .node(input)
-                    .map(|n| n.title.as_str())
-                    .unwrap_or("Missing node");
-                let name = label(title, "muted");
-                name.set_hexpand(true);
-                line.append(&name);
-                let remove = gtk::Button::with_label("Disconnect");
-                remove.add_css_class("flat");
-                let e = self.engine.clone();
-                let source = input.clone();
-                let target = node.id.clone();
-                let line_copy = line.clone();
-                remove.connect_clicked(move |_| {
-                    e.dispatch(Control::Disconnect {
-                        source: source.clone(),
-                        target: target.clone(),
-                    });
-                    line_copy.set_visible(false);
-                });
-                line.append(&remove);
-                root.append(&line);
-            }
-        }
-        root.append(&label("PIN CONNECTIONS", "eyebrow"));
-        for edge in state
-            .connections
-            .iter()
-            .filter(|e| e.target.node == node.id)
-        {
-            let line = row(8);
-            let source = state
-                .node(&edge.source.node)
-                .map(|n| n.title.as_str())
-                .unwrap_or("Missing node");
-            let name = label(
-                &format!("{source}.{} → {}", edge.source.pin, edge.target.pin),
-                "muted",
-            );
-            name.set_hexpand(true);
-            line.append(&name);
-            let remove = gtk::Button::with_label("Disconnect");
-            let e = self.engine.clone();
-            let edge = edge.clone();
-            let l = line.clone();
-            remove.connect_clicked(move |_| {
-                e.dispatch(Control::DisconnectPins {
-                    connection: edge.clone(),
-                });
-                l.set_visible(false);
-            });
-            line.append(&remove);
-            root.append(&line);
-        }
-        for input in crate::graph::pins(&state, &node, false) {
-            let choices = Choice::new();
-            choices.append(Some(""), "Choose an output");
-            choices.set_active_id(Some(""));
-            for source in state
-                .nodes
-                .iter()
-                .filter(|n| n.workspace == node.workspace && n.id != node.id)
-            {
-                for output in crate::graph::pins(&state, source, true)
-                    .into_iter()
-                    .filter(|p| {
-                        p.ty.is_signal() == input.ty.is_signal()
-                            && crate::graph::can_cast(&state, &p.ty, &input.ty)
-                    })
-                {
-                    let endpoint = crate::graph::Endpoint {
-                        node: source.id.clone(),
-                        pin: output.name.clone(),
-                    };
-                    choices.append(
-                        Some(&serde_json::to_string(&endpoint).unwrap()),
-                        &format!("{}.{}", source.title, output.name),
-                    );
-                }
-            }
-            let line = row(8);
-            choices.widget.set_hexpand(true);
-            line.append(&choices.widget);
-            let connect = gtk::Button::with_label("Connect");
-            let e = self.engine.clone();
-            let target = crate::graph::Endpoint {
-                node: node.id.clone(),
-                pin: input.name.clone(),
-            };
-            connect.connect_clicked(move |_| {
-                if let Some(source) = choices
-                    .active_id()
-                    .and_then(|s| serde_json::from_str(&s).ok())
-                {
-                    e.dispatch(Control::ConnectPins {
-                        connection: crate::graph::Connection {
-                            source,
-                            target: target.clone(),
-                        },
-                    });
-                }
-            });
-            line.append(&connect);
-            field(
-                &root,
-                &format!(
-                    "{} ({})",
-                    input.name,
-                    if input.ty.is_signal() {
-                        "signal"
-                    } else {
-                        "data"
-                    }
-                ),
-                &line,
-            );
         }
         let actions = row(10);
         actions.set_halign(gtk::Align::End);
@@ -3148,15 +3016,10 @@ impl Shell {
             node.command = b.text(&b.start_iter(), &b.end_iter(), true).to_string();
             node.writable = writable.is_active();
             node.review = review.is_active();
-            node.run_when = if condition.active_id().as_deref() == Some("failure") {
-                RunWhen::Failure
-            } else {
-                RunWhen::Success
-            };
             node.metric.interval_secs = interval.value() as u64;
             node.metric.unit = unit.text().to_string();
             node.window_match = window_choice.active_id().map(|s| s.to_string());
-            // Respect connections disconnected while this dialog was open.
+            // Preserve graph edits made while the parameters were open.
             if let Some(current) = s.engine.snapshot().state.node(&node.id) {
                 node.dependencies = current.dependencies.clone();
             }
