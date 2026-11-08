@@ -87,7 +87,9 @@ test('a single output skips output selection and incompatible nodes stay absent'
     const single=JSON.parse(JSON.stringify(linked));single.lookup.outputs=single.lookup.outputs.slice(0,1);
     assert.ok(connections(single).some(i=>i.name==='Read value'));
     assert.equal(connections(single).some(i=>i.name==='finished'),false);
-    assert.deepEqual(connections(linked,'missing','number').map(i=>i.id),['back']);
+    assert.deepEqual(connections(linked,'missing','number').map(i=>i.id),[]);
+    assert.equal(connections(linked,'Read','number')[0].id, 'node:display:value');
+    assert.equal(connections(linked,'','number')[0].id, 'back');
 });
 
 test('event search explains completion, failure and extension outputs without changing endpoints', () => {

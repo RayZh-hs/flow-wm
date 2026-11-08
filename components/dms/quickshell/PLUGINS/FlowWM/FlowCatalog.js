@@ -118,7 +118,7 @@ function connectionItems(catalog, query, outputName, targetKey) {
         groups[key].push(target);
     });
     var result = [];
-    if (outputs.length > 1 || targetKey) result.push(item("back", "‹ Back", "Choose another " + (targetKey ? "node" : "output"), { back: true }, null));
+    if (!query && (outputs.length > 1 || targetKey)) result.push(item("back", "‹ Back", "Choose another " + (targetKey ? "node" : "output"), { back: true }, null));
     Object.keys(groups).forEach(function (key) {
         if (targetKey && key !== targetKey) return;
         var targets = groups[key];
