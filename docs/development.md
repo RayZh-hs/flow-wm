@@ -101,9 +101,10 @@ python3 scripts/install.py --skip-build --replace
 python3 scripts/install.py --rollback --replace
 ```
 
-`--replace` reloads `flowwm.service` and `flowwm-dms.service` after installing or
-selecting a snapshot. It updates their `FLOWWM_INSTALL_ROOT` in the user service
-manager, verifies that both services adopt the snapshot, and attempts to restore
+`--replace` reloads `flowwm.service`, `flowwm-dms.service`, and the bundled terminal
+session extension after installing or selecting a snapshot. It updates their
+`FLOWWM_INSTALL_ROOT` in the user service manager, verifies that the services adopt
+the snapshot, and attempts to restore
 the previous services if replacement fails. It requires an active installed FlowWM
 session and checks that the same compositor is still running before reloading.
 The compositor and application windows keep running; compositor updates require
@@ -111,9 +112,13 @@ another login. Restarting FlowWM stops its active workflow subprocesses. Existin
 application processes retain their inherited environment.
 
 FlowWM uses `flowwm-compositor.service`, `flowwm-session.target`, `flowwm.service`,
-and `flowwm-dms.service`. Niri keeps `niri.service` and its original `dms.service`.
+and `flowwm-dms.service`, plus the optional `flowwm-agent-sessions.service`
+extension. `flowwm-shutdown.target` ends the graphical session without requiring
+upstream niri units. Niri keeps `niri.service` and its original `dms.service` when
+those are installed.
 FlowWM's DMS uses its private configuration, state, cache, plugin, and generated
-Niri settings under `~/.local/state/flowwm/desktop/`. The original DMS service skips
+Niri settings under `~/.config/flow-wm/`, `~/.local/state/flow-wm/`, and
+`~/.cache/flow-wm/`. The original DMS service skips
 startup while the FlowWM compositor is active. No shared compositor command is
 switched between the two profiles, and the workflow service is not enabled for
 ordinary graphical sessions. Integrated FlowWM refuses a compositor without the

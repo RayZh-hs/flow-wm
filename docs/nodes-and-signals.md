@@ -133,15 +133,18 @@ output property; reading `selected` returns that published value without executi
 the dashboard's code. If an output property has not been published, ordinary lazy
 evaluation can produce it.
 
-In Parameters, edit the properties record and pin definitions, choose compatible
-outputs for each input, or disconnect existing edges. On the canvas, drag a named
+In Parameters, use typed value controls and the custom pin table, choose compatible
+outputs for each input, or disconnect existing edges. Constants expose Type, Value,
+and Editable in graph; their value editor is also available directly on the card.
+Tab starts a layered Dux search through outputs, compatible node types/existing
+nodes, and ambiguous input pins. The read-only hint shows the active type filter. On the canvas, drag a named
 side output to a side input. Hover reveals the pin name and type. Round pins and
 solid lines carry signals; square pins and dashed lines carry data. Right-drag
 cuts either kind of connection. Display cards show their last evaluated input.
 
 ## Extensions
 
-Version 2 manifests in the existing extensions directory can register `types`,
+Version 2 manifests in `~/.config/flow-wm/extensions/` can register `types`,
 `casts`, `nodes`, and `macros`. Version 1 macro manifests continue to load.
 Loading a definition does not execute its source. This example adds a nominal
 type, a cast, and a data node:
@@ -166,7 +169,7 @@ type, a cast, and a data node:
 }
 ```
 
-Every node definition also appears in the creation palette. Registered schemas
+Every node definition also appears in Dux creation search. Registered schemas
 are saved with the graph. Recipes include pin connections, type definitions,
 casts, and node definitions; instantiation remaps endpoints and clears published
 results. A conflicting recipe definition is rejected.
@@ -196,3 +199,10 @@ and leaves passive producers to be requested by their consumers.
 Older saved `dependencies` retain their completion-gated behavior and existing
 success/failure policies. The named-pin API provides the signal/data model for
 new graphs. Both kinds of graph survive save/load and recipe operations.
+
+The generic `expose_output` operation adds or replaces a named output pin without
+editing a running node's source. Connected types are validated before committing
+the change. The bundled [terminal session extension](../extensions/agent-sessions/README.md)
+uses this operation for `on_session_finish`; all agent-specific detection and
+notification code stays in the extension. Its `Error` record contains `code`,
+`kind`, and `message`, and its handler routes zero/nonzero codes separately.
