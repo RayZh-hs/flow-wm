@@ -73,7 +73,7 @@ enum Cmd {
     Toggle,
     Nodes,
     Windows,
-    /// Create a node on the current graph row.
+    /// Open app search in Windows view, or create a node in Nodes view.
     New,
     /// Find nodes in DMS Spotlight, or choose a node type to create.
     Search {

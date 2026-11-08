@@ -27,6 +27,7 @@ pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
         return false;
     }
     let mut changed = false;
+    let previous_session = state.workspace().row.as_ref().map(|b| b.session.clone());
     let mut rows: Vec<_> = desktop
         .workspaces
         .iter()
@@ -48,17 +49,51 @@ pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
             output: row.output.clone(),
             name: row.name.clone(),
         };
-        let existing = state.workspaces.iter().position(|w| {
-            w.row.as_ref().is_some_and(|b| {
-                if b.session == desktop.session {
-                    b.id == row.id
-                } else if let Some(name) = &b.name {
-                    row.name.as_ref() == Some(name)
-                } else {
-                    b.output == row.output && b.index == row.idx
-                }
+        // A live identity wins over names remembered from earlier sessions.
+        // Naming a row must never give it a second graph/canvas owner.
+        let existing = state
+            .workspaces
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| {
+                w.row
+                    .as_ref()
+                    .is_some_and(|b| b.session == desktop.session && b.id == row.id)
             })
-        });
+            .max_by_key(|(_, w)| {
+                (
+                    state.nodes.iter().filter(|n| n.workspace == w.id).count(),
+                    w.id == state.selected_workspace,
+                )
+            })
+            .map(|(index, _)| index)
+            .or_else(|| {
+                state
+                    .workspaces
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, w)| {
+                        w.row.as_ref().is_some_and(|b| {
+                            b.session != desktop.session
+                                && ((b.name.is_some() && b.name == row.name)
+                                    || (b.output == row.output
+                                        && b.index == row.idx
+                                        && (b.name.is_none()
+                                            || (row.name.is_none()
+                                                && Some(&b.session) == previous_session.as_ref()))))
+                        })
+                    })
+                    .max_by_key(|(_, w)| {
+                        let b = w.row.as_ref().unwrap();
+                        (
+                            b.name.is_some() && b.name == row.name,
+                            Some(&b.session) == previous_session.as_ref(),
+                            state.nodes.iter().filter(|n| n.workspace == w.id).count(),
+                            w.id == state.selected_workspace,
+                        )
+                    })
+                    .map(|(index, _)| index)
+            });
         let index = existing
             .or_else(|| {
                 row.is_focused
@@ -88,6 +123,19 @@ pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
                 changed = true;
                 state.workspaces.len() - 1
             });
+        // Repair duplicate bindings saved by older versions without discarding
+        // either group's workflows. Live connected windows reconcile below.
+        for (other_index, other) in state.workspaces.iter_mut().enumerate() {
+            if other_index != index
+                && other
+                    .row
+                    .as_ref()
+                    .is_some_and(|b| b.session == desktop.session && b.id == row.id)
+            {
+                other.row = None;
+                changed = true;
+            }
+        }
         let workspace = &mut state.workspaces[index];
         // Generated row labels follow reordering; user-chosen group names stay intact.
         if workspace.name.starts_with("Row ") {

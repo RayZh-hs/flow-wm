@@ -1,16 +1,68 @@
 // FlowWM compositor preferences. The shortcut registry generates keybindings.kdl.
 input {
-    keyboard {}
-    touchpad { tap; natural-scroll; }
+    keyboard { numlock; }
+    touchpad { tap; dwt; natural-scroll; }
 }
 layout {
+    background-color "transparent"
     gaps 16
     center-focused-column "never"
+    preset-column-widths {
+        proportion 0.33333
+        proportion 0.5
+        proportion 0.66667
+    }
     default-column-width { proportion 0.5; }
     focus-ring { width 2; }
+    border { off; width 2; }
+    shadow {
+        softness 30
+        spread 5
+        offset x=0 y=5
+        color "#0007"
+    }
 }
+gestures { hot-corners { off; }; }
+// Keep the wallpaper fixed to the output while workspace rows scroll over it.
+layer-rule {
+    match namespace="^quickshell$"
+    match namespace="^dms:blurwallpaper$"
+    place-within-backdrop true
+}
+overview { workspace-shadow { off; }; }
 hotkey-overlay { skip-at-startup; }
 prefer-no-csd
+screenshot-path "~/Pictures/Screenshots/Screenshot from %Y-%m-%d %H-%M-%S.png"
+
+window-rule {
+    geometry-corner-radius 12
+    clip-to-geometry true
+    draw-border-with-background false
+}
+window-rule {
+    match app-id=r#"^org\.wezfurlong\.wezterm$"#
+    default-column-width {}
+}
+window-rule {
+    match app-id=r#"firefox$"# title="^Picture-in-Picture$"
+    match app-id=r#"^org\.gnome\.Nautilus$"#
+    match app-id="^(gnome-calculator|galculator|blueman-manager)$"
+    match app-id="^(org.quickshell|dev\\.duxlabs\\.shell|com\\.danklinux\\.dms)$"
+    open-floating true
+}
+window-rule {
+    match app-id="^steam$" title=r#"^notificationtoasts_\d+_desktop$"#
+    default-floating-position x=10 y=10 relative-to="bottom-right"
+    open-focused false
+}
+recent-windows {
+    binds {
+        Alt+Tab { next-window scope="output"; }
+        Alt+Shift+Tab { previous-window scope="output"; }
+        Alt+grave { next-window filter="app-id"; }
+        Alt+Shift+grave { previous-window filter="app-id"; }
+    }
+}
 include "keybindings.kdl"
 
 // Dux writes these files inside the FlowWM profile.
@@ -22,3 +74,6 @@ include "niri/dms/windowrules.kdl"
 include "niri/dms/alttab.kdl"
 include "niri/dms/input.kdl"
 include "niri/dms/wpblur.kdl"
+
+// Keep personal startup hooks, output rules, and overrides here.
+include "local.kdl"

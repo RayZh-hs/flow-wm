@@ -54,8 +54,7 @@ def prepare_profile(config, state, cache, bundle, user_config, user_state, user_
     for name in ("settings.json", "plugin_settings.json"):
         path = config / "dms" / name
         if not path.exists():
-            original = user_config / "dms" / name
-            atomic_text(path, original.read_text() if original.is_file() else "{}\n")
+            atomic_text(path, (ROOT / "config/dms" / name).read_text())
     for destination in (state, cache):
         (destination / "dms").mkdir(parents=True, exist_ok=True)
         if not (destination / "DankMaterialShell").exists():
@@ -66,16 +65,26 @@ def prepare_profile(config, state, cache, bundle, user_config, user_state, user_
     generated.mkdir(parents=True, exist_ok=True)
     for name in ("colors", "layout", "outputs", "cursor", "windowrules", "alttab", "input", "wpblur"):
         if not (generated / f"{name}.kdl").exists():
-            atomic_text(generated / f"{name}.kdl", "// Managed by Dux.\n")
+            default = ROOT / "config/dms" / f"{name}.kdl"
+            atomic_text(generated / f"{name}.kdl", default.read_text() if default.is_file() else "// Managed by Dux.\n")
+    local = config / "local.kdl"
+    if not local.exists():
+        atomic_text(local, "// Personal compositor settings and startup hooks. Preserved on reinstall.\n")
+    wallpaper = state / "dms/wallpaper.png"
+    if not wallpaper.exists():
+        shutil.copy2(ROOT / "assets/wallpaper.png", wallpaper)
+    session = state / "dms/session.json"
+    if not session.exists():
+        atomic_text(session, json.dumps({"wallpaperPath": str(wallpaper), "isLightMode": False}, indent=2) + "\n")
     niri_config = config / "config.kdl"
     if not niri_config.exists():
         atomic_text(niri_config, (ROOT / "config/compositor.kdl").read_text())
     registry = config / "keybindings.json"
     if not registry.exists():
         defaults = json.loads((ROOT / "config/keybindings.json").read_text())
-        terminal = next((name for name in (os.environ.get("TERMINAL", ""), "foot", "alacritty", "kitty", "konsole", "gnome-terminal", "xterm") if name and shutil.which(name)), "foot")
+        terminal = next((name for name in (os.environ.get("TERMINAL", ""), "alacritty", "foot", "kitty", "konsole", "gnome-terminal", "xterm") if name and shutil.which(name)), "alacritty")
         for binding in defaults:
-            if binding.get("niri") == 'spawn "foot"':
+            if binding.get("niri") == 'spawn "alacritty"':
                 binding["niri"] = "spawn " + json.dumps(terminal)
         atomic_text(registry, json.dumps(defaults, indent=2) + "\n")
     bindings = json.loads(registry.read_text())
@@ -89,11 +98,16 @@ def prepare_profile(config, state, cache, bundle, user_config, user_state, user_
         if not command:
             command = "spawn " + " ".join(json.dumps(arg) for arg in [flowwm, *binding["command"]])
         for key in binding["keys"]:
-            if key in used:
+            normalized = "+".join(sorted(part.casefold().replace("super", "mod") for part in key.split("+")))
+            if normalized in used:
                 raise ValueError(f"Duplicate global shortcut: {key}")
-            used.add(key)
+            used.add(normalized)
             title = json.dumps(binding["description"])
-            lines.append(f"    {key} hotkey-overlay-title={title} {{ {command}; }}")
+            properties = [f"hotkey-overlay-title={title}"]
+            for name in ("repeat", "allow_when_locked", "allow_inhibiting", "cooldown_ms"):
+                if name in binding:
+                    properties.append(f"{name.replace('_', '-')}={json.dumps(binding[name])}")
+            lines.append(f"    {key} {' '.join(properties)} {{ {command}; }}")
     lines.append("}")
     atomic_text(config / "keybindings.kdl", "\n".join(lines) + "\n")
     extensions = config / "extensions"
@@ -139,6 +153,7 @@ Slice=session.slice
 ExecStart={command} compositor
 Environment=FLOWWM_SESSION=1
 WorkingDirectory={user_home}
+TimeoutStopSec=8
 ''')
     atomic_text(units / "flowwm-shutdown.target", '''[Unit]
 Description=Shutdown running FlowWM session

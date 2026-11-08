@@ -21,6 +21,14 @@ pub struct Shortcut {
     pub command: Option<Vec<String>>,
     #[serde(default)]
     pub niri: Option<String>,
+    #[serde(default)]
+    pub repeat: Option<bool>,
+    #[serde(default)]
+    pub allow_when_locked: bool,
+    #[serde(default)]
+    pub allow_inhibiting: Option<bool>,
+    #[serde(default)]
+    pub cooldown_ms: Option<u32>,
 }
 pub fn shortcuts() -> Vec<Shortcut> {
     let defaults = include_str!("../../../config/keybindings.json");

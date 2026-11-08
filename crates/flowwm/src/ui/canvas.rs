@@ -32,6 +32,10 @@ thread_local! { static GRID_TILE: RefCell<Option<GridTile>> = const { RefCell::n
 fn draw_grid(c: &Context, view: &View) {
     let spacing = GRID * view.zoom;
     let scale = c.matrix().xx().hypot(c.matrix().yx()).max(1.0);
+    // Subpixel repeat matrices can fail when Cairo replays a recorded scene.
+    if !spacing.is_finite() || spacing * scale < 3.0 {
+        return;
+    }
     let color = view.theme.outline;
     let key = [
         spacing.to_bits(),
@@ -80,6 +84,28 @@ fn draw_grid(c: &Context, view: &View) {
             let _ = c.restore();
         }
     });
+}
+
+#[test]
+fn zoomed_out_grid_replays_without_cairo_allocation_errors() {
+    for zoom in [0.000001, 0.001, 0.03, 0.9] {
+        let surface = cairo::RecordingSurface::create(
+            cairo::Content::ColorAlpha,
+            Some(cairo::Rectangle::new(0., 0., 800., 600.)),
+        )
+        .unwrap();
+        let recording = Context::new(&surface).unwrap();
+        let view = View {
+            zoom,
+            ..View::default()
+        };
+        draw_grid(&recording, &view);
+        let image = cairo::ImageSurface::create(cairo::Format::ARgb32, 1600, 1200).unwrap();
+        let replay = Context::new(&image).unwrap();
+        replay.scale(2., 2.);
+        replay.set_source_surface(&surface, 0., 0.).unwrap();
+        replay.paint().unwrap();
+    }
 }
 type Callback = Rc<dyn Fn(CanvasAction)>;
 #[derive(Clone)]

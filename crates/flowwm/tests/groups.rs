@@ -200,6 +200,81 @@ fn a_compositor_restart_rebinds_rows_instead_of_trusting_reused_ids() {
 }
 
 #[test]
+fn naming_a_live_row_cannot_rebind_a_stale_group_or_duplicate_its_canvas() {
+    let mut state = State::empty("/tmp".into());
+    let mut desktop = desktop();
+    groups::synchronize(&mut state, &desktop);
+    let current = state.selected_workspace.clone();
+    let mut stale = state.workspace().clone();
+    stale.id = id();
+    stale.row.as_mut().unwrap().session = "previous-session".into();
+    stale.row.as_mut().unwrap().name = Some("Row 1".into());
+    state.workspaces.insert(0, stale);
+    desktop.workspaces[0].name = Some("Row 1".into());
+    groups::synchronize(&mut state, &desktop);
+    assert_eq!(state.selected_workspace, current);
+    assert_eq!(
+        state
+            .workspaces
+            .iter()
+            .filter(|w| w
+                .row
+                .as_ref()
+                .is_some_and(|r| r.session == desktop.session && r.id == 10))
+            .count(),
+        1
+    );
+    state.validate().unwrap();
+}
+
+#[test]
+fn duplicate_saved_row_bindings_recover_without_discarding_workflow_nodes() {
+    let mut state = State::empty("/tmp".into());
+    let desktop = desktop();
+    groups::synchronize(&mut state, &desktop);
+    let current = state.selected_workspace.clone();
+    let mut duplicate = state.workspace().clone();
+    duplicate.id = id();
+    let duplicate_id = duplicate.id.clone();
+    state.workspaces.insert(0, duplicate);
+    state.selected_workspace = duplicate_id.clone();
+    let nodes = state.nodes.len();
+    groups::synchronize(&mut state, &desktop);
+    assert_eq!(state.selected_workspace, current);
+    assert_eq!(state.nodes.len(), nodes);
+    assert!(
+        state
+            .workspaces
+            .iter()
+            .find(|w| w.id == duplicate_id)
+            .unwrap()
+            .row
+            .is_none()
+    );
+    assert!(!groups::synchronize(&mut state, &desktop));
+    state.validate().unwrap();
+}
+
+#[test]
+fn a_named_node_row_rebinds_to_its_slot_before_the_new_session_restores_its_name() {
+    let mut state = State::empty("/tmp".into());
+    let mut desktop = desktop();
+    groups::synchronize(&mut state, &desktop);
+    let current = state.selected_workspace.clone();
+    desktop.workspaces[0].name = Some("Row 1".into());
+    groups::synchronize(&mut state, &desktop);
+    desktop.session = "new-session".into();
+    desktop.workspaces[0].name = None;
+    for node in &mut state.nodes {
+        node.window_id = None;
+    }
+    groups::synchronize(&mut state, &desktop);
+    assert_eq!(state.selected_workspace, current);
+    assert_eq!(state.workspaces.len(), 2);
+    state.validate().unwrap();
+}
+
+#[test]
 fn identical_window_titles_still_have_distinct_nodes() {
     let mut state = State::empty("/tmp".into());
     let mut desktop = desktop();

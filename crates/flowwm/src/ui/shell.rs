@@ -229,6 +229,7 @@ impl Shell {
         let display = gtk::prelude::WidgetExt::display(&self.fallback_window);
         let mut surfaces = self.row_surfaces.borrow_mut();
         let mut keep = HashSet::new();
+        let mut claimed_rows = HashSet::new();
         let mut created_current = false;
         for group in &state.workspaces {
             let Some(row) = group.row.as_ref().filter(|row| {
@@ -240,6 +241,9 @@ impl Shell {
                 .filter_map(|i| display.monitors().item(i)?.downcast::<gdk::Monitor>().ok())
                 .find(|m| m.connector().as_deref() == row.output.as_deref());
             let Some(monitor) = monitor else { continue };
+            if !claimed_rows.insert(row.id) {
+                continue;
+            }
             keep.insert(group.id.clone());
             if surfaces.get(&group.id).is_some_and(|s| s.row_id != row.id) {
                 let surface = surfaces.remove(&group.id).unwrap();
@@ -1633,6 +1637,23 @@ impl Shell {
             }
         }
     }
+    fn search(&self, mode: Option<&str>) {
+        if self.integrated {
+            self.synchronize_row();
+            self.refresh();
+            // Opening search must preserve the current row presentation.
+            // Win+Space launches apps in Windows and creates nodes in Nodes.
+            let mode = mode.or_else(|| {
+                (self.engine.snapshot().state.workspace().view == RowView::Nodes)
+                    .then_some("create")
+            });
+            self.dms_launcher(mode);
+        } else if mode.is_none_or(|mode| mode == "create") {
+            self.palette();
+        } else {
+            self.search_nodes();
+        }
+    }
     fn dms_launcher(&self, mode: Option<&str>) {
         let query = mode.map(|mode| {
             if mode == "connect" {
@@ -1782,16 +1803,7 @@ impl Shell {
             UiCommand::Open { id } => self.open(&id),
             UiCommand::Select { id } => self.select(Some(id)),
             UiCommand::Focus { id, expand } => self.focus_node(&id, expand),
-            UiCommand::Search { mode } => {
-                if self.integrated {
-                    self.show_nodes();
-                    self.dms_launcher(Some(&mode));
-                } else if mode == "create" {
-                    self.palette();
-                } else {
-                    self.search_nodes();
-                }
-            }
+            UiCommand::Search { mode } => self.search(Some(&mode)),
             UiCommand::Launcher => {
                 if !self.integrated && self.graph_visible.get() {
                     self.palette();
@@ -1834,10 +1846,14 @@ impl Shell {
             },
             UiCommand::Edit { id } => self.edit(&id),
             UiCommand::Palette => {
-                if !self.graph_visible.get() {
-                    self.show_nodes();
+                if self.integrated {
+                    self.search(None);
+                } else {
+                    if !self.graph_visible.get() {
+                        self.show_nodes();
+                    }
+                    self.palette();
                 }
-                self.palette();
             }
             UiCommand::Fit => self.fit(),
             UiCommand::Dismiss => {

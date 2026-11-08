@@ -8,7 +8,9 @@
     "scope": "global",
     "command": [
       "toggle"
-    ]
+    ],
+    "repeat": false,
+    "allow_inhibiting": false
   },
   {
     "keys": [
@@ -19,18 +21,22 @@
     "scope": "global",
     "command": [
       "windows"
-    ]
+    ],
+    "repeat": false,
+    "allow_inhibiting": false
   },
   {
     "keys": [
       "Mod+Space"
     ],
     "action": "create",
-    "description": "Create a node in Dux",
+    "description": "Dux app search (Windows) / create a node (Nodes)",
     "scope": "global",
     "command": [
       "new"
-    ]
+    ],
+    "repeat": false,
+    "allow_inhibiting": false
   },
   {
     "keys": [
@@ -41,7 +47,9 @@
     "scope": "global",
     "command": [
       "launcher"
-    ]
+    ],
+    "repeat": false,
+    "allow_inhibiting": false
   },
   {
     "keys": [
@@ -52,7 +60,9 @@
     "scope": "global",
     "command": [
       "search"
-    ]
+    ],
+    "repeat": false,
+    "allow_inhibiting": false
   },
   {
     "keys": [
@@ -64,23 +74,28 @@
     "command": [
       "send",
       "{\"op\": \"ui\", \"command\": {\"action\": \"help\"}}"
-    ]
+    ],
+    "repeat": false,
+    "allow_inhibiting": false
   },
   {
     "keys": [
       "Mod+Left"
     ],
     "action": "navigate_left",
-    "description": "Select left",
+    "description": "Select node / focus window left",
     "scope": "global",
     "command": [
       "navigate",
       "left"
-    ]
+    ],
+    "repeat": true,
+    "allow_inhibiting": false
   },
   {
     "keys": [
-      "Mod+Shift+Left"
+      "Mod+Ctrl+Left",
+      "Mod+Ctrl+H"
     ],
     "action": "move_left",
     "description": "Move selection / window left",
@@ -88,23 +103,28 @@
     "command": [
       "send",
       "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"left\"}}"
-    ]
+    ],
+    "repeat": true,
+    "allow_inhibiting": false
   },
   {
     "keys": [
       "Mod+Down"
     ],
     "action": "navigate_down",
-    "description": "Select down",
+    "description": "Select node / focus window down",
     "scope": "global",
     "command": [
       "navigate",
       "down"
-    ]
+    ],
+    "repeat": true,
+    "allow_inhibiting": false
   },
   {
     "keys": [
-      "Mod+Shift+Down"
+      "Mod+Ctrl+Down",
+      "Mod+Ctrl+J"
     ],
     "action": "move_down",
     "description": "Move selection / window down",
@@ -112,23 +132,28 @@
     "command": [
       "send",
       "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"down\"}}"
-    ]
+    ],
+    "repeat": true,
+    "allow_inhibiting": false
   },
   {
     "keys": [
       "Mod+Up"
     ],
     "action": "navigate_up",
-    "description": "Select up",
+    "description": "Select node / focus window up",
     "scope": "global",
     "command": [
       "navigate",
       "up"
-    ]
+    ],
+    "repeat": true,
+    "allow_inhibiting": false
   },
   {
     "keys": [
-      "Mod+Shift+Up"
+      "Mod+Ctrl+Up",
+      "Mod+Ctrl+K"
     ],
     "action": "move_up",
     "description": "Move selection / window up",
@@ -136,23 +161,28 @@
     "command": [
       "send",
       "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"up\"}}"
-    ]
+    ],
+    "repeat": true,
+    "allow_inhibiting": false
   },
   {
     "keys": [
       "Mod+Right"
     ],
     "action": "navigate_right",
-    "description": "Select right",
+    "description": "Select node / focus window right",
     "scope": "global",
     "command": [
       "navigate",
       "right"
-    ]
+    ],
+    "repeat": true,
+    "allow_inhibiting": false
   },
   {
     "keys": [
-      "Mod+Shift+Right"
+      "Mod+Ctrl+Right",
+      "Mod+Ctrl+L"
     ],
     "action": "move_right",
     "description": "Move selection / window right",
@@ -160,7 +190,9 @@
     "command": [
       "send",
       "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"right\"}}"
-    ]
+    ],
+    "repeat": true,
+    "allow_inhibiting": false
   },
   {
     "keys": [
@@ -432,66 +464,81 @@
   },
   {
     "keys": [
-      "Mod+Return"
+      "Mod+Return",
+      "Mod+T",
+      "Mod+K"
     ],
     "action": "compositor",
-    "description": "Open terminal (customize your preferred terminal)",
+    "description": "Open terminal",
     "scope": "global",
-    "niri": "spawn \"foot\""
+    "niri": "spawn \"alacritty\"",
+    "repeat": false
   },
   {
     "keys": [
-      "Mod+Q"
+      "Mod+Q",
+      "Alt+F4"
     ],
     "action": "compositor",
     "description": "Close window",
     "scope": "global",
-    "niri": "close-window"
+    "niri": "close-window",
+    "repeat": false
   },
   {
     "keys": [
-      "Mod+Shift+E"
+      "Mod+Shift+E",
+      "Ctrl+Alt+Delete"
     ],
     "action": "compositor",
     "description": "Log out",
     "scope": "global",
-    "niri": "quit"
+    "niri": "quit",
+    "repeat": false
   },
   {
     "keys": [
-      "Mod+Page_Up"
+      "Mod+Page_Up",
+      "Mod+I"
     ],
     "action": "compositor",
     "description": "Previous workspace",
     "scope": "global",
-    "niri": "focus-workspace-up"
+    "niri": "focus-workspace-up",
+    "repeat": true
   },
   {
     "keys": [
-      "Mod+Page_Down"
+      "Mod+Page_Down",
+      "Mod+U"
     ],
     "action": "compositor",
     "description": "Next workspace",
     "scope": "global",
-    "niri": "focus-workspace-down"
+    "niri": "focus-workspace-down",
+    "repeat": true
   },
   {
     "keys": [
-      "Mod+Shift+Page_Up"
+      "Mod+Shift+Page_Up",
+      "Mod+Shift+I"
     ],
     "action": "compositor",
-    "description": "Move window to previous workspace",
+    "description": "Move workspace up",
     "scope": "global",
-    "niri": "move-window-to-workspace-up"
+    "niri": "move-workspace-up",
+    "repeat": true
   },
   {
     "keys": [
-      "Mod+Shift+Page_Down"
+      "Mod+Shift+Page_Down",
+      "Mod+Shift+U"
     ],
     "action": "compositor",
-    "description": "Move window to next workspace",
+    "description": "Move workspace down",
     "scope": "global",
-    "niri": "move-window-to-workspace-down"
+    "niri": "move-workspace-down",
+    "repeat": true
   },
   {
     "keys": [
@@ -500,7 +547,8 @@
     "action": "compositor",
     "description": "Maximize column",
     "scope": "global",
-    "niri": "maximize-column"
+    "niri": "maximize-column",
+    "repeat": false
   },
   {
     "keys": [
@@ -509,7 +557,8 @@
     "action": "compositor",
     "description": "Fullscreen window",
     "scope": "global",
-    "niri": "fullscreen-window"
+    "niri": "fullscreen-window",
+    "repeat": false
   },
   {
     "keys": [
@@ -567,5 +616,844 @@
     "action": "zoom",
     "description": "Zoom at the pointer",
     "scope": "gesture"
+  },
+  {
+    "keys": [
+      "Mod+E"
+    ],
+    "action": "compositor",
+    "description": "Open file manager",
+    "scope": "global",
+    "niri": "spawn \"dolphin\"",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+B"
+    ],
+    "action": "compositor",
+    "description": "Open browser",
+    "scope": "global",
+    "niri": "spawn \"xdg-open\" \"about:blank\"",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+V"
+    ],
+    "action": "compositor",
+    "description": "Clipboard manager",
+    "scope": "global",
+    "niri": "spawn \"dms\" \"ipc\" \"call\" \"clipboard\" \"toggle\"",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+P"
+    ],
+    "action": "compositor",
+    "description": "Power menu",
+    "scope": "global",
+    "niri": "spawn \"dms\" \"ipc\" \"call\" \"powermenu\" \"toggle\"",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+Shift+Period"
+    ],
+    "action": "compositor",
+    "description": "Notepad",
+    "scope": "global",
+    "niri": "spawn \"dms\" \"ipc\" \"call\" \"notepad\" \"toggle\"",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+Shift+C"
+    ],
+    "action": "compositor",
+    "description": "Pick a color",
+    "scope": "global",
+    "niri": "spawn \"dms\" \"color\" \"pick\" \"-a\"",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+Alt+L"
+    ],
+    "action": "compositor",
+    "description": "Lock screen",
+    "scope": "global",
+    "niri": "spawn \"dms\" \"ipc\" \"call\" \"lock\" \"lock\"",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+O"
+    ],
+    "action": "compositor",
+    "description": "Toggle workspace overview",
+    "scope": "global",
+    "niri": "toggle-overview",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+Shift+Left",
+      "Mod+Shift+H"
+    ],
+    "action": "compositor",
+    "description": "Focus monitor left",
+    "scope": "global",
+    "niri": "focus-monitor-left",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+Shift+Left",
+      "Mod+Ctrl+Shift+H"
+    ],
+    "action": "compositor",
+    "description": "Move column to monitor left",
+    "scope": "global",
+    "niri": "move-column-to-monitor-left",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+Shift+Down",
+      "Mod+Shift+J"
+    ],
+    "action": "compositor",
+    "description": "Focus monitor down",
+    "scope": "global",
+    "niri": "focus-monitor-down",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+Shift+Down",
+      "Mod+Ctrl+Shift+J"
+    ],
+    "action": "compositor",
+    "description": "Move column to monitor down",
+    "scope": "global",
+    "niri": "move-column-to-monitor-down",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+Shift+Up",
+      "Mod+Shift+K"
+    ],
+    "action": "compositor",
+    "description": "Focus monitor up",
+    "scope": "global",
+    "niri": "focus-monitor-up",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+Shift+Up",
+      "Mod+Ctrl+Shift+K"
+    ],
+    "action": "compositor",
+    "description": "Move column to monitor up",
+    "scope": "global",
+    "niri": "move-column-to-monitor-up",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+Shift+Right",
+      "Mod+Shift+L"
+    ],
+    "action": "compositor",
+    "description": "Focus monitor right",
+    "scope": "global",
+    "niri": "focus-monitor-right",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+Shift+Right",
+      "Mod+Ctrl+Shift+L"
+    ],
+    "action": "compositor",
+    "description": "Move column to monitor right",
+    "scope": "global",
+    "niri": "move-column-to-monitor-right",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+Home"
+    ],
+    "action": "compositor",
+    "description": "Focus first column",
+    "scope": "global",
+    "niri": "focus-column-first",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+Home"
+    ],
+    "action": "compositor",
+    "description": "Move column to first position",
+    "scope": "global",
+    "niri": "move-column-to-first",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+End"
+    ],
+    "action": "compositor",
+    "description": "Focus last column",
+    "scope": "global",
+    "niri": "focus-column-last",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+End"
+    ],
+    "action": "compositor",
+    "description": "Move column to last position",
+    "scope": "global",
+    "niri": "move-column-to-last",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+Page_Up",
+      "Mod+Ctrl+I"
+    ],
+    "action": "compositor",
+    "description": "Move column to workspace up",
+    "scope": "global",
+    "niri": "move-column-to-workspace-up",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+WheelScrollUp"
+    ],
+    "action": "compositor",
+    "description": "Focus workspace up",
+    "scope": "global",
+    "niri": "focus-workspace-up",
+    "repeat": true,
+    "cooldown_ms": 150
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+WheelScrollUp"
+    ],
+    "action": "compositor",
+    "description": "Move column to workspace up",
+    "scope": "global",
+    "niri": "move-column-to-workspace-up",
+    "repeat": true,
+    "cooldown_ms": 150
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+Page_Down",
+      "Mod+Ctrl+U"
+    ],
+    "action": "compositor",
+    "description": "Move column to workspace down",
+    "scope": "global",
+    "niri": "move-column-to-workspace-down",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+WheelScrollDown"
+    ],
+    "action": "compositor",
+    "description": "Focus workspace down",
+    "scope": "global",
+    "niri": "focus-workspace-down",
+    "repeat": true,
+    "cooldown_ms": 150
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+WheelScrollDown"
+    ],
+    "action": "compositor",
+    "description": "Move column to workspace down",
+    "scope": "global",
+    "niri": "move-column-to-workspace-down",
+    "repeat": true,
+    "cooldown_ms": 150
+  },
+  {
+    "keys": [
+      "Mod+WheelScrollLeft",
+      "Mod+Shift+WheelScrollUp"
+    ],
+    "action": "compositor",
+    "description": "Focus column left",
+    "scope": "global",
+    "niri": "focus-column-left",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+WheelScrollLeft",
+      "Mod+Ctrl+Shift+WheelScrollUp"
+    ],
+    "action": "compositor",
+    "description": "Move column left",
+    "scope": "global",
+    "niri": "move-column-left",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+WheelScrollRight",
+      "Mod+Shift+WheelScrollDown"
+    ],
+    "action": "compositor",
+    "description": "Focus column right",
+    "scope": "global",
+    "niri": "focus-column-right",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+WheelScrollRight",
+      "Mod+Ctrl+Shift+WheelScrollDown"
+    ],
+    "action": "compositor",
+    "description": "Move column right",
+    "scope": "global",
+    "niri": "move-column-right",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+1"
+    ],
+    "action": "compositor",
+    "description": "Focus workspace 1",
+    "scope": "global",
+    "niri": "focus-workspace 1",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+1"
+    ],
+    "action": "compositor",
+    "description": "Move column to workspace 1",
+    "scope": "global",
+    "niri": "move-column-to-workspace 1",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+2"
+    ],
+    "action": "compositor",
+    "description": "Focus workspace 2",
+    "scope": "global",
+    "niri": "focus-workspace 2",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+2"
+    ],
+    "action": "compositor",
+    "description": "Move column to workspace 2",
+    "scope": "global",
+    "niri": "move-column-to-workspace 2",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+3"
+    ],
+    "action": "compositor",
+    "description": "Focus workspace 3",
+    "scope": "global",
+    "niri": "focus-workspace 3",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+3"
+    ],
+    "action": "compositor",
+    "description": "Move column to workspace 3",
+    "scope": "global",
+    "niri": "move-column-to-workspace 3",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+4"
+    ],
+    "action": "compositor",
+    "description": "Focus workspace 4",
+    "scope": "global",
+    "niri": "focus-workspace 4",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+4"
+    ],
+    "action": "compositor",
+    "description": "Move column to workspace 4",
+    "scope": "global",
+    "niri": "move-column-to-workspace 4",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+5"
+    ],
+    "action": "compositor",
+    "description": "Focus workspace 5",
+    "scope": "global",
+    "niri": "focus-workspace 5",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+5"
+    ],
+    "action": "compositor",
+    "description": "Move column to workspace 5",
+    "scope": "global",
+    "niri": "move-column-to-workspace 5",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+6"
+    ],
+    "action": "compositor",
+    "description": "Focus workspace 6",
+    "scope": "global",
+    "niri": "focus-workspace 6",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+6"
+    ],
+    "action": "compositor",
+    "description": "Move column to workspace 6",
+    "scope": "global",
+    "niri": "move-column-to-workspace 6",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+7"
+    ],
+    "action": "compositor",
+    "description": "Focus workspace 7",
+    "scope": "global",
+    "niri": "focus-workspace 7",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+7"
+    ],
+    "action": "compositor",
+    "description": "Move column to workspace 7",
+    "scope": "global",
+    "niri": "move-column-to-workspace 7",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+8"
+    ],
+    "action": "compositor",
+    "description": "Focus workspace 8",
+    "scope": "global",
+    "niri": "focus-workspace 8",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+8"
+    ],
+    "action": "compositor",
+    "description": "Move column to workspace 8",
+    "scope": "global",
+    "niri": "move-column-to-workspace 8",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+9"
+    ],
+    "action": "compositor",
+    "description": "Focus workspace 9",
+    "scope": "global",
+    "niri": "focus-workspace 9",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+9"
+    ],
+    "action": "compositor",
+    "description": "Move column to workspace 9",
+    "scope": "global",
+    "niri": "move-column-to-workspace 9",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+BracketLeft"
+    ],
+    "action": "compositor",
+    "description": "Consume or expel window left",
+    "scope": "global",
+    "niri": "consume-or-expel-window-left",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+BracketRight"
+    ],
+    "action": "compositor",
+    "description": "Consume or expel window right",
+    "scope": "global",
+    "niri": "consume-or-expel-window-right",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+Comma"
+    ],
+    "action": "compositor",
+    "description": "Consume window into column",
+    "scope": "global",
+    "niri": "consume-window-into-column",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+Period"
+    ],
+    "action": "compositor",
+    "description": "Expel window from column",
+    "scope": "global",
+    "niri": "expel-window-from-column",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+R"
+    ],
+    "action": "compositor",
+    "description": "Cycle column width",
+    "scope": "global",
+    "niri": "switch-preset-column-width",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+Shift+R"
+    ],
+    "action": "compositor",
+    "description": "Cycle window height",
+    "scope": "global",
+    "niri": "switch-preset-window-height",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+R"
+    ],
+    "action": "compositor",
+    "description": "Reset window height",
+    "scope": "global",
+    "niri": "reset-window-height",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+F"
+    ],
+    "action": "compositor",
+    "description": "Expand column into available space",
+    "scope": "global",
+    "niri": "expand-column-to-available-width",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+C"
+    ],
+    "action": "compositor",
+    "description": "Center column",
+    "scope": "global",
+    "niri": "center-column",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+Ctrl+C"
+    ],
+    "action": "compositor",
+    "description": "Center visible columns",
+    "scope": "global",
+    "niri": "center-visible-columns",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+Minus"
+    ],
+    "action": "compositor",
+    "description": "Decrease column width",
+    "scope": "global",
+    "niri": "set-column-width \"-10%\"",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+Equal"
+    ],
+    "action": "compositor",
+    "description": "Increase column width",
+    "scope": "global",
+    "niri": "set-column-width \"+10%\"",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+Shift+Minus"
+    ],
+    "action": "compositor",
+    "description": "Decrease window height",
+    "scope": "global",
+    "niri": "set-window-height \"-10%\"",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+Shift+Equal"
+    ],
+    "action": "compositor",
+    "description": "Increase window height",
+    "scope": "global",
+    "niri": "set-window-height \"+10%\"",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+D"
+    ],
+    "action": "compositor",
+    "description": "Toggle floating window",
+    "scope": "global",
+    "niri": "toggle-window-floating",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+Shift+D"
+    ],
+    "action": "compositor",
+    "description": "Focus floating / tiling windows",
+    "scope": "global",
+    "niri": "switch-focus-between-floating-and-tiling",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+W"
+    ],
+    "action": "compositor",
+    "description": "Toggle tabbed column",
+    "scope": "global",
+    "niri": "toggle-column-tabbed-display",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Print",
+      "Mod+Shift+S"
+    ],
+    "action": "compositor",
+    "description": "Screenshot selection",
+    "scope": "global",
+    "niri": "screenshot",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Ctrl+Print"
+    ],
+    "action": "compositor",
+    "description": "Screenshot screen",
+    "scope": "global",
+    "niri": "screenshot-screen",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Alt+Print"
+    ],
+    "action": "compositor",
+    "description": "Screenshot window",
+    "scope": "global",
+    "niri": "screenshot-window",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+Shift+P"
+    ],
+    "action": "compositor",
+    "description": "Power off monitors",
+    "scope": "global",
+    "niri": "power-off-monitors",
+    "repeat": false
+  },
+  {
+    "keys": [
+      "Mod+Escape"
+    ],
+    "action": "compositor",
+    "description": "Toggle shortcut inhibitor",
+    "scope": "global",
+    "niri": "toggle-keyboard-shortcuts-inhibit",
+    "repeat": false,
+    "allow_inhibiting": false
+  },
+  {
+    "keys": [
+      "Super+Alt+S"
+    ],
+    "action": "compositor",
+    "description": "Toggle screen reader",
+    "scope": "global",
+    "niri": "spawn-sh \"pkill orca || exec orca\"",
+    "repeat": false,
+    "allow_when_locked": true
+  },
+  {
+    "keys": [
+      "XF86AudioRaiseVolume"
+    ],
+    "action": "compositor",
+    "description": "Raise volume",
+    "scope": "global",
+    "niri": "spawn-sh \"wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.1+ -l 1.0\"",
+    "repeat": true,
+    "allow_when_locked": true
+  },
+  {
+    "keys": [
+      "XF86AudioLowerVolume"
+    ],
+    "action": "compositor",
+    "description": "Lower volume",
+    "scope": "global",
+    "niri": "spawn-sh \"wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.1-\"",
+    "repeat": true,
+    "allow_when_locked": true
+  },
+  {
+    "keys": [
+      "XF86AudioMute"
+    ],
+    "action": "compositor",
+    "description": "Mute speakers",
+    "scope": "global",
+    "niri": "spawn-sh \"wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle\"",
+    "repeat": false,
+    "allow_when_locked": true
+  },
+  {
+    "keys": [
+      "XF86AudioMicMute"
+    ],
+    "action": "compositor",
+    "description": "Mute microphone",
+    "scope": "global",
+    "niri": "spawn-sh \"wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle\"",
+    "repeat": false,
+    "allow_when_locked": true
+  },
+  {
+    "keys": [
+      "XF86AudioPlay"
+    ],
+    "action": "compositor",
+    "description": "Play / pause media",
+    "scope": "global",
+    "niri": "spawn-sh \"playerctl play-pause\"",
+    "repeat": false,
+    "allow_when_locked": true
+  },
+  {
+    "keys": [
+      "XF86AudioStop"
+    ],
+    "action": "compositor",
+    "description": "Stop media",
+    "scope": "global",
+    "niri": "spawn-sh \"playerctl stop\"",
+    "repeat": false,
+    "allow_when_locked": true
+  },
+  {
+    "keys": [
+      "XF86AudioPrev"
+    ],
+    "action": "compositor",
+    "description": "Previous track",
+    "scope": "global",
+    "niri": "spawn-sh \"playerctl previous\"",
+    "repeat": false,
+    "allow_when_locked": true
+  },
+  {
+    "keys": [
+      "XF86AudioNext"
+    ],
+    "action": "compositor",
+    "description": "Next track",
+    "scope": "global",
+    "niri": "spawn-sh \"playerctl next\"",
+    "repeat": false,
+    "allow_when_locked": true
+  },
+  {
+    "keys": [
+      "XF86MonBrightnessUp"
+    ],
+    "action": "compositor",
+    "description": "Increase brightness",
+    "scope": "global",
+    "niri": "spawn \"brightnessctl\" \"--class=backlight\" \"set\" \"+10%\"",
+    "repeat": true
+  },
+  {
+    "keys": [
+      "XF86MonBrightnessDown"
+    ],
+    "action": "compositor",
+    "description": "Decrease brightness",
+    "scope": "global",
+    "niri": "spawn \"brightnessctl\" \"--class=backlight\" \"set\" \"10%-\"",
+    "repeat": true
   }
 ]

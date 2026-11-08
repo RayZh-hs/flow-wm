@@ -175,6 +175,14 @@ subtree exports preserve niri's and DMS's original repository structure.
 
 ## Native node-row contract
 
+`python3 scripts/smoke_desktop.py` starts a private Xvfb/niri session using the
+installer's real default profile. It checks Win+Space in both views, Alt+Space,
+and captures a wallpaper during workspace animation to verify that it stays
+fixed. It also follows Tab from an application node through connected Display
+creation, its parameter dialog, and Escape, at 2x output scale. Pass a saved
+`state.json` path to replay an existing graph in the private test session.
+A local Dux IPC recorder keeps this check independent of the active shell.
+
 `components/niri/src/node_row.rs` implements a workspace-owned `NodeTile` and
 live application projections. The workspace renderer chooses the node presentation
 in place of its normal scrolling and floating passes. Node rows skip normal column and tab preparation; only expanded clients prepare

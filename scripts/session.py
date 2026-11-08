@@ -22,6 +22,19 @@ def service_active(name):
 def environment(profile=False):
     data = settings()
     result = os.environ.copy()
+    # Apply the same private session environment to the compositor, Dux, the
+    # graph service, and their children. KDL environment blocks only reach
+    # processes spawned directly by the compositor.
+    path = Path(data["config"]) / "environment.json"
+    if path.is_file():
+        overrides = json.loads(path.read_text())
+        for name, value in overrides.items():
+            if value is None:
+                result.pop(name, None)
+            elif isinstance(value, str):
+                result[name] = value
+            else:
+                raise ValueError(f"{path}: {name} must be a string or null")
     result["FLOWWM_SESSION"] = "1"
     result["FLOWWM_CONFIG_DIR"] = data["config"]
     result["FLOWWM_INSTALL_ROOT"] = str(ROOT)

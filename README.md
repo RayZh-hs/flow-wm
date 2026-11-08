@@ -74,8 +74,11 @@ See the [user guide](docs/guide.md) for configuration, updates, rollback, and CL
 | Shortcut | Action |
 | --- | --- |
 | Win+Tab | Switch between windows and nodes; return from a window peek first |
-| Win+Space | Create a node |
+| Win+Space | Open Dux app search in Windows; create a node in Nodes |
+| Alt+Space | Open Dux app search in either view |
 | Win+Shift+Space | Find a node |
+| Win+T, Win+K, Win+Return | Open a terminal |
+| Win+V / Win+P | Clipboard / power menu |
 | Tab | Connect the selected node to another node or a new step |
 | Ctrl+P | Arrange and frame the graph |
 | R | Run the selected node |

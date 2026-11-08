@@ -32,8 +32,10 @@ class ProfileIsolation(unittest.TestCase):
             self.assertIn('"navigate" "left"', (config / 'keybindings.kdl').read_text())
             self.assertIn('"new"', (config / 'keybindings.kdl').read_text())
             settings = json.loads((config / 'dms/settings.json').read_text())
-            self.assertEqual(settings['barConfigs'][0]['leftWidgets'], ['workspaceSwitcher', 'flowwm', 'focusedWindow'])
-            self.assertEqual(settings['custom'], 42)
+            self.assertEqual([installer.widget_id(w) for w in settings['barConfigs'][0]['leftWidgets']],
+                             ['launcherButton', 'workspaceSwitcher', 'flowwm', 'focusedWindow'])
+            self.assertEqual(settings['currentThemeName'], 'dynamic')
+            self.assertNotIn('custom', settings)
             settings['custom'] = 99
             (config / 'dms/settings.json').write_text(json.dumps(settings))
             arguments[3] = root / 'installed/v2'
@@ -53,11 +55,48 @@ class ProfileIsolation(unittest.TestCase):
             installer.prepare_profile(config, root / 'state', root / 'cache', root / 'bundle', root / 'missing-config', root / 'missing-state', root / 'missing-cache', root / 'bin/flowwm-session')
             self.assertTrue((config / 'config.kdl').is_file())
             self.assertTrue((config / 'keybindings.kdl').is_file())
+            session = json.loads((root / 'state/dms/session.json').read_text())
+            self.assertTrue(Path(session['wallpaperPath']).is_file())
+            self.assertNotIn('launcherQueryHistory', session)
             compositor = installer.ROOT / 'target/niri/debug/niri'
             if compositor.is_file():
                 subprocess.run([str(compositor), 'validate', '--config', str(config / 'config.kdl')], check=True, capture_output=True)
             self.assertFalse((config / 'niri/config.kdl').exists())
             self.assertEqual(json.loads((config / 'dms/plugin_settings.json').read_text())['flowwm']['enabled'], True)
+
+    def test_personal_settings_and_wallpaper_survive_reinstall(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arguments = [root / 'config', root / 'state', root / 'cache', root / 'bundle',
+                         root / 'original', root / 'original-state', root / 'original-cache', root / 'bin/flowwm-session']
+            installer.prepare_profile(*arguments)
+            custom = {
+                root / 'config/local.kdl': 'spawn-at-startup "my-session-hook"\n',
+                root / 'config/environment.json': '{"http_proxy":"http://localhost:9999"}',
+                root / 'state/dms/session.json': '{"wallpaperPath":"/my/custom/wallpaper.png"}',
+            }
+            for path, contents in custom.items():
+                path.write_text(contents)
+            installer.prepare_profile(*arguments)
+            for path, contents in custom.items():
+                self.assertEqual(path.read_text(), contents)
+
+    def test_binding_properties_and_niri_alias_conflicts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = root / 'config'
+            arguments = [config, root / 'state', root / 'cache', root / 'bundle',
+                         root / 'original', root / 'original-state', root / 'original-cache', root / 'bin/flowwm-session']
+            installer.prepare_profile(*arguments)
+            text = (config / 'keybindings.kdl').read_text()
+            self.assertIn('repeat=false allow-inhibiting=false', text)
+            self.assertIn('repeat=true allow-when-locked=true', text)
+            self.assertIn('cooldown-ms=150', text)
+            bindings = json.loads((config / 'keybindings.json').read_text())
+            bindings.append({**bindings[0], 'keys': ['Super+tab']})
+            (config / 'keybindings.json').write_text(json.dumps(bindings))
+            with self.assertRaisesRegex(ValueError, 'Duplicate global shortcut'):
+                installer.prepare_profile(*arguments)
 
     def test_units_validate_without_an_installed_niri_or_dms_service(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -76,6 +115,23 @@ class ProfileIsolation(unittest.TestCase):
 
 
 class LoginIsolation(unittest.TestCase):
+    def test_private_environment_reaches_all_session_processes(self):
+        spec = importlib.util.spec_from_file_location('runtime', Path(__file__).with_name('session.py'))
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'environment.json').write_text(json.dumps({'http_proxy': 'http://localhost:9999', 'QT_IM_MODULES': None}))
+            data = {'config': str(root), 'state': str(root / 'state'), 'cache': str(root / 'cache')}
+            for profile in (False, True):
+                with self.subTest(profile=profile), patch.object(runtime, 'settings', return_value=data), \
+                     patch.dict(os.environ, {'QT_IM_MODULES': 'old'}):
+                    environment = runtime.environment(profile=profile)
+                    self.assertEqual(environment['http_proxy'], 'http://localhost:9999')
+                    self.assertNotIn('QT_IM_MODULES', environment)
+                    self.assertEqual(environment['FLOWWM_CONFIG_DIR'], str(root))
+                    self.assertEqual(os.environ['QT_IM_MODULES'], 'old')
+
     def test_private_shell_profile_preserves_application_xdg_paths(self):
         spec = importlib.util.spec_from_file_location('runtime', Path(__file__).with_name('session.py'))
         runtime = importlib.util.module_from_spec(spec)

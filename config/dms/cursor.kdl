@@ -1,0 +1,2 @@
+// Initial cursor size; Dux can customize it.
+cursor { xcursor-size 30; }
