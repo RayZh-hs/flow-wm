@@ -55,6 +55,10 @@ pub struct LookupTarget {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LookupOutput {
     pub name: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
     pub ty: String,
     pub targets: Vec<LookupTarget>,
 }
@@ -119,6 +123,8 @@ impl Lookup {
                     }
                 }
                 LookupOutput {
+                    label: crate::graph::pin_label(source, &output, true),
+                    description: crate::graph::pin_description(&output, true).into(),
                     name: output.name,
                     ty: output.ty.to_string(),
                     targets,

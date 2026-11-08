@@ -104,8 +104,8 @@ function connectionItems(catalog, query, outputName, targetKey) {
         return { id: id, name: name, comment: comment, icon: "material:account_tree", flowwmLayer: layer, flowwmArgs: command,
             _preScored: 1001, primaryAction: { name: "Choose", icon: "arrow_forward", action: "execute" } };
     }
-    if (!outputName) return outputs.filter(function (p) { return matches(p.name + " " + p.ty, query); }).map(function (p) {
-        return item("output:" + p.name, p.name, p.ty, { output: p.name }, null);
+    if (!outputName) return outputs.filter(function (p) { return matches(p.name + " " + (p.label || "") + " " + (p.description || "") + " " + p.ty, query); }).map(function (p) {
+        return item("output:" + p.name, p.label || p.name, (p.description ? p.description + " · " : "") + p.ty, { output: p.name }, null);
     });
     var output = outputs.find(function (p) { return p.name === outputName; });
     if (!output) return [];

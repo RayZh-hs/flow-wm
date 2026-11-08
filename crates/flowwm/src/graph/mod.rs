@@ -215,6 +215,30 @@ pub fn pins(state: &State, node: &Node, output: bool) -> Vec<Pin> {
     pins
 }
 
+/// Human names leave persisted endpoint IDs stable for extensions and saved graphs.
+pub fn pin_label(node: &Node, pin: &Pin, output: bool) -> String {
+    match (pin.name.as_str(), output) {
+        ("in", false) => "Run".into(),
+        ("out", true) if !node.kind.primitive() => "Completed".into(),
+        ("out", true) => "Continue".into(),
+        ("failed", true) => "Failed".into(),
+        ("output", true) => "Output text".into(),
+        ("on_session_finish", true) => "Session finished".into(),
+        _ => pin.name.replace('_', " "),
+    }
+}
+pub fn pin_description(pin: &Pin, output: bool) -> &'static str {
+    match (pin.name.as_str(), output) {
+        ("in", false) => "Start this step when an event arrives",
+        ("out", true) => "Emits after successful completion",
+        ("failed", true) => "Emits when this step fails; connect a recovery step",
+        ("output", true) => "Text produced by this step; read on demand",
+        ("on_session_finish", true) => "Agent session ended; ERROR describes any failure",
+        _ if pin.ty.is_signal() => "Event connection",
+        _ => "Data value; evaluated on demand",
+    }
+}
+
 pub fn property(state: &State, node: &Node, name: &str) -> Option<Value> {
     node.flow.properties.get(name).cloned().or_else(|| {
         state

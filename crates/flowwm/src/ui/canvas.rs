@@ -794,7 +794,16 @@ fn make_scoped(
                 crate::graph::pins(&state, n, output)
                     .into_iter()
                     .find(|p| p.name == endpoint.pin)
-                    .map(|p| format!("{}.{}: {}", n.title, p.name, p.ty))
+                    .map(|p| {
+                        format!(
+                            "{} · {}\n{}\n{}.{}",
+                            crate::graph::pin_label(n, &p, output),
+                            p.ty,
+                            crate::graph::pin_description(&p, output),
+                            n.title,
+                            p.name
+                        )
+                    })
             })
         });
         drop(view);

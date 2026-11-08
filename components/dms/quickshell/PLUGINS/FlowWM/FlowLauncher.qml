@@ -24,7 +24,7 @@ Scope {
         const lookup = catalog.lookup;
         if (!lookup) return "";
         const output = lookup.outputs.find(p => p.name === outputName) ?? (lookup.outputs.length === 1 ? lookup.outputs[0] : null);
-        return output ? I18n.tr("Compatible inputs") + " · " + output.ty + " · " + lookup.title + "." + output.name : I18n.tr("Choose an output") + " · " + lookup.title;
+        return output ? I18n.tr("Compatible inputs") + " · " + output.ty + " · " + lookup.title + " · " + (output.label || output.name) : I18n.tr("Choose an output") + " · " + lookup.title;
     }
 
     function getItems(query) {

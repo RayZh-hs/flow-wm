@@ -89,3 +89,13 @@ test('a single output skips output selection and incompatible nodes stay absent'
     assert.equal(connections(single).some(i=>i.name==='finished'),false);
     assert.deepEqual(connections(linked,'missing','number').map(i=>i.id),['back']);
 });
+
+test('event search explains completion, failure and extension outputs without changing endpoints', () => {
+    const input = JSON.parse(JSON.stringify(linked));
+    input.lookup.outputs[1].label = 'Session finished';
+    input.lookup.outputs[1].description = 'Agent session ended; ERROR describes any failure';
+    const result = connections(input, 'session');
+    assert.equal(result[0].name, 'Session finished');
+    assert.ok(result[0].comment.includes('Agent session ended'));
+    assert.equal(result[0].flowwmLayer.output, 'finished');
+});
