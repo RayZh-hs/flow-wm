@@ -665,6 +665,8 @@ fn make_scoped(
     area.set_cursor_from_name(Some("default"));
     let click = gtk::GestureClick::new();
     click.set_button(1);
+    let inline_pressed = Rc::new(RefCell::new(None));
+    let inline_start = inline_pressed.clone();
     let empty_pressed = Rc::new(Cell::new(None));
     let pressed = empty_pressed.clone();
     let e = engine.clone();
@@ -672,6 +674,7 @@ fn make_scoped(
     let cb = callback.clone();
     let a = area.clone();
     click.connect_pressed(move |gesture, count, x, y| {
+        inline_start.borrow_mut().take();
         a.grab_focus();
         let state = e.snapshot().state;
         let mut view = v.borrow_mut();
@@ -684,6 +687,7 @@ fn make_scoped(
             gesture.set_state(gtk::EventSequenceState::Claimed);
             return;
         }
+        let screen = (x, y);
         let (x, y) = view.world(x, y);
         let hit = state.nodes.iter().rev().find(|n| {
             n.workspace == state.selected_workspace && contains(n, &view.position(n), x, y)
@@ -725,9 +729,7 @@ fn make_scoped(
         }
         cb(CanvasAction::Select(selected));
         if let Some(id) = inline {
-            gesture.set_state(gtk::EventSequenceState::Claimed);
-            cb(CanvasAction::EditValue(id));
-            return;
+            *inline_start.borrow_mut() = Some((id, screen));
         }
         if count == 2
             && let Some(node) = hit
@@ -739,7 +741,13 @@ fn make_scoped(
     let e = engine.clone();
     let cb = callback.clone();
     let a = area.clone();
+    let inline = inline_pressed.clone();
     click.connect_released(move |_, _, x, y| {
+        if let Some((id, (px, py))) = inline.borrow_mut().take()
+            && (x - px).hypot(y - py) < 4.
+        {
+            cb(CanvasAction::EditValue(id));
+        }
         if let Some(action) = empty_pressed.take()
             && workspace_empty(&e.snapshot().state)
             && super::empty::hit(a.width() as f64, a.height() as f64, x, y) == Some(action)
@@ -925,7 +933,8 @@ fn make_scoped(
         for (id, position) in moves {
             if let Some(node) = state.node(&id) {
                 let position = view.stored_position(node, &position);
-                e.dispatch(Control::Move { id, position });
+                // Keep the displayed position until the engine publishes the committed move.
+                let _ = e.request(Control::Move { id, position });
             }
         }
         match view.drag.take() {
@@ -2606,6 +2615,82 @@ mod rendering_tests {
         );
         assert_eq!(stored.x, state.nodes[0].position.x + 20.0);
         assert_eq!(stored.y, state.nodes[0].position.y - 40.0);
+    }
+
+    #[test]
+    #[ignore = "requires a GTK display; run explicitly inside Niri or Xvfb"]
+    fn constant_clicks_and_drags_release_input_and_commit_positions() {
+        gtk::init().unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let mut state = State::empty(directory.path().into());
+        let node = Node::new(
+            &state.selected_workspace,
+            NodeKind::Constant,
+            directory.path().into(),
+            Position { x: 100., y: 100. },
+        );
+        let id = node.id.clone();
+        state.nodes.push(node);
+        let (engine, _) = Engine::new(
+            state,
+            crate::store::Store::new(directory.path().join("data")).unwrap(),
+        );
+        let view = Rc::new(RefCell::new(View {
+            zoom: 1.,
+            pan_x: 0.,
+            pan_y: 0.,
+            ..View::default()
+        }));
+        let edits = Rc::new(Cell::new(0));
+        let edited = edits.clone();
+        let area = make(
+            engine.clone(),
+            view.clone(),
+            Rc::new(move |action| {
+                if matches!(action, CanvasAction::EditValue(_)) {
+                    edited.set(edited.get() + 1);
+                }
+            }),
+        );
+        let controllers = area.observe_controllers();
+        let click = (0..controllers.n_items())
+            .find_map(|i| controllers.item(i)?.downcast::<gtk::GestureClick>().ok())
+            .unwrap();
+        let drag = (0..controllers.n_items())
+            .find_map(|i| {
+                controllers
+                    .item(i)?
+                    .downcast::<gtk::GestureDrag>()
+                    .ok()
+                    .filter(|g| g.button() == 1)
+            })
+            .unwrap();
+        click.emit_by_name::<()>("pressed", &[&1i32, &130f64, &185f64]);
+        assert_eq!(
+            edits.get(),
+            0,
+            "a value press must remain available for dragging"
+        );
+        drag.emit_by_name::<()>("drag-begin", &[&130f64, &185f64]);
+        drag.emit_by_name::<()>("drag-update", &[&60f64, &40f64]);
+        assert_eq!(
+            view.borrow()
+                .position(engine.snapshot().state.node(&id).unwrap())
+                .x,
+            160.
+        );
+        click.emit_by_name::<()>("released", &[&1i32, &190f64, &225f64]);
+        drag.emit_by_name::<()>("drag-end", &[&60f64, &40f64]);
+        assert_eq!(edits.get(), 0);
+        assert_eq!(engine.snapshot().state.node(&id).unwrap().position.x, 160.);
+        assert_eq!(engine.snapshot().state.node(&id).unwrap().position.y, 140.);
+        click.emit_by_name::<()>("pressed", &[&1i32, &190f64, &225f64]);
+        click.emit_by_name::<()>("released", &[&1i32, &190f64, &225f64]);
+        assert_eq!(edits.get(), 1);
+        click.emit_by_name::<()>("pressed", &[&1i32, &700f64, &500f64]);
+        assert!(view.borrow().selected.is_none());
+        assert!(view.borrow().selection.is_empty());
+        engine.shutdown();
     }
 
     #[test]
