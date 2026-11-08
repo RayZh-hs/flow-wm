@@ -124,6 +124,28 @@ fn connection_catalog_uses_the_registered_casts_and_each_output_type() {
     );
     assert!(output.targets.iter().any(|t| t.id == "display" && t.create));
     assert!(!output.targets.iter().any(|t| t.id == "shell"));
+    let reverse = Catalog::new(
+        &engine.snapshot(),
+        Presentation {
+            lookup_node: Some(sink_id),
+            lookup_pin: Some("number".into()),
+            lookup_input: true,
+            ..Default::default()
+        },
+        &extensions::builtins(),
+    )
+    .lookup
+    .unwrap();
+    assert!(reverse.input);
+    assert_eq!(reverse.outputs.len(), 1);
+    assert_eq!(reverse.outputs[0].name, "number");
+    assert!(
+        reverse.outputs[0]
+            .targets
+            .iter()
+            .any(|t| !t.create && t.input == "value")
+    );
+    assert!(!reverse.outputs[0].targets.iter().any(|t| t.input == "out"));
     engine.shutdown();
 }
 

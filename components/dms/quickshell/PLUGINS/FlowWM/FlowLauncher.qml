@@ -17,14 +17,15 @@ Scope {
     readonly property bool launcherOpen: bridge?.launcherOpen ?? false
     onLauncherOpenChanged: { if (!launcherOpen) { outputName = ""; targetKey = ""; } }
     onCatalogChanged: {
-        if (lookupNode !== (catalog.lookup?.node ?? "")) { outputName = ""; targetKey = ""; lookupNode = catalog.lookup?.node ?? ""; }
+        const key = (catalog.lookup?.node ?? "") + ":" + (catalog.lookup?.selected ?? "") + ":" + (catalog.lookup?.input ?? false);
+        if (lookupNode !== key) { outputName = catalog.lookup?.selected ?? ""; targetKey = ""; lookupNode = key; }
         itemsChanged();
     }
     function getSearchHint() {
         const lookup = catalog.lookup;
         if (!lookup) return "";
         const output = lookup.outputs.find(p => p.name === outputName) ?? (lookup.outputs.length === 1 ? lookup.outputs[0] : null);
-        return output ? I18n.tr("Compatible inputs") + " · " + output.ty + " · " + lookup.title + " · " + (output.label || output.name) : I18n.tr("Choose an output") + " · " + lookup.title;
+        return output ? (lookup.input ? I18n.tr("Compatible outputs") : I18n.tr("Compatible inputs")) + " · " + output.ty + " · " + lookup.title + " · " + (output.label || output.name) : I18n.tr("Choose an output") + " · " + lookup.title;
     }
 
     function getItems(query) {

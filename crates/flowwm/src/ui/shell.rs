@@ -667,6 +667,7 @@ impl Shell {
             }),
             CanvasAction::Chat => self.agent_chat(),
             CanvasAction::ConnectSearch => self.connect_search(),
+            CanvasAction::ConnectPin(endpoint, output) => self.connect_pin_search(endpoint, output),
             CanvasAction::Arrange => self.arrange(),
             CanvasAction::Copy(cut) => self.copy_selection(cut),
             CanvasAction::Paste => self.paste_selection(),
@@ -1044,6 +1045,7 @@ impl Shell {
             graph_visible: visible,
             lookup_return: presentation.lookup_return,
             lookup_node: None,
+            ..Default::default()
         });
         if !visible && !was_mapped {
             if let Some(after) = after {
@@ -1368,6 +1370,7 @@ impl Shell {
             graph_visible: true,
             lookup_return: false,
             lookup_node: None,
+            ..Default::default()
         });
         self.refresh();
         if self.native_nodes
@@ -1532,6 +1535,7 @@ impl Shell {
             graph_visible: false,
             lookup_return: false,
             lookup_node: None,
+            ..Default::default()
         });
         if restore_focus
             && was_visible
@@ -1574,7 +1578,21 @@ impl Shell {
         presentation.lookup_node = Some(id);
         self.engine.set_presentation(presentation);
     }
-    fn create_connected(&self, macro_id: &str, source: crate::graph::Endpoint, input: &str) {
+    fn connect_pin_search(&self, endpoint: crate::graph::Endpoint, output: bool) {
+        self.dms_launcher(Some("connect"));
+        let mut presentation = self.engine.presentation();
+        presentation.lookup_node = Some(endpoint.node);
+        presentation.lookup_pin = Some(endpoint.pin);
+        presentation.lookup_input = !output;
+        self.engine.set_presentation(presentation);
+    }
+    fn create_connected(
+        &self,
+        macro_id: &str,
+        source: crate::graph::Endpoint,
+        input: &str,
+        reverse: bool,
+    ) {
         let Some(m) = self.macros.iter().find(|m| m.id == macro_id) else {
             return;
         };
@@ -1583,7 +1601,11 @@ impl Shell {
             return;
         };
         let mut position = self.view.borrow().position(parent);
-        position.y += canvas::node_height(parent) + 110.;
+        position.y += if reverse {
+            -canvas::HEIGHT - 110.
+        } else {
+            canvas::node_height(parent) + 110.
+        };
         while state.nodes.iter().any(|n| {
             n.workspace == parent.workspace
                 && (self.view.borrow().position(n).x - position.x).abs() < canvas::WIDTH + 20.
@@ -1597,13 +1619,16 @@ impl Shell {
         node.command = m.command.clone();
         node.flow = m.flow.clone();
         let id = node.id.clone();
-        let edge = crate::graph::Connection {
+        let mut edge = crate::graph::Connection {
             source,
             target: crate::graph::Endpoint {
                 node: id.clone(),
                 pin: input.into(),
             },
         };
+        if reverse {
+            std::mem::swap(&mut edge.source, &mut edge.target);
+        }
         let mut candidate = (*state).clone();
         candidate.nodes.push(node.clone());
         candidate.connections.push(edge.clone());
@@ -1681,6 +1706,7 @@ impl Shell {
             graph_visible: self.native_nodes && self.graph_visible.get(),
             lookup_return: restore,
             lookup_node: None,
+            ..Default::default()
         });
         if self.graph_visible.get() {
             self.fit();
@@ -1727,6 +1753,7 @@ impl Shell {
             graph_visible: !expand,
             lookup_return: false,
             lookup_node: None,
+            ..Default::default()
         });
         self.select(Some(id.into()));
         if self.first_frame.get() {
@@ -1758,9 +1785,12 @@ impl Shell {
             UiCommand::AgentChat => self.agent_chat(),
             UiCommand::Arrange => self.arrange(),
             UiCommand::ConnectSearch => self.connect_search(),
-            UiCommand::CreateConnected { id, source, input } => {
-                self.create_connected(&id, source, &input)
-            }
+            UiCommand::CreateConnected {
+                id,
+                source,
+                input,
+                reverse,
+            } => self.create_connected(&id, source, &input, reverse),
             UiCommand::MoveSelection { direction } => {
                 if self.graph_visible.get() {
                     canvas::move_selection(&self.engine, &self.view, &direction);
@@ -2050,6 +2080,7 @@ impl Shell {
             graph_visible: visible,
             lookup_return: false,
             lookup_node: None,
+            ..Default::default()
         });
         self.canvas().slide(None);
         self.update_scene_geometry();
@@ -2083,6 +2114,7 @@ impl Shell {
                     graph_visible: false,
                     lookup_return: false,
                     lookup_node: None,
+                    ..Default::default()
                 });
                 self.fallback_window.set_visible(false);
             } else {

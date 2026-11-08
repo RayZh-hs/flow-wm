@@ -97,6 +97,7 @@ function connectionItems(catalog, query, outputName, targetKey) {
     if (!lookup) return [];
     query = String(query || "").trim();
     var outputs = lookup.outputs || [];
+    if (!outputName && lookup.selected) outputName = lookup.selected;
     if (!outputName && outputs.length === 1) outputName = outputs[0].name;
     var prefix = lookup.title + ":";
     if (query.indexOf(prefix) === 0) query = query.substring(prefix.length).trim();
@@ -126,11 +127,16 @@ function connectionItems(catalog, query, outputName, targetKey) {
         var name = first.create ? entry.name : entry.title;
         if (!targetKey && !matches(name + " " + (entry.description || ""), query)) return;
         if (!targetKey && targets.length > 1) {
-            result.push(item(key, name, output.ty + " · " + targets.length + " compatible inputs", { target: key }, null));
+            result.push(item(key, name, output.ty + " · " + targets.length + " compatible " + (lookup.input ? "outputs" : "inputs"), { target: key }, null));
             return;
         }
         targets.forEach(function (target) {
-            var command = target.create ? { op: "ui", command: { action: "create_connected", id: target.id, source: {node:lookup.node,pin:output.name}, input:target.input } } : { op:"connect_pins",connection:{source:{node:lookup.node,pin:output.name},target:{node:target.id,pin:target.input}} };
+            var command = target.create ? { op: "ui", command: { action: "create_connected", id: target.id, source: {node:lookup.node,pin:output.name}, input:target.input, reverse:!!lookup.input } } : { op:"connect_pins",connection:{source:{node:lookup.node,pin:output.name},target:{node:target.id,pin:target.input}} };
+            if (lookup.input && !target.create) {
+                var swap = command.connection.source;
+                command.connection.source = command.connection.target;
+                command.connection.target = swap;
+            }
             result.push(item(key + ":" + target.input, targetKey ? target.input : name, (target.create ? "Create" : "Connect") + " · " + target.input + " · " + output.ty, null, ["send", JSON.stringify(command)]));
         });
     });

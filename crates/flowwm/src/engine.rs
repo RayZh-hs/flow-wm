@@ -54,6 +54,8 @@ pub enum UiCommand {
         id: String,
         source: crate::graph::Endpoint,
         input: String,
+        #[serde(default)]
+        reverse: bool,
     },
     Open {
         id: String,
@@ -297,6 +299,10 @@ pub struct Presentation {
     pub lookup_return: bool,
     #[serde(default)]
     pub lookup_node: Option<String>,
+    #[serde(default)]
+    pub lookup_pin: Option<String>,
+    #[serde(default)]
+    pub lookup_input: bool,
 }
 struct Notifier {
     generation: Mutex<u64>,

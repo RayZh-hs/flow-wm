@@ -99,3 +99,16 @@ test('event search explains completion, failure and extension outputs without ch
     assert.ok(result[0].comment.includes('Agent session ended'));
     assert.equal(result[0].flowwmLayer.output, 'finished');
 });
+
+test('dragging an input reverses existing edges and new source nodes', () => {
+    const input = JSON.parse(JSON.stringify(linked));
+    input.lookup.input = true;
+    input.lookup.selected = 'number';
+    const result = connections(input);
+    const edge = JSON.parse(result.find(i => i.id === 'node:display:value').flowwmArgs[1]).connection;
+    assert.deepEqual(edge, {source:{node:'display',pin:'value'},target:{node:'source',pin:'number'}});
+    const command = JSON.parse(connections(input, '', 'number', 'macro:script').find(i=>i.name==='a').flowwmArgs[1]).command;
+    assert.equal(command.reverse, true);
+    assert.equal(command.source.node, 'source');
+    assert.equal(command.input, 'a');
+});

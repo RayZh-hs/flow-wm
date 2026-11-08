@@ -118,6 +118,7 @@ pub enum CanvasAction {
     Run(String),
     Chat,
     ConnectSearch,
+    ConnectPin(crate::graph::Endpoint, bool),
     Arrange,
     Copy(bool),
     Paste,
@@ -138,6 +139,7 @@ enum Drag {
     },
     Pin {
         source: crate::graph::Endpoint,
+        output: bool,
     },
     Box {
         start: (f64, f64),
@@ -401,7 +403,8 @@ impl View {
             self.drag.as_ref().map(|d| match d {
                 Drag::Box { start, end, .. } => format!("box:{start:?}:{end:?}"),
                 Drag::Cut { points } => format!("cut:{points:?}"),
-                Drag::Pin { source } => format!("pin:{}:{}", source.node, source.pin),
+                Drag::Pin { source, output } =>
+                    format!("pin:{}:{}:{output}", source.node, source.pin),
                 _ => String::new(),
             })
         )
@@ -860,7 +863,15 @@ fn make_scoped(
                 y: view.pan_y,
             });
         } else if let Some(source) = hit_pin(&state, &view, wx, wy, true) {
-            view.drag = Some(Drag::Pin { source });
+            view.drag = Some(Drag::Pin {
+                source,
+                output: true,
+            });
+        } else if let Some(source) = hit_pin(&state, &view, wx, wy, false) {
+            view.drag = Some(Drag::Pin {
+                source,
+                output: false,
+            });
         } else if let Some(node) = state.nodes.iter().rev().find(|n| {
             n.workspace == state.selected_workspace && contains(n, &view.position(n), wx, wy)
         }) {
@@ -959,13 +970,28 @@ fn make_scoped(
                 let _ = e.request(Control::Move { id, position });
             }
         }
+        let mut pending_search = None;
         match view.drag.take() {
-            Some(Drag::Pin { source }) => {
-                if let Some(target) = hit_pin(&state, &view, view.pointer.0, view.pointer.1, false)
+            Some(Drag::Pin { source, output }) => {
+                if let Some(other) = hit_pin(&state, &view, view.pointer.0, view.pointer.1, !output)
                 {
-                    e.dispatch(Control::ConnectPins {
-                        connection: crate::graph::Connection { source, target },
-                    });
+                    let connection = if output {
+                        crate::graph::Connection {
+                            source,
+                            target: other,
+                        }
+                    } else {
+                        crate::graph::Connection {
+                            source: other,
+                            target: source,
+                        }
+                    };
+                    e.dispatch(Control::ConnectPins { connection });
+                } else {
+                    view.selected = Some(source.node.clone());
+                    view.selection.clear();
+                    view.selection.insert(source.node.clone());
+                    pending_search = Some((source, output));
                 }
             }
             Some(Drag::Box { start, end, .. }) => {
@@ -998,6 +1024,9 @@ fn make_scoped(
         let selected = view.selected.clone();
         drop(view);
         cb(CanvasAction::Select(selected));
+        if let Some((endpoint, output)) = pending_search {
+            cb(CanvasAction::ConnectPin(endpoint, output));
+        }
         a.queue_draw();
     });
     area.add_controller(gesture);
@@ -1506,16 +1535,20 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
             c.set_dash(&[], 0.0);
         }
     }
-    if let Some(Drag::Pin { source }) = &view.drag
+    if let Some(Drag::Pin { source, output }) = &view.drag
         && let Some(node) = state.node(&source.node)
-        && let Some(from) = pin_position(state, node, &view.position(node), &source.pin, true)
+        && let Some(from) = pin_position(state, node, &view.position(node), &source.pin, *output)
     {
         theme.primary.source(c);
         c.set_line_width(2.0);
-        let signal = crate::graph::pins(state, node, true)
+        let signal = crate::graph::pins(state, node, *output)
             .iter()
             .any(|p| p.name == source.pin && p.ty.is_signal());
-        draw_route(c, from, view.pointer, !signal);
+        if *output {
+            draw_route(c, from, view.pointer, !signal);
+        } else {
+            draw_route(c, view.pointer, from, !signal);
+        }
         let _ = c.stroke();
     }
     let _ = c.pop_group_to_source();

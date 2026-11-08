@@ -67,28 +67,42 @@ pub struct Lookup {
     pub node: String,
     pub title: String,
     pub outputs: Vec<LookupOutput>,
+    pub selected: Option<String>,
+    pub input: bool,
 }
 impl Lookup {
-    fn new(state: &crate::model::State, id: &str, macros: &[Macro]) -> Option<Self> {
+    fn new(
+        state: &crate::model::State,
+        id: &str,
+        macros: &[Macro],
+        selected: Option<&str>,
+        reverse: bool,
+    ) -> Option<Self> {
         let source = state.node(id)?;
-        let outputs = crate::graph::pins(state, source, true)
+        let outputs = crate::graph::pins(state, source, !reverse)
             .into_iter()
+            .filter(|pin| selected.is_none_or(|name| pin.name == name))
             .map(|output| {
                 let mut targets = vec![];
                 let accepts = |input: &crate::graph::Pin| {
                     output.ty.is_signal() == input.ty.is_signal()
-                        && crate::graph::can_cast(state, &output.ty, &input.ty)
+                        && if reverse {
+                            crate::graph::can_cast(state, &input.ty, &output.ty)
+                        } else {
+                            crate::graph::can_cast(state, &output.ty, &input.ty)
+                        }
                 };
                 for node in state
                     .nodes
                     .iter()
                     .filter(|n| n.workspace == source.workspace && n.id != source.id)
                 {
-                    for pin in crate::graph::pins(state, node, false)
+                    for pin in crate::graph::pins(state, node, reverse)
                         .into_iter()
                         .filter(&accepts)
                     {
-                        if !pin.ty.is_signal()
+                        if !reverse
+                            && !pin.ty.is_signal()
                             && state
                                 .connections
                                 .iter()
@@ -111,7 +125,7 @@ impl Lookup {
                         Default::default(),
                     );
                     node.flow = m.flow.clone();
-                    for pin in crate::graph::pins(state, &node, false)
+                    for pin in crate::graph::pins(state, &node, reverse)
                         .into_iter()
                         .filter(&accepts)
                     {
@@ -123,8 +137,8 @@ impl Lookup {
                     }
                 }
                 LookupOutput {
-                    label: crate::graph::pin_label(source, &output, true),
-                    description: crate::graph::pin_description(&output, true).into(),
+                    label: crate::graph::pin_label(source, &output, !reverse),
+                    description: crate::graph::pin_description(&output, !reverse).into(),
                     name: output.name,
                     ty: output.ty.to_string(),
                     targets,
@@ -135,6 +149,8 @@ impl Lookup {
             node: source.id.clone(),
             title: source.title.clone(),
             outputs,
+            selected: selected.map(str::to_string),
+            input: reverse,
         })
     }
 }
@@ -142,10 +158,15 @@ impl Catalog {
     pub fn new(snapshot: &Snapshot, presentation: Presentation, macros: &[Macro]) -> Self {
         let state = &snapshot.state;
         Self {
-            lookup: presentation
-                .lookup_node
-                .as_deref()
-                .and_then(|id| Lookup::new(state, id, macros)),
+            lookup: presentation.lookup_node.as_deref().and_then(|id| {
+                Lookup::new(
+                    state,
+                    id,
+                    macros,
+                    presentation.lookup_pin.as_deref(),
+                    presentation.lookup_input,
+                )
+            }),
             version: 1,
             selected_workspace: state.selected_workspace.clone(),
             presentation,
