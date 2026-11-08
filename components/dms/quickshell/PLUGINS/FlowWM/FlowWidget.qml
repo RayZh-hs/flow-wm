@@ -9,15 +9,7 @@ PluginComponent {
     readonly property var bridge: pluginService?.pluginDaemonInstances?.flowwm ?? null
     readonly property var catalog: bridge?.catalog ?? ({})
     readonly property bool graphVisible: catalog.presentation?.graph_visible ?? false
-    readonly property var group: (catalog.workspaces || []).find(group => group.id === catalog.selected_workspace) ?? null
     readonly property bool online: bridge?.online ?? false
-    readonly property string groupTitle: {
-        if (!group)
-            return I18n.tr("Flow graph");
-        if (!group.row)
-            return group.name;
-        return I18n.tr("Row") + " " + group.row.index;
-    }
     readonly property string geometryKey: JSON.stringify([parentScreen?.name, barConfig?.position ?? 0, barThickness, barSpacing, barConfig?.bottomGap ?? 0])
     function reportGeometry() {
         const insets = [0, 0, 0, 0];
@@ -78,18 +70,11 @@ PluginComponent {
                     onLoaded: { item.size = Qt.binding(() => root.iconSize); item.color = Qt.binding(() => Theme.primary); }
                 }
                 StyledText {
-                    text: root.graphVisible ? root.groupTitle : root.catalog.attention > 0 ? root.catalog.attention + " " + I18n.tr("need you") : root.catalog.running > 0 ? root.catalog.running + " " + I18n.tr("working") : I18n.tr("Nodes")
+                    text: root.catalog.attention > 0 ? root.catalog.attention + " " + I18n.tr("need you") : root.catalog.running > 0 ? root.catalog.running + " " + I18n.tr("working") : I18n.tr("Nodes")
                     width: Math.min(implicitWidth, root.graphVisible ? root.iconSize * 8 : implicitWidth)
                     elide: Text.ElideRight
                     font.pixelSize: Theme.fontSizeSmall
                     color: root.graphVisible ? Theme.primary : Theme.surfaceText
-                    anchors.verticalCenter: parent.verticalCenter
-                }
-                StyledText {
-                    visible: root.graphVisible
-                    text: (root.group?.nodes ?? 0) + " " + I18n.tr("nodes") + " · " + (root.catalog.open_windows ?? 0) + " " + I18n.tr("windows")
-                    font.pixelSize: Theme.fontSizeSmall
-                    color: Theme.surfaceVariantText
                     anchors.verticalCenter: parent.verticalCenter
                 }
                 Row {
@@ -97,11 +82,6 @@ PluginComponent {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: Theme.spacingXS
                     ActionButton { icon: "add"; title: I18n.tr("Create a node"); action: () => root.bridge?.command(["search", "create"]); }
-                    ActionButton { icon: "zoom_out_map"; title: I18n.tr("Frame all nodes"); action: () => root.bridge?.action("fit"); }
-                    ActionButton { icon: "schema"; title: I18n.tr("Recipes"); action: () => root.bridge?.action("recipes"); }
-                    ActionButton { icon: "edit_note"; title: I18n.tr("Workspace notes"); action: () => root.bridge?.action("notes"); }
-                    ActionButton { icon: "play_arrow"; title: I18n.tr("Run workflow"); action: () => root.bridge?.action("run_group"); }
-                    ActionButton { icon: "help_outline"; title: I18n.tr("Shortcuts"); action: () => root.bridge?.action("help"); }
                 }
             }
         }
