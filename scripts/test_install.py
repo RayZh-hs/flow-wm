@@ -76,6 +76,25 @@ class ProfileIsolation(unittest.TestCase):
 
 
 class LoginIsolation(unittest.TestCase):
+    def test_private_shell_profile_preserves_application_xdg_paths(self):
+        spec = importlib.util.spec_from_file_location('runtime', Path(__file__).with_name('session.py'))
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        data = {'config': '/private/config', 'state': '/private/state', 'cache': '/private/cache'}
+        for original in ({}, {'XDG_CONFIG_HOME': '/custom/config', 'XDG_STATE_HOME': '/custom/state',
+                              'XDG_CACHE_HOME': '/custom/cache'}):
+            with self.subTest(original=original), patch.object(runtime, 'settings', return_value=data), \
+                 patch.dict(os.environ, original, clear=True):
+                environment = runtime.environment(profile=True)
+                for key, path in data.items():
+                    name = 'XDG_' + key.upper() + '_HOME'
+                    self.assertEqual(environment[name], path)
+                    self.assertEqual(environment['DMS_ORIG_' + name], original.get(name, ''))
+                with patch.dict(os.environ, environment, clear=True):
+                    nested = runtime.environment(profile=True)
+                    for name in ('XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME'):
+                        self.assertEqual(nested['DMS_ORIG_' + name], original.get(name, ''))
+
     def test_login_starts_only_installed_flowwm_and_cleans_session_environment(self):
         spec = importlib.util.spec_from_file_location('runtime', Path(__file__).with_name('session.py'))
         runtime = importlib.util.module_from_spec(spec)

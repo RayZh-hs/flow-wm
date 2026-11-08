@@ -2894,7 +2894,8 @@ Item {
         var terminal = SessionData.resolveTerminal() || "xterm";
         Quickshell.execDetached({
             command: [terminal],
-            workingDirectory: path
+            workingDirectory: path,
+            environment: SessionService.restoreWrapperEnv({})
         });
     }
 

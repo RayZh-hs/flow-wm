@@ -283,7 +283,7 @@ printf 'uwsm=%s\nelogind=%s\nloginctl=%s\nsystemctl=%s\nusermgr=%s\nhibernate=%s
         return args;
     }
 
-    // Restore pre-wrap Qt paths (Nix) so launched apps use their own.
+    // Launched apps need the user's paths, not the shell's private profile or Qt wrapper.
     function restoreWrapperEnv(env) {
         const restore = (target, snapshot) => {
             const orig = Quickshell.env(snapshot);
@@ -293,6 +293,9 @@ printf 'uwsm=%s\nelogind=%s\nloginctl=%s\nsystemctl=%s\nusermgr=%s\nhibernate=%s
         };
         restore("NIXPKGS_QT6_QML_IMPORT_PATH", "DMS_ORIG_NIXPKGS_QT6_QML_IMPORT_PATH");
         restore("QT_PLUGIN_PATH", "DMS_ORIG_QT_PLUGIN_PATH");
+        restore("XDG_CONFIG_HOME", "DMS_ORIG_XDG_CONFIG_HOME");
+        restore("XDG_STATE_HOME", "DMS_ORIG_XDG_STATE_HOME");
+        restore("XDG_CACHE_HOME", "DMS_ORIG_XDG_CACHE_HOME");
         return env;
     }
 
@@ -350,7 +353,7 @@ printf 'uwsm=%s\nelogind=%s\nloginctl=%s\nsystemctl=%s\nusermgr=%s\nhibernate=%s
         const cursorEnv = typeof SettingsData.getCursorEnvironment === "function" ? SettingsData.getCursorEnvironment() : {};
 
         const overrideEnv = override?.envVars ? parseEnvVars(override.envVars) : {};
-        const finalEnv = restoreWrapperEnv(Object.assign({}, cursorEnv, overrideEnv));
+        const finalEnv = Object.assign(restoreWrapperEnv({}), cursorEnv, overrideEnv);
 
         if (desktopEntry.runInTerminal) {
             const terminal = SessionData.resolveTerminal() || "xterm";
@@ -401,7 +404,7 @@ printf 'uwsm=%s\nelogind=%s\nloginctl=%s\nsystemctl=%s\nusermgr=%s\nhibernate=%s
         const prefix = userPrefix.length > 0 ? userPrefix : defaultPrefix;
         const workDir = desktopEntry.workingDirectory || Quickshell.env("HOME");
         const cursorEnv = typeof SettingsData.getCursorEnvironment === "function" ? SettingsData.getCursorEnvironment() : {};
-        const finalEnv = restoreWrapperEnv(Object.assign({}, cursorEnv));
+        const finalEnv = Object.assign(restoreWrapperEnv({}), cursorEnv);
 
         if (prefix.length > 0 && needsShellExecution(prefix)) {
             const escapedCmd = cmd.map(arg => escapeShellArg(arg)).join(" ");

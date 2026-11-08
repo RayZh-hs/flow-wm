@@ -31,6 +31,8 @@ def environment(profile=False):
         paths.insert(0, str(adapters))
     result["PATH"] = os.pathsep.join(paths + [result.get("PATH", "")])
     if profile:
+        for name in ("XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"):
+            result.setdefault("DMS_ORIG_" + name, result.get(name, ""))
         result.update({"XDG_CONFIG_HOME": data["config"], "XDG_STATE_HOME": data["state"],
                        "XDG_CACHE_HOME": data["cache"], "DMS_SHELL_DIR": str(ROOT / "shell")})
     return result
