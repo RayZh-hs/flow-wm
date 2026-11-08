@@ -135,7 +135,7 @@ def run():
                 left, top = point(520, 185)
                 gap = before.crop((round(left), round(top), round(left + 30 * zoom), round(top + 70 * zoom)))
                 values = gap.convert("L").tobytes()
-                assert statistics.mean(values) < 70, "the preview gap must be dimmed"
+                assert 80 < statistics.mean(values) < 140, "the preview gap should keep a lightly dimmed wallpaper visible"
                 assert statistics.pstdev(values) < 12, "the checkerboard must be blurred inside the preview gap"
                 outside = before.crop((20, 20, 100, 100)).convert("L").tobytes()
                 assert statistics.pstdev(outside) > 50, "the wallpaper fixture must have visible detail outside the card"

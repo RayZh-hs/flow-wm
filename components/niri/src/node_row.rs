@@ -224,7 +224,7 @@ impl<W: LayoutElement> Workspace<W> {
             if !entry.expanded {
                 let mut backdrops = tile.backdrops.borrow_mut();
                 let dim = backdrops.entry(entry.id).or_default();
-                dim.update(clip.size, [0.035, 0.04, 0.05, 0.72]);
+                dim.update(clip.size, [0., 0., 0., 0.12]);
                 push(
                     NodeRenderElement::Dim(
                         crate::render_helpers::solid_color::SolidColorRenderElement::from_buffer(
