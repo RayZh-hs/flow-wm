@@ -20,7 +20,7 @@ test('an exact node title outranks prefix and fuzzy matches in DMS', () => {
         workspaces: [{ id: 'a', name: 'My workspace' }],
         nodes: [
             { id: 'prefix', title: 'Inspect workspace settings', workspace: 'a', kind: 'agent', status: 'review' },
-            { id: 'loose', title: 'Investigate slow project', workspace: 'a', kind: 'agent', status: 'idle' },
+            { id: 'loose', title: 'Inspection workspace', workspace: 'a', kind: 'agent', status: 'idle' },
             { id: 'exact', title: 'Inspect workspace', workspace: 'a', kind: 'agent', status: 'idle' }
         ]
     };
@@ -37,6 +37,19 @@ test('creation strips the mode prefix and never runs the macro', () => {
 });
 test('window lookup chooses an explicit expansion action', () => {
     assert.deepEqual(items('> parser')[0].flowwmArgs, ['focus', 'a1', '--open']);
+});
+test('ordinary search omits window titles, while explicit open lookup can find them', () => {
+    const input = { ...catalog, nodes: [{ id: 'window', title: 'A long constant window title\nwith a second line', kind: 'window', status: 'running' }] };
+    assert.equal(context.items(input, 'const', labels).length, 0);
+    const results = context.items(input, '> const', labels);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].name.includes('\n'), false);
+    assert.deepEqual(Array.from(results[0].flowwmArgs), ['focus', 'window', '--open']);
+});
+test('fuzzy matching cannot assemble a token across unrelated title words', () => {
+    assert.equal(context.matches('Choose the next step', 'const'), false);
+    assert.equal(context.matches('Review deployment', 'rvw dply'), true);
+    assert.equal(context.matches('常量 节点', '常量'), true);
 });
 test('workspace mode excludes node and macro results', () => {
     assert.deepEqual(items('/ web').map(item => item.id), ['workspace:b']);

@@ -5,12 +5,13 @@ function matches(text, query) {
     return query.toLowerCase().split(/\s+/).every(function (token) {
         if (!token || text.indexOf(token) >= 0)
             return true;
-        var position = 0;
-        for (var i = 0; i < text.length && position < token.length; i++) {
-            if (text[i] === token[position])
-                position++;
-        }
-        return position === token.length;
+        return text.split(/[^\p{L}\p{N}_]+/u).some(function (word) {
+            var position = 0;
+            for (var i = 0; i < word.length && position < token.length; i++) {
+                if (word[i] === token[position]) position++;
+            }
+            return position === token.length;
+        });
     });
 }
 
@@ -43,6 +44,8 @@ function items(catalog, query, labels) {
     function add(id, name, comment, icon, args, primary) {
         if (!matches(name + " " + comment, query))
             return;
+        name = String(name || "").replace(/\s+/g, " ").trim();
+        comment = String(comment || "").replace(/\s+/g, " ").trim();
         results.push({ id: id, name: name, comment: comment, icon: "material:" + icon, flowwmArgs: args, _preScored: relevance(name, comment, query),
             primaryAction: { name: primary, icon: icon, action: "execute" } });
     }
@@ -54,6 +57,7 @@ function items(catalog, query, labels) {
                 return attentionA ? -1 : 1;
             return Number(b.workspace === catalog.selected_workspace) - Number(a.workspace === catalog.selected_workspace);
         }).forEach(function (node) {
+            if (mode === "nodes" && node.kind === "window") return;
             var status = node.kind === "window" && node.window_id ? labels.open : labels.status[node.status] || node.status;
             var kind = labels.kind[node.kind] || node.kind;
             var description = kind + " · " + status + " · " + (workspaces[node.workspace] || "");
