@@ -136,9 +136,6 @@ enum Drag {
         x: f64,
         y: f64,
     },
-    Wire {
-        source: String,
-    },
     Pin {
         source: crate::graph::Endpoint,
     },
@@ -404,7 +401,6 @@ impl View {
             self.drag.as_ref().map(|d| match d {
                 Drag::Box { start, end, .. } => format!("box:{start:?}:{end:?}"),
                 Drag::Cut { points } => format!("cut:{points:?}"),
-                Drag::Wire { source } => format!("wire:{source}"),
                 Drag::Pin { source } => format!("pin:{}:{}", source.node, source.pin),
                 _ => String::new(),
             })
@@ -856,15 +852,6 @@ fn make_scoped(
             });
         } else if let Some(source) = hit_pin(&state, &view, wx, wy, true) {
             view.drag = Some(Drag::Pin { source });
-        } else if let Some(node) = state.nodes.iter().find(|n| {
-            n.workspace == state.selected_workspace
-                && (wx - view.position(n).x - WIDTH / 2.0)
-                    .hypot(wy - view.position(n).y - node_height(n))
-                    < 12.0
-        }) {
-            view.drag = Some(Drag::Wire {
-                source: node.id.clone(),
-            });
         } else if let Some(node) = state.nodes.iter().rev().find(|n| {
             n.workspace == state.selected_workspace && contains(n, &view.position(n), wx, wy)
         }) {
@@ -927,7 +914,7 @@ fn make_scoped(
                 view.pan_x = x + dx;
                 view.pan_y = y + dy;
             }
-            Some(Drag::Wire { .. } | Drag::Pin { .. }) => {
+            Some(Drag::Pin { .. }) => {
                 if let Some((x, y)) = g.start_point() {
                     view.pointer = view.world(x + dx, y + dy);
                 }
@@ -969,19 +956,6 @@ fn make_scoped(
                 {
                     e.dispatch(Control::ConnectPins {
                         connection: crate::graph::Connection { source, target },
-                    });
-                }
-            }
-            Some(Drag::Wire { source }) => {
-                let (x, y) = view.pointer;
-                if let Some(target) = state.nodes.iter().find(|n| {
-                    n.workspace == state.selected_workspace
-                        && n.id != source
-                        && contains(n, &view.position(n), x, y)
-                }) {
-                    e.dispatch(Control::Connect {
-                        source,
-                        target: target.id.clone(),
                     });
                 }
             }
@@ -1535,21 +1509,6 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
         draw_route(c, from, view.pointer, !signal);
         let _ = c.stroke();
     }
-    if let Some(Drag::Wire { source }) = &view.drag
-        && let Some(n) = state.node(source)
-    {
-        let p = view.position(n);
-        theme.primary.source(c);
-        c.set_line_width(2.0);
-        wire(
-            c,
-            p.x + WIDTH / 2.0,
-            p.y + node_height(n),
-            view.pointer.0,
-            view.pointer.1,
-        );
-        let _ = c.stroke();
-    }
     let _ = c.pop_group_to_source();
     let _ = c.paint_with_alpha(view.chrome);
     let ordered = ordered_nodes(state);
@@ -1982,7 +1941,6 @@ pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, the
         false,
     );
     if n.closed_window() {
-        draw_ports(c, x, y, height, theme);
         return;
     }
     if n.kind == NodeKind::Metric && !n.metric.samples.is_empty() {
@@ -2107,7 +2065,6 @@ pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, the
         theme.muted.rgb(),
         true,
     );
-    draw_ports(c, x, y, height, theme);
 }
 pub(super) fn draw_pin_markers(
     c: &Context,
@@ -2147,18 +2104,6 @@ fn type_color(ty: &crate::graph::Type, theme: &Theme) -> (f64, f64, f64) {
     }
 }
 
-fn draw_ports(c: &Context, x: f64, y: f64, height: f64, theme: &Theme) {
-    let accent = theme.primary.rgb();
-    for py in [y, y + height] {
-        c.new_sub_path();
-        c.arc(x + WIDTH / 2.0, py, 5.0, 0.0, std::f64::consts::TAU);
-        theme.surface_high.source(c);
-        let _ = c.fill_preserve();
-        c.set_source_rgb(accent.0 * 0.75, accent.1 * 0.75, accent.2 * 0.75);
-        c.set_line_width(1.3);
-        let _ = c.stroke();
-    }
-}
 fn wire(c: &Context, x1: f64, y1: f64, x2: f64, y2: f64) {
     draw_route(c, (x1, y1), (x2, y2), false);
 }
@@ -2350,6 +2295,38 @@ mod rendering_tests {
             &[(from.0 - 10., from.1 + 100.), (from.0 + 10., from.1 + 100.)],
             false
         ));
+    }
+    #[test]
+    fn constants_render_only_their_data_port() {
+        let mut state = State::empty("/tmp".into());
+        let node = Node::new(
+            &state.selected_workspace,
+            NodeKind::Constant,
+            "/tmp".into(),
+            Position { x: 20., y: 20. },
+        );
+        state.nodes.push(node);
+        let node = &state.nodes[0];
+        let image = raster(400, 400, |c| {
+            draw_node(c, node, &node.position, false, &View::default().theme);
+            draw_pin_markers(c, &state, node, &node.position, &View::default().theme);
+        });
+        assert_eq!(
+            pixel(&image, 400, 20 + WIDTH as usize / 2, 16),
+            0,
+            "data nodes have no trigger input"
+        );
+        assert!(
+            hit_pin(
+                &state,
+                &View::default(),
+                20. + WIDTH / 2.,
+                20. + node_height(node),
+                true
+            )
+            .is_none()
+        );
+        assert_eq!(crate::graph::pins(&state, node, true).len(), 1);
     }
     fn raster(width: i32, height: i32, render: impl FnOnce(&Context)) -> Vec<u8> {
         let mut image = cairo::ImageSurface::create(cairo::Format::ARgb32, width, height).unwrap();
