@@ -2896,7 +2896,7 @@ impl Shell {
             self.show_error("Stop this node before changing its parameters.");
             return;
         }
-        let dialog = self.dialog("Node parameters", 640, 760);
+        let dialog = self.dialog("Node parameters", 560, -1);
         let root = column(14);
         root.add_css_class("dialog-body");
         root.append(&label(
@@ -2904,6 +2904,7 @@ impl Shell {
             "dialog-title",
         ));
         let title = entry(&node.title);
+        title.set_activates_default(true);
         field(&root, "Name", &title);
         let directory = entry(&node.cwd.to_string_lossy());
         if !node.kind.primitive() || matches!(node.kind, NodeKind::Vox | NodeKind::Python) {
@@ -3123,6 +3124,7 @@ impl Shell {
         let cancel = gtk::Button::with_label("Cancel");
         let save = gtk::Button::with_label("Save node");
         save.add_css_class("accent");
+        dialog.set_default_widget(Some(&save));
         actions.append(&cancel);
         actions.append(&save);
         root.append(&actions);
@@ -3168,7 +3170,11 @@ impl Shell {
                 Err(error) => s.show_error(&error.to_string()),
             }
         });
-        let scroll = gtk::ScrolledWindow::builder().child(&root).build();
+        let scroll = gtk::ScrolledWindow::builder()
+            .propagate_natural_height(true)
+            .max_content_height(680)
+            .child(&root)
+            .build();
         dialog.set_child(Some(&scroll));
         dialog.present();
     }

@@ -299,6 +299,7 @@ pub fn value_editor(state: &State, ty: &Type, value: &Value) -> (gtk::Widget, Re
         );
     }
     let entry = gtk::Entry::new();
+    entry.set_activates_default(true);
     entry.set_text(&if *ty == Type::String {
         value.as_str().unwrap_or_default().into()
     } else {
