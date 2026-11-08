@@ -830,6 +830,10 @@ impl Shell {
             })
     }
     fn escape(&self) {
+        if self.canvas().dismiss_popovers() {
+            self.canvas().grab_focus();
+            return;
+        }
         if self.peeking() {
             self.prepare_camera();
             self.canvas().grab_focus();
@@ -1837,6 +1841,7 @@ impl Shell {
             }
             UiCommand::Fit => self.fit(),
             UiCommand::Dismiss => {
+                self.canvas().dismiss_popovers();
                 for window in self.app.windows() {
                     if window.has_css_class("flow-dialog") {
                         window.close();
@@ -1920,6 +1925,9 @@ impl Shell {
         let workspace_changed = *self.last_workspace.borrow() != state.selected_workspace;
         if workspace_changed || new_surface {
             let previous = self.last_workspace.borrow().clone();
+            if let Some(surface) = self.row_surfaces.borrow().get(&previous) {
+                surface.canvas.dismiss_popovers();
+            }
             let outgoing = self
                 .window()
                 .is_visible()
@@ -2380,6 +2388,7 @@ impl Shell {
         else {
             return;
         };
+        self.canvas().dismiss_popovers();
         let popover = gtk::Popover::new();
         popover.set_parent(&self.canvas());
         popover.set_autohide(true);
@@ -2425,7 +2434,13 @@ impl Shell {
                 Err(e) => shell.show_error(&e.to_string()),
             }
         });
-        popover.connect_closed(|p| p.unparent());
+        let canvas = self.canvas().downgrade();
+        popover.connect_closed(move |p| {
+            p.unparent();
+            if let Some(canvas) = canvas.upgrade() {
+                canvas.grab_focus();
+            }
+        });
         popover.popup();
         widget.grab_focus();
     }

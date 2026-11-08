@@ -23,8 +23,23 @@ mod imp {
         type Type = super::Surface;
         type ParentType = gtk::Widget;
     }
-    impl ObjectImpl for Surface {}
+    impl ObjectImpl for Surface {
+        fn dispose(&self) {
+            while let Some(child) = self.obj().first_child() {
+                child.unparent();
+            }
+        }
+    }
     impl WidgetImpl for Surface {
+        fn size_allocate(&self, _: i32, _: i32, _: i32) {
+            let mut child = self.obj().first_child();
+            while let Some(widget) = child {
+                if let Some(popover) = widget.downcast_ref::<gtk::Popover>() {
+                    popover.present();
+                }
+                child = widget.next_sibling();
+            }
+        }
         fn measure(&self, _: gtk::Orientation, _: i32) -> (i32, i32, i32, i32) {
             (100, 800, -1, -1)
         }
@@ -68,6 +83,19 @@ mod imp {
 }
 glib::wrapper! {pub struct Surface(ObjectSubclass<imp::Surface>) @extends gtk::Widget, @implements gtk::Accessible,gtk::Buildable,gtk::ConstraintTarget;}
 impl Surface {
+    pub fn dismiss_popovers(&self) -> bool {
+        let mut dismissed = false;
+        let mut child = self.first_child();
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            if let Some(popover) = widget.downcast_ref::<gtk::Popover>() {
+                dismissed |= popover.is_visible();
+                popover.popdown();
+            }
+        }
+        dismissed
+    }
+
     pub fn frame(&self) -> Option<gsk::RenderNode> {
         self.imp().frame.borrow().clone()
     }

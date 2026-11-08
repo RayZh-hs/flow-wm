@@ -392,8 +392,13 @@ impl XdgShellHandler for State {
                     return;
                 }
 
-                let layout_focus = self.niri.layout.focus();
-                if Some(&root) != layout_focus.map(|win| win.toplevel().wl_surface()) {
+                let layout_focus = self.niri.node_canvas_focus().or_else(|| {
+                    self.niri
+                        .layout
+                        .focus()
+                        .map(|win| win.toplevel().wl_surface().clone())
+                });
+                if Some(&root) != layout_focus.as_ref() {
                     trace!("ignoring toplevel popup grab because another window has focus");
                     let _ = PopupManager::dismiss_popup(&root, &popup);
                     return;
