@@ -2498,51 +2498,6 @@ impl Shell {
         popover.popup();
         widget.grab_focus();
     }
-    fn window_settings(&self, node: &Node) {
-        let popup = self.dialog("Window column", 430, 240);
-        let root = column(14);
-        root.add_css_class("dialog-body");
-        root.append(&label(&node.title, "panel-title"));
-        root.append(&label("Column presentation", "field-label"));
-        let choice = gtk::DropDown::from_strings(&["Node", "Window"]);
-        choice.set_selected(if node.column_mode == ColumnMode::Node {
-            0
-        } else {
-            1
-        });
-        root.append(&choice);
-        root.append(&label(
-            "Windows in the same Niri column share this setting.",
-            "hint",
-        ));
-        let apply = gtk::Button::with_label("Apply");
-        apply.add_css_class("accent");
-        root.append(&apply);
-        let weak = self.weak.clone();
-        let id = node.id.clone();
-        let p = popup.clone();
-        apply.connect_clicked(move |_| {
-            if let Some(shell) = weak.upgrade() {
-                let mode = if choice.selected() == 0 {
-                    ColumnMode::Node
-                } else {
-                    ColumnMode::Window
-                };
-                p.close();
-                if mode == ColumnMode::Window {
-                    shell.open(&id);
-                } else {
-                    let _ = shell.engine.request(Control::ColumnMode {
-                        id: id.clone(),
-                        mode,
-                    });
-                    shell.transition(true, None);
-                }
-            }
-        });
-        popup.set_child(Some(&root));
-        popup.present();
-    }
     fn agent_chat(&self) {
         if self.chat.borrow().is_some() {
             self.expel_chat();
@@ -2935,11 +2890,7 @@ impl Shell {
         let Some(node) = state.node(id).cloned() else {
             return;
         };
-        if node.desktop_window || node.window_id.is_some() {
-            self.window_settings(&node);
-            return;
-        }
-        if node.status.active() {
+        if node.status.active() && node.kind != NodeKind::Window && !node.desktop_window {
             self.show_error("Stop this node before changing its parameters.");
             return;
         }
@@ -3017,7 +2968,6 @@ impl Shell {
             field(&root, "Sample every (seconds)", &interval);
             field(&root, "Unit", &unit);
         }
-        let window_choice = Choice::new();
         if let Some(application) = node
             .flow
             .properties
@@ -3025,21 +2975,19 @@ impl Shell {
             .and_then(serde_json::Value::as_str)
         {
             field(&root, "Application", &label(application, "muted"));
-        } else if node.kind == NodeKind::Window {
-            for window in &self.desktop.lock().unwrap().windows {
-                window_choice.append(
-                    Some(&window_selector(window)),
-                    &format!(
-                        "{} · {}",
-                        window.app_id.as_deref().unwrap_or("app"),
-                        window.title.as_deref().unwrap_or("Untitled")
-                    ),
-                );
-            }
-            if let Some(selector) = &node.window_match {
-                window_choice.set_active_id(Some(selector));
-            }
-            field(&root, "Native window", &window_choice.widget);
+        } else if let Some(window) = self
+            .desktop
+            .lock()
+            .unwrap()
+            .windows
+            .iter()
+            .find(|w| Some(w.id) == node.window_id)
+        {
+            field(
+                &root,
+                "Application",
+                &label(window.app_id.as_deref().unwrap_or("Application"), "muted"),
+            );
         }
         let actions = row(10);
         actions.set_halign(gtk::Align::End);
@@ -3072,9 +3020,6 @@ impl Shell {
             node.review = review.is_active();
             node.metric.interval_secs = interval.value() as u64;
             node.metric.unit = unit.text().to_string();
-            if !node.flow.properties.contains_key("application") {
-                node.window_match = window_choice.active_id().map(|s| s.to_string());
-            }
             // Preserve graph edits made while the parameters were open.
             if let Some(current) = s.engine.snapshot().state.node(&node.id) {
                 node.dependencies = current.dependencies.clone();
@@ -3888,18 +3833,6 @@ impl Choice {
     fn append(&self, id: Option<&str>, label: &str) {
         self.ids.borrow_mut().push(id.unwrap_or(label).into());
         self.model.append(label);
-    }
-    fn set_active_id(&self, id: Option<&str>) {
-        let index = self
-            .ids
-            .borrow()
-            .iter()
-            .position(|s| Some(s.as_str()) == id);
-        self.widget.set_selected(
-            index
-                .map(|i| i as u32)
-                .unwrap_or(gtk::INVALID_LIST_POSITION),
-        );
     }
     fn set_active(&self, index: Option<u32>) {
         self.widget
