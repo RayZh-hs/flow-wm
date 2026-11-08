@@ -153,6 +153,19 @@ fn egl_node_rows_replace_windows_and_follow_swipes_overview_and_lifecycle() {
     f.double_roundtrip(client);
     f.niri_complete_animations();
     let window_id = f.niri().layout.windows().next().unwrap().1.id().get();
+    f.niri().layout.center_window(None);
+    f.niri_complete_animations();
+    let ws = f.niri().layout.active_workspace().unwrap();
+    let (_, position, _) = ws.tiles_with_render_positions().next().unwrap();
+    let (_, ipc) = ws.tiles_with_ipc_layouts().next().unwrap();
+    assert_eq!(
+        ipc.tile_pos_in_workspace_view,
+        Some((position.x, position.y))
+    );
+    assert!(
+        position.x > 100.,
+        "centering must produce a nonzero viewport offset"
+    );
     let (first_client, first_surface) = canvas(&mut f, client, first);
     let (_, second_surface) = canvas(&mut f, client, second);
     assert_eq!(
@@ -208,8 +221,8 @@ fn egl_node_rows_replace_windows_and_follow_swipes_overview_and_lifecycle() {
     let elements = render(&mut f);
     assert_eq!(
         elements.len(),
-        2,
-        "one live projection plus graph content, without the tab view"
+        3,
+        "one live projection, its dimmed backdrop, and graph content, without the tab view"
     );
     assert!(elements.iter().any(|r| r.size.w == 200 && r.size.h == 150));
 
@@ -289,7 +302,7 @@ fn egl_node_rows_replace_windows_and_follow_swipes_overview_and_lifecycle() {
         .collect();
     assert_eq!(geos.len(), 2);
     let elements = render(&mut f);
-    assert_eq!(elements.len(), 3);
+    assert_eq!(elements.len(), 4);
     for (id, geo) in &geos {
         let point = (100., geo.loc.y.max(0.) + 20.).into();
         let surface = if *id == first {
@@ -315,7 +328,7 @@ fn egl_node_rows_replace_windows_and_follow_swipes_overview_and_lifecycle() {
         f.niri().layout.active_workspace().unwrap().id().get(),
         first
     );
-    assert_eq!(render(&mut f).len(), 2);
+    assert_eq!(render(&mut f).len(), 3);
     f.niri().layout.open_overview();
     f.niri_complete_animations();
     let overview = render(&mut f);

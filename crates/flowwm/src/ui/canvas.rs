@@ -446,7 +446,7 @@ impl View {
             .fold(f64::NEG_INFINITY, f64::max);
         self.zoom = ((width - 160.0) / (max_x - min_x))
             .min((height - 160.0) / (max_y - min_y))
-            .clamp(0.35, 1.2);
+            .clamp(0.000001, 1.2);
         self.pan_x = (width - (max_x - min_x) * self.zoom) / 2.0 - min_x * self.zoom;
         self.pan_y = (height - (max_y - min_y) * self.zoom) / 2.0 - min_y * self.zoom;
     }
@@ -695,7 +695,11 @@ fn make_scoped(
             view.selection.clear();
         }
         if let Some(node) = hit {
-            if additive && view.selection.contains(&node.id) {
+            if gesture
+                .current_event_state()
+                .contains(gdk::ModifierType::CONTROL_MASK)
+                && view.selection.contains(&node.id)
+            {
                 view.selection.remove(&node.id);
             } else {
                 view.selection.insert(node.id.clone());
@@ -1107,7 +1111,7 @@ fn make_scoped(
             target.pan_y = y;
         }
         let old = target.zoom;
-        target.zoom = (old * (-dy * 0.12).exp()).clamp(0.25, 2.0);
+        target.zoom = (old * (-dy * 0.12).exp()).clamp(0.000001, 2.0);
         let (cx, cy) = controller
             .current_event()
             .and_then(|event| event.position())
@@ -1570,21 +1574,7 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
             draw_node(c, node, &p, selected, theme);
         }
         if !node.closed_window() {
-            for output in [false, true] {
-                for pin in crate::graph::pins(state, node, output) {
-                    if let Some((x, y)) = pin_position(state, node, &p, &pin.name, output) {
-                        let color = type_color(&pin.ty, theme);
-                        c.set_source_rgb(color.0, color.1, color.2);
-                        if pin.ty.is_signal() {
-                            c.arc(x, y, 4.0, 0.0, std::f64::consts::TAU);
-                            let _ = c.stroke();
-                        } else {
-                            c.rectangle(x - 3.5, y - 3.5, 7.0, 7.0);
-                            let _ = c.fill();
-                        }
-                    }
-                }
-            }
+            draw_pin_markers(c, state, node, &p, theme);
         }
         if !view.query.is_empty() && matches {
             rounded(
@@ -1647,7 +1637,7 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
             c,
             24.0,
             height - 22.0,
-            "Tab  ask agent   /  search   F  focus   HJKL  select   WASD  move   ?  help",
+            "Tab  connect   Ctrl+F /  search   Ctrl+P  arrange   HJKL  pan   WASD  select   ?  help",
             11.0,
             theme.muted.rgb(),
             false,
@@ -2074,6 +2064,30 @@ pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, the
     );
     draw_ports(c, x, y, height, theme);
 }
+pub(super) fn draw_pin_markers(
+    c: &Context,
+    state: &State,
+    node: &Node,
+    p: &Position,
+    theme: &Theme,
+) {
+    for output in [false, true] {
+        for pin in crate::graph::pins(state, node, output) {
+            if let Some((x, y)) = pin_position(state, node, p, &pin.name, output) {
+                let color = type_color(&pin.ty, theme);
+                c.set_source_rgb(color.0, color.1, color.2);
+                if pin.ty.is_signal() {
+                    c.arc(x, y, 4.0, 0.0, std::f64::consts::TAU);
+                    let _ = c.stroke();
+                } else {
+                    c.rectangle(x - 3.5, y - 3.5, 7.0, 7.0);
+                    let _ = c.fill();
+                }
+            }
+        }
+    }
+}
+
 fn type_color(ty: &crate::graph::Type, theme: &Theme) -> (f64, f64, f64) {
     use crate::graph::Type;
     match ty {
@@ -2286,6 +2300,30 @@ mod rendering_tests {
         ));
         assert!(!crossing((0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (3.0, 3.0)));
     }
+    #[test]
+    fn framing_large_graphs_includes_every_card() {
+        let mut state = State::empty("/tmp".into());
+        for index in 0..100 {
+            state.nodes.push(Node::new(
+                &state.selected_workspace,
+                NodeKind::Shell,
+                "/tmp".into(),
+                Position {
+                    x: index as f64 * 400.,
+                    y: 80.,
+                },
+            ));
+        }
+        let mut view = View::default();
+        view.fit(&state, 1200., 800.);
+        assert!(view.zoom < 0.1);
+        for node in &state.nodes {
+            let p = view.position(node);
+            assert!(p.x * view.zoom + view.pan_x >= 79.);
+            assert!((p.x + WIDTH) * view.zoom + view.pan_x <= 1121.);
+        }
+    }
+
     #[test]
     fn search_keeps_spatial_navigation_on_matching_nodes() {
         let mut state = State::empty("/tmp".into());

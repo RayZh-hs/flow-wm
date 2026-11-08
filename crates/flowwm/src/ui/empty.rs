@@ -100,7 +100,7 @@ pub(super) fn draw(c: &Context, width: f64, height: f64, theme: &Theme, hover: O
             "Super + Space",
             105.0,
         ),
-        (Action::Chat, 318.0, 194.0, "Ask an agent", "Tab", 36.0),
+        (Action::Chat, 318.0, 194.0, "Ask an agent", "", 0.0),
     ] {
         let primary = action == Action::Create;
         canvas::rounded(c, x, BUTTON_Y, w, BUTTON_HEIGHT, theme.radius);

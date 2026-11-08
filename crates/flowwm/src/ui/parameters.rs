@@ -23,10 +23,13 @@ impl Fields {
         let mut setters: Vec<Apply> = vec![];
         if node.kind == NodeKind::Constant {
             let ty = graph::constant_type(node);
-            let types: Vec<_> = type_choices(state)
+            let mut types: Vec<_> = type_choices(state)
                 .into_iter()
                 .filter(|t| !t.is_signal())
                 .collect();
+            if !types.contains(&ty) {
+                types.push(ty.clone());
+            }
             let choice = type_choice(&types, &ty);
             field(&root, "Type", &choice);
             let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -99,6 +102,9 @@ impl Fields {
                 root.append(&hint);
             }
             let mut properties = std::collections::BTreeMap::new();
+            if node.kind == NodeKind::MergeSignal {
+                properties.insert("args".to_string(), (Type::record(), json!({})));
+            }
             if node.kind == NodeKind::Conditional {
                 properties.insert("condition".to_string(), (Type::Bool, json!(false)));
             }
@@ -233,9 +239,13 @@ pub fn value_editor(state: &State, ty: &Type, value: &Value) -> (gtk::Widget, Re
             let add = gtk::Button::with_label("Add field");
             root.append(&add);
             let st = state.clone();
-            let r = root.clone();
+            let r = root.downgrade();
             let rs = rows.clone();
-            add.connect_clicked(move |_| record_row(&r, &rs, &st, "", Type::String, &json!("")));
+            add.connect_clicked(move |_| {
+                if let Some(root) = r.upgrade() {
+                    record_row(&root, &rs, &st, "", Type::String, &json!(""));
+                }
+            });
         }
         return (
             root.upcast(),
@@ -268,10 +278,12 @@ pub fn value_editor(state: &State, ty: &Type, value: &Value) -> (gtk::Widget, Re
         let st = state.clone();
         let ty = *item.clone();
         let rs = reads.clone();
-        let rt = root.clone();
+        let rt = root.downgrade();
         add.connect_clicked(move |_| {
             let (w, r) = value_editor(&st, &ty, &default_value(&ty));
-            rt.append(&w);
+            if let Some(root) = rt.upgrade() {
+                root.append(&w);
+            }
             rs.borrow_mut().push(r);
         });
         return (
@@ -330,10 +342,12 @@ fn record_row(
     let remove = gtk::Button::with_label("−");
     line.append(&remove);
     let r = removed.clone();
-    let l = line.clone();
+    let l = line.downgrade();
     remove.connect_clicked(move |_| {
         r.set(true);
-        l.set_visible(false);
+        if let Some(line) = l.upgrade() {
+            line.set_visible(false);
+        }
     });
     root.append(&line);
     rows.borrow_mut().push((key, read, removed));
@@ -379,10 +393,14 @@ impl PinEditor {
         }
         let add = gtk::Button::with_label("Add pin");
         body.append(&add);
-        let b = body.clone();
+        let b = body.downgrade();
         let r = rows.clone();
         let t = types.clone();
-        add.connect_clicked(move |_| Self::append(&b, &r, &t, Pin::new("", Type::Any), false));
+        add.connect_clicked(move |_| {
+            if let Some(body) = b.upgrade() {
+                Self::append(&body, &r, &t, Pin::new("", Type::Any), false);
+            }
+        });
         Self {
             widget,
             rows,
@@ -414,10 +432,12 @@ impl PinEditor {
         let rm = gtk::Button::with_label("−");
         line.append(&rm);
         let r = removed.clone();
-        let l = line.clone();
+        let l = line.downgrade();
         rm.connect_clicked(move |_| {
             r.set(true);
-            l.set_visible(false);
+            if let Some(line) = l.upgrade() {
+                line.set_visible(false);
+            }
         });
         body.append(&line);
         rows.borrow_mut().push(PinRow {

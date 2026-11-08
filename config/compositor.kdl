@@ -1,6 +1,6 @@
 // FlowWM compositor preferences. The shortcut registry generates keybindings.kdl.
 input {
-    keyboard { xkb {} }
+    keyboard {}
     touchpad { tap; natural-scroll; }
 }
 layout {

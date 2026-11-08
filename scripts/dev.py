@@ -47,6 +47,8 @@ def main():
             elif name == "flowwm":
                 run(*cargo(name, "test"))
                 run(*cargo(name, "clippy", "--all-targets", "--", "-D", "warnings"))
+                run("python3", "-m", "unittest", "discover", "-s", "scripts", "-p", "test_install.py")
+                run("python3", "-m", "unittest", "discover", "-s", "extensions/agent-sessions")
             elif name == "niri":
                 run(*cargo(name, "test", "--lib", "node_rows"))
                 run(*cargo(name, "test", "--lib", "tests::layer_shell"))

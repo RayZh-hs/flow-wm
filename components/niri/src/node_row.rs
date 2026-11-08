@@ -31,7 +31,9 @@ pub(crate) struct NodeTile {
     pub mapped: bool,
     pub graph_focused: bool,
     configured_size: Size<i32, Logical>,
-    backdrops: std::cell::RefCell<std::collections::HashMap<u64, crate::render_helpers::solid_color::SolidColorBuffer>>,
+    backdrops: std::cell::RefCell<
+        std::collections::HashMap<u64, crate::render_helpers::solid_color::SolidColorBuffer>,
+    >,
 }
 
 niri_render_elements! {
@@ -171,7 +173,9 @@ impl<W: LayoutElement> Workspace<W> {
             Kind::Unspecified,
             &mut |elem| push(NodeRenderElement::Canvas(elem).into()),
         );
-        tile.backdrops.borrow_mut().retain(|id,_| tile.scene.windows.iter().any(|w| w.id == *id));
+        tile.backdrops
+            .borrow_mut()
+            .retain(|id, _| tile.scene.windows.iter().any(|w| w.id == *id));
         for entry in tile.scene.windows.iter().rev() {
             let Some(window) = self
                 .windows()
@@ -221,11 +225,32 @@ impl<W: LayoutElement> Workspace<W> {
                 let mut backdrops = tile.backdrops.borrow_mut();
                 let dim = backdrops.entry(entry.id).or_default();
                 dim.update(clip.size, [0.035, 0.04, 0.05, 0.72]);
-                push(NodeRenderElement::Dim(crate::render_helpers::solid_color::SolidColorRenderElement::from_buffer(dim, clip.loc, entry.opacity, Kind::Unspecified)).into());
+                push(
+                    NodeRenderElement::Dim(
+                        crate::render_helpers::solid_color::SolidColorRenderElement::from_buffer(
+                            dim,
+                            clip.loc,
+                            entry.opacity,
+                            Kind::Unspecified,
+                        ),
+                    )
+                    .into(),
+                );
                 if let Some(background) = ctx.xray {
-                    background.render(ctx.as_gles(), crate::render_helpers::background_effect::RenderParams {
-                        geometry: clip, subregion: None, clip: None, scale: self.scale().fractional_scale(),
-                    }, xray.offset(clip.loc), true, 0., 1., &mut |elem| push(NodeRenderElement::Blur(elem).into()));
+                    background.render(
+                        ctx.as_gles(),
+                        crate::render_helpers::background_effect::RenderParams {
+                            geometry: clip,
+                            subregion: None,
+                            clip: None,
+                            scale: self.scale().fractional_scale(),
+                        },
+                        xray.offset(clip.loc),
+                        true,
+                        0.,
+                        1.,
+                        &mut |elem| push(NodeRenderElement::Blur(elem).into()),
+                    );
                 }
             }
         }

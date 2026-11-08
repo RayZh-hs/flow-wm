@@ -34,6 +34,17 @@
   },
   {
     "keys": [
+      "Alt+Space"
+    ],
+    "action": "launcher",
+    "description": "Open Dux app search",
+    "scope": "global",
+    "command": [
+      "launcher"
+    ]
+  },
+  {
+    "keys": [
       "Mod+Shift+Space"
     ],
     "action": "search",
@@ -499,5 +510,62 @@
     "description": "Fullscreen window",
     "scope": "global",
     "niri": "fullscreen-window"
+  },
+  {
+    "keys": [
+      "Alt+1\u20269, 0"
+    ],
+    "action": "quick_select",
+    "description": "Select by index; hold Alt to show indices",
+    "scope": "gesture"
+  },
+  {
+    "keys": [
+      "Space+1\u20269, 0"
+    ],
+    "action": "toggle_connection",
+    "description": "Toggle connection with indexed node",
+    "scope": "gesture"
+  },
+  {
+    "keys": [
+      "Space+drag",
+      "Middle drag"
+    ],
+    "action": "pan_drag",
+    "description": "Pan the viewport",
+    "scope": "gesture"
+  },
+  {
+    "keys": [
+      "Ctrl/Shift+click"
+    ],
+    "action": "toggle_selection",
+    "description": "Include or exclude a node",
+    "scope": "gesture"
+  },
+  {
+    "keys": [
+      "Left drag"
+    ],
+    "action": "box_select",
+    "description": "Box select; Ctrl/Shift adds to selection",
+    "scope": "gesture"
+  },
+  {
+    "keys": [
+      "Right drag"
+    ],
+    "action": "cut_wires",
+    "description": "Cut connections",
+    "scope": "gesture"
+  },
+  {
+    "keys": [
+      "Scroll"
+    ],
+    "action": "zoom",
+    "description": "Zoom at the pointer",
+    "scope": "gesture"
   }
 ]

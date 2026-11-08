@@ -123,6 +123,10 @@ def run(root, runtime, process, application, environment):
     ui("open", id=window_node["id"])
     wait(lambda: any(w["id"] == live_window["id"] and w["is_focused"] for w in request(niri_socket, "Windows")["Windows"]), process)
     assert len(rows()) == 2, "expanding a client must preserve its native Nodes row"
+    ui("toggle")
+    wait(lambda: any(n["id"] == window_node["id"] and n["column_mode"] == "node" for n in catalog()["nodes"]), process)
+    assert len(rows()) == 2, "Win+Tab from a peek must return to Nodes before switching to Windows"
+    ui("open", id=window_node["id"])
     ui("fit")
     wait(lambda: not any(w["is_focused"] for w in request(niri_socket, "Windows")["Windows"]), process)
     capture_still(directory / "live-preview-canvas.png")
@@ -162,4 +166,11 @@ def run(root, runtime, process, application, environment):
     ui("fit")
     capture_still(directory / "typed-data-canvas.png")
     compositor_capture("typed-data-graph.png")
-    print("Native workspace smoke passed: row content, saved camera/selection, row-local unmapping, live previews, expanded-client focus, mixed overview rows, typed data evaluation/display, and no capture worker or screencasts.", flush=True)
+    ui("arrange")
+    wait(lambda: next(w for w in request(flow_socket, {"op": "status"})["workspaces"] if w["id"] == first["id"])["graph_arranged"], process)
+    capture_still(directory / "arranged-graph.png")
+    ui("edit", id=constant)
+    time.sleep(0.2)
+    capture_still(directory / "constant-parameters.png")
+    ui("dismiss")
+    print("Native workspace smoke passed: row content, saved camera/selection, row-local unmapping, live previews, expanded-client focus, mixed overview rows, typed data evaluation/display, peek exit, arrangement, typed constant controls, and no capture worker or screencasts.", flush=True)

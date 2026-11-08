@@ -2544,8 +2544,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
     }
 
     pub fn tiles_with_ipc_layouts(&self) -> impl Iterator<Item = (&Tile<W>, WindowLayout)> {
-        let positions = std::rc::Rc::new(self.tiles_with_render_positions()
-            .map(|(tile, pos, _)| (tile as *const Tile<W>, pos)).collect::<std::collections::HashMap<_, _>>());
+        let positions = std::rc::Rc::new(
+            self.tiles_with_render_positions()
+                .map(|(tile, pos, _)| (tile as *const Tile<W>, pos))
+                .collect::<std::collections::HashMap<_, _>>(),
+        );
         self.columns
             .iter()
             .enumerate()
@@ -2553,7 +2556,9 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 let positions = positions.clone();
                 col.tiles().enumerate().map(move |(tile_idx, (tile, _))| {
                     let layout = WindowLayout {
-                        tile_pos_in_workspace_view: positions.get(&(tile as *const Tile<W>)).map(|p| (p.x,p.y)),
+                        tile_pos_in_workspace_view: positions
+                            .get(&(tile as *const Tile<W>))
+                            .map(|p| (p.x, p.y)),
                         // Our indices are 1-based, consistent with the actions.
                         pos_in_scrolling_layout: Some((col_idx + 1, tile_idx + 1)),
                         ..tile.ipc_layout_template()

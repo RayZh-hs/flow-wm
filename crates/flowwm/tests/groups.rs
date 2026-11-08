@@ -419,3 +419,64 @@ fn native_column_membership_survives_reordering_and_separates_after_a_split() {
     );
     assert!(!groups::synchronize(&mut state, &desktop));
 }
+
+#[test]
+fn closing_in_windows_removes_dangling_edges_but_nodes_view_keeps_history() {
+    let mut state = State::empty("/tmp".into());
+    let mut desktop = desktop();
+    groups::synchronize(&mut state, &desktop);
+    let source = state
+        .nodes
+        .iter()
+        .find(|n| n.window_id == Some(1))
+        .unwrap()
+        .id
+        .clone();
+    let mut next = Node::new(
+        &state.selected_workspace,
+        NodeKind::Human,
+        "/tmp".into(),
+        Position::default(),
+    );
+    next.dependencies.push(source.clone());
+    next.flow
+        .inputs
+        .push(flowwm::graph::Pin::new("text", flowwm::graph::Type::String));
+    let target = next.id.clone();
+    state.nodes.push(next);
+    state.connections.push(flowwm::graph::Connection {
+        source: flowwm::graph::Endpoint {
+            node: source.clone(),
+            pin: "output".into(),
+        },
+        target: flowwm::graph::Endpoint {
+            node: target.clone(),
+            pin: "text".into(),
+        },
+    });
+    state.validate().unwrap();
+    desktop.windows.retain(|w| w.id != 1);
+    groups::synchronize(&mut state, &desktop);
+    assert!(state.node(&source).is_none());
+    assert!(state.node(&target).unwrap().dependencies.is_empty());
+    assert!(state.connections.is_empty());
+    let mut state = State::empty("/tmp".into());
+    let mut desktop = crate::desktop();
+    groups::synchronize(&mut state, &desktop);
+    state
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == state.selected_workspace)
+        .unwrap()
+        .view = RowView::Nodes;
+    let source = state
+        .nodes
+        .iter()
+        .find(|n| n.window_id == Some(1))
+        .unwrap()
+        .id
+        .clone();
+    desktop.windows.retain(|w| w.id != 1);
+    groups::synchronize(&mut state, &desktop);
+    assert!(state.node(&source).unwrap().closed_window());
+}

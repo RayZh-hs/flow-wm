@@ -31,6 +31,7 @@ fn progress(view: &View, node: &Node) -> f64 {
 }
 fn metadata<'a>(
     cache: &'a mut Cache,
+    state: &State,
     node: &Node,
     index: usize,
     view: &View,
@@ -69,6 +70,15 @@ fn metadata<'a>(
         }
         canvas::draw_node(&c, node, &Position::default(), false, &view.theme);
         drop(c);
+        if !node.closed_window() {
+            let c = meta.append_cairo(&graphene::Rect::new(
+                -8.,
+                -8.,
+                WIDTH as f32 + 16.,
+                node_height(node) as f32 + 16.,
+            ));
+            canvas::draw_pin_markers(&c, state, node, &Position::default(), &view.theme);
+        }
         if view.numbers && index < 10 {
             let c = meta.append_cairo(&graphene::Rect::new(WIDTH as f32 - 34.0, -14.0, 32.0, 28.0));
             canvas::rounded(&c, WIDTH - 32.0, -13.0, 28.0, 26.0, 8.0);
@@ -352,7 +362,7 @@ fn render_inner(
             snapshot.save();
             snapshot.translate(&graphene::Point::new(rect.x as f32, rect.y as f32));
             snapshot.scale(view.zoom as f32, view.zoom as f32);
-            snapshot.append_node(metadata(cache, node, index, view));
+            snapshot.append_node(metadata(cache, state, node, index, view));
             snapshot.restore();
             if selected || (!view.query.is_empty() && matching) {
                 snapshot.append_border(
@@ -426,7 +436,7 @@ fn render_inner(
             snapshot.translate(&graphene::Point::new(graph.x as f32, graph.y as f32));
             snapshot.scale(view.zoom as f32, view.zoom as f32);
             snapshot.push_opacity(((t - 0.6) / 0.4).clamp(0.0, 1.0));
-            snapshot.append_node(metadata(cache, node, index, view));
+            snapshot.append_node(metadata(cache, state, node, index, view));
             snapshot.pop();
             snapshot.restore();
         }

@@ -762,10 +762,22 @@ impl Shell {
             let Ok(recipe) = serde_json::from_value::<Recipe>(value["recipe"].clone()) else {
                 return;
             };
-            match shell.engine.request(Control::Paste {
-                recipe,
-                offset: Position { x: 40., y: 40. },
+            let state = shell.engine.snapshot().state;
+            let mut offset = Position { x: 40., y: 40. };
+            while recipe.nodes.iter().any(|copy| {
+                state.nodes.iter().any(|existing| {
+                    let p = shell.view.borrow().position(existing);
+                    existing.workspace == state.selected_workspace
+                        && copy.position.x + offset.x < p.x + canvas::WIDTH + 20.
+                        && copy.position.x + offset.x + canvas::WIDTH + 20. > p.x
+                        && copy.position.y + offset.y < p.y + canvas::node_height(existing) + 20.
+                        && copy.position.y + offset.y + canvas::node_height(copy) + 20. > p.y
+                })
             }) {
+                offset.x += 40.;
+                offset.y += 40.;
+            }
+            match shell.engine.request(Control::Paste { recipe, offset }) {
                 Ok(result) => {
                     let ids: Vec<String> =
                         serde_json::from_value(result["ids"].clone()).unwrap_or_default();
@@ -1618,10 +1630,26 @@ impl Shell {
         }
     }
     fn dms_launcher(&self, mode: Option<&str>) {
-        let query = mode.map(|mode| match mode {
-            "create" => "@ + ",
-            "recipes" => "@ # ",
-            _ => "@ ",
+        let query = mode.map(|mode| {
+            if mode == "connect" {
+                let state = self.engine.snapshot().state;
+                if let Some(node) = self
+                    .view
+                    .borrow()
+                    .selected
+                    .as_deref()
+                    .and_then(|id| state.node(id))
+                    && crate::graph::pins(&state, node, true).len() > 1
+                {
+                    return format!("@ {}: ", node.title);
+                }
+            }
+            match mode {
+                "create" => "@ + ",
+                "recipes" => "@ # ",
+                _ => "@ ",
+            }
+            .to_string()
         });
         let restore = self.graph_visible.get() || self.engine.presentation().lookup_return;
         self.engine.set_presentation(Presentation {
@@ -1640,7 +1668,7 @@ impl Shell {
             let mut command = std::process::Command::new("dms");
             command.args(["ipc", "call", "spotlight"]);
             if let Some(query) = query {
-                command.args(["openQuery", query]);
+                command.args(["openQuery", &query]);
             } else {
                 command.arg("toggle");
             }
@@ -1752,6 +1780,7 @@ impl Shell {
             UiCommand::Focus { id, expand } => self.focus_node(&id, expand),
             UiCommand::Search { mode } => {
                 if self.integrated {
+                    self.show_nodes();
                     self.dms_launcher(Some(&mode));
                 } else if mode == "create" {
                     self.palette();
@@ -1760,7 +1789,7 @@ impl Shell {
                 }
             }
             UiCommand::Launcher => {
-                if self.graph_visible.get() {
+                if !self.integrated && self.graph_visible.get() {
                     self.palette();
                 } else {
                     self.dms_launcher(None);
@@ -2378,8 +2407,11 @@ impl Shell {
         body.append(&save);
         popover.set_child(Some(&body));
         let weak = self.weak.clone();
-        let p = popover.clone();
+        let p = popover.downgrade();
         save.connect_clicked(move |_| {
+            let Some(p) = p.upgrade() else {
+                return;
+            };
             let Some(shell) = weak.upgrade() else { return };
             match read() {
                 Ok(value) => {
@@ -2651,7 +2683,7 @@ impl Shell {
         ));
         let config = crate::agent::Config::load()
             .map(|c| c.command)
-            .unwrap_or_else(|_| vec!["mycodex".into()]);
+            .unwrap_or_else(|_| vec!["codex".into()]);
         let command = entry(&serde_json::to_string(&config).unwrap());
         root.append(&command);
         let error = label("", "hint");
@@ -2667,10 +2699,7 @@ impl Shell {
                     !values.is_empty() && !values[0].is_empty(),
                     "Enter an executable"
                 );
-                let file = directories::BaseDirs::new()
-                    .context("Home directory unavailable")?
-                    .config_dir()
-                    .join("flowwm/agent.json");
+                let file = crate::config::directory().join("agent.json");
                 std::fs::create_dir_all(file.parent().unwrap())?;
                 std::fs::write(
                     file,
@@ -3366,6 +3395,15 @@ impl Shell {
         dialog.present();
     }
     fn help(&self) {
+        if let Some(window) = self
+            .app
+            .windows()
+            .into_iter()
+            .find(|w| w.title().as_deref() == Some("FlowWM shortcuts"))
+        {
+            window.present();
+            return;
+        }
         let dialog = self.dialog("FlowWM shortcuts", 650, 720);
         let root = column(18);
         root.add_css_class("dialog-body");

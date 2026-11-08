@@ -9,7 +9,7 @@ const HISTORY_STEP: f64 = 320.0;
 const HISTORY_ROW: f64 = 100.0;
 const SECTION_GAP: f64 = 60.0;
 
-type Key = (String, i32, i32, Vec<(String, Option<u64>)>);
+type Key = (String, bool, i32, i32, Vec<(String, Option<u64>)>);
 
 #[derive(Clone, Default)]
 pub struct Arrangement {
@@ -25,6 +25,7 @@ impl Arrangement {
     fn key(state: &State, width: i32, height: i32) -> Key {
         (
             state.selected_workspace.clone(),
+            state.workspace().graph_arranged,
             width,
             height,
             state
@@ -247,6 +248,38 @@ mod tests {
             state.nodes.push(node);
         }
         state
+    }
+
+    #[test]
+    fn arranging_persists_and_replaces_the_live_window_offsets() {
+        let mut state = scene(2, 0);
+        let source = state.nodes[0].id.clone();
+        state.nodes[1].dependencies.push(source);
+        let mut layout = Arrangement::default();
+        layout.update(&state, 1200, 800);
+        let positions = arrange(&state);
+        state.workspaces[0].graph_arranged = true;
+        for (id, p) in positions {
+            state.node_mut(&id).unwrap().position = p;
+        }
+        assert!(layout.changed(&state, 1200, 800));
+        layout.update(&state, 1200, 800);
+        for node in &state.nodes {
+            let p = layout.position(node);
+            assert_eq!((p.x, p.y), (node.position.x, node.position.y));
+        }
+        assert!(
+            state.nodes[1].position.y
+                > state.nodes[0].position.y + super::super::canvas::node_height(&state.nodes[0])
+        );
+        let serialized = serde_json::to_string(&state).unwrap();
+        let restored: State = serde_json::from_str(&serialized).unwrap();
+        let mut layout = Arrangement::default();
+        layout.update(&restored, 1200, 800);
+        assert_eq!(
+            layout.position(&restored.nodes[1]).y,
+            state.nodes[1].position.y
+        );
     }
 
     #[test]

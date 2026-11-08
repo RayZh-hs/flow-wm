@@ -49,3 +49,30 @@ test('an empty catalog still provides a graph and creation entry', () => {
     assert.equal(results.length, 2);
     assert.equal(results[0].id, 'flowwm:graph');
 });
+
+const linked = {
+    nodes: [{id:'display',title:'Read value'}], macros:[{id:'script',name:'Script'}],
+    lookup: {node:'source',title:'Source',outputs:[
+        {name:'number',ty:'Int',targets:[{id:'display',input:'value',create:false},{id:'script',input:'a',create:true},{id:'script',input:'b',create:true}]},
+        {name:'finished',ty:'Signal',targets:[]}
+    ]}
+};
+const connections = (catalog, query='', output='', target='') => JSON.parse(JSON.stringify(context.connectionItems(catalog,query,output,target)));
+test('connection search traverses outputs, compatible nodes, and ambiguous inputs', () => {
+    assert.deepEqual(connections(linked,'Source:').map(i=>i.name),['number','finished']);
+    const nodes=connections(linked,'','number');
+    assert.equal(nodes.find(i=>i.id==='macro:script').flowwmLayer.target,'macro:script');
+    assert.equal(JSON.parse(nodes.find(i=>i.id==='node:display:value').flowwmArgs[1]).connection.target.pin,'value');
+    const pins=connections(linked,'','number','macro:script');
+    assert.deepEqual(pins.filter(i=>i.id!=='back').map(i=>i.name),['a','b']);
+    const command=JSON.parse(pins.find(i=>i.name==='b').flowwmArgs[1]).command;
+    assert.equal(command.source.pin,'number');
+    assert.equal(command.input,'b');
+    assert.equal(command.action,'create_connected');
+});
+test('a single output skips output selection and incompatible nodes stay absent', () => {
+    const single=JSON.parse(JSON.stringify(linked));single.lookup.outputs=single.lookup.outputs.slice(0,1);
+    assert.ok(connections(single).some(i=>i.name==='Read value'));
+    assert.equal(connections(single).some(i=>i.name==='finished'),false);
+    assert.deepEqual(connections(linked,'missing','number').map(i=>i.id),['back']);
+});

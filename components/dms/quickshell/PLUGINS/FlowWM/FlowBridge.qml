@@ -56,6 +56,22 @@ Scope {
             Qt.callLater(() => { if (!root.launcherOpen && !root.selectionInProgress && root.catalog.presentation?.lookup_return) root.action("resume_lookup"); });
     }
 
+    onOnlineChanged: { if (online) Qt.callLater(() => root.installWidget()); }
+
+    function installWidget() {
+        const bar = SettingsData.barConfigs.find(bar => bar.enabled !== false);
+        if (!bar)
+            return "NO_ENABLED_BAR";
+        const widgets = (bar.leftWidgets || []).slice();
+        const widgetId = widget => typeof widget === "string" ? widget : widget.id;
+        if (widgets.some(widget => widgetId(widget) === "flowwm"))
+            return "CONFIGURED";
+        const index = widgets.findIndex(widget => widgetId(widget) === "workspaceSwitcher");
+        widgets.splice(index < 0 ? 1 : index + 1, 0, "flowwm");
+        SettingsData.updateBarConfig(bar.id, { leftWidgets: widgets });
+        return "CONFIGURED";
+    }
+
     function connectChannel() {
         if (channel) channel.destroy();
         channel = null;
@@ -127,17 +143,7 @@ Scope {
             return JSON.stringify(launcher ? launcher.getItems(query) : []);
         }
         function installWidget(): string {
-            const bar = SettingsData.barConfigs.find(bar => bar.enabled !== false);
-            if (!bar)
-                return "NO_ENABLED_BAR";
-            const widgets = (bar.leftWidgets || []).slice();
-            const widgetId = widget => typeof widget === "string" ? widget : widget.id;
-            if (widgets.some(widget => widgetId(widget) === "flowwm"))
-                return "CONFIGURED";
-            const index = widgets.findIndex(widget => widgetId(widget) === "workspaceSwitcher");
-            widgets.splice(index < 0 ? 1 : index + 1, 0, "flowwm");
-            SettingsData.updateBarConfig(bar.id, { leftWidgets: widgets });
-            return "CONFIGURED";
+            return root.installWidget();
         }
     }
 }
