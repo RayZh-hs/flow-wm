@@ -112,3 +112,11 @@ test('dragging an input reverses existing edges and new source nodes', () => {
     assert.equal(command.source.node, 'source');
     assert.equal(command.input, 'a');
 });
+
+test('application creation is available from ordinary and create searches', () => {
+    const input = {...catalog, macros:[{id:'window',name:'Application window',description:'Choose an application',kind:'window'}]};
+    for (const query of ['application', '+ application']) {
+        const result = context.items(input, query, labels);
+        assert.deepEqual(Array.from(result[0].flowwmArgs), ['create','window']);
+    }
+});

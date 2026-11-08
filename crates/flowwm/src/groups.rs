@@ -174,7 +174,16 @@ pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
                 state.nodes.iter().position(|n| {
                     n.kind == NodeKind::Window
                         && n.window_id.is_none()
-                        && n.window_match.as_ref() == Some(&key)
+                        && (n.window_match.as_ref() == Some(&key)
+                            || (n.workspace == group_id
+                                && n.flow
+                                    .properties
+                                    .get("application")
+                                    .and_then(serde_json::Value::as_str)
+                                    .is_some_and(|id| {
+                                        window.app_id.as_deref()
+                                            == Some(id.trim_end_matches(".desktop"))
+                                    })))
                 })
             })
             .or_else(|| {

@@ -555,3 +555,28 @@ fn closing_in_windows_removes_dangling_edges_but_nodes_view_keeps_history() {
     groups::synchronize(&mut state, &desktop);
     assert!(state.node(&source).unwrap().closed_window());
 }
+
+#[test]
+fn application_selection_binds_the_launched_window_to_the_configured_node() {
+    let mut state = State::empty("/tmp".into());
+    let mut desktop = desktop();
+    desktop.windows.clear();
+    groups::synchronize(&mut state, &desktop);
+    let mut app = Node::new(
+        &state.selected_workspace,
+        NodeKind::Window,
+        "/tmp".into(),
+        Position { x: 500., y: 300. },
+    );
+    app.flow.properties.insert(
+        "application".into(),
+        serde_json::json!("test.editor.desktop"),
+    );
+    let id = app.id.clone();
+    state.nodes.push(app);
+    desktop.windows.push(window(7, 10, "A document"));
+    groups::synchronize(&mut state, &desktop);
+    assert_eq!(state.nodes.len(), 1);
+    assert_eq!(state.node(&id).unwrap().window_id, Some(7));
+    assert_eq!(state.node(&id).unwrap().position.x, 500.);
+}

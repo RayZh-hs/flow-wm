@@ -1846,6 +1846,12 @@ impl Shell {
                     self.show_nodes();
                 }
             }
+            UiCommand::CreateApplication { id, name } => {
+                if let Some(index) = self.macros.iter().position(|m| m.id == "window") {
+                    self.show_nodes();
+                    self.create_macro_with_application(index, Some((id, name)));
+                }
+            }
             UiCommand::CreateMacro { id } => {
                 if let Some(index) = self.macros.iter().position(|m| m.id == id) {
                     self.show_nodes();
@@ -2861,6 +2867,9 @@ impl Shell {
         search.grab_focus();
     }
     fn create_macro(&self, index: usize) {
+        self.create_macro_with_application(index, None);
+    }
+    fn create_macro_with_application(&self, index: usize, application: Option<(String, String)>) {
         let Some(m) = self.macros.get(index) else {
             return;
         };
@@ -2898,6 +2907,12 @@ impl Shell {
         node.title = m.name.clone();
         node.command = m.command.clone();
         node.flow = m.flow.clone();
+        if let Some((id, name)) = application {
+            node.title = name;
+            node.flow
+                .properties
+                .insert("application".into(), serde_json::json!(id));
+        }
         if matches!(m.kind, NodeKind::Agent | NodeKind::Shell | NodeKind::Gate)
             && let Some(selected) = view.selected.as_ref()
         {
@@ -3003,7 +3018,14 @@ impl Shell {
             field(&root, "Unit", &unit);
         }
         let window_choice = Choice::new();
-        if node.kind == NodeKind::Window {
+        if let Some(application) = node
+            .flow
+            .properties
+            .get("application")
+            .and_then(serde_json::Value::as_str)
+        {
+            field(&root, "Application", &label(application, "muted"));
+        } else if node.kind == NodeKind::Window {
             for window in &self.desktop.lock().unwrap().windows {
                 window_choice.append(
                     Some(&window_selector(window)),
@@ -3050,7 +3072,9 @@ impl Shell {
             node.review = review.is_active();
             node.metric.interval_secs = interval.value() as u64;
             node.metric.unit = unit.text().to_string();
-            node.window_match = window_choice.active_id().map(|s| s.to_string());
+            if !node.flow.properties.contains_key("application") {
+                node.window_match = window_choice.active_id().map(|s| s.to_string());
+            }
             // Preserve graph edits made while the parameters were open.
             if let Some(current) = s.engine.snapshot().state.node(&node.id) {
                 node.dependencies = current.dependencies.clone();

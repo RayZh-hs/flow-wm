@@ -72,7 +72,7 @@ pub fn builtins() -> Vec<Macro> {
             flow: Default::default(),
             id: "window".into(),
             name: "Application window".into(),
-            description: "Represent a Niri window in the graph".into(),
+            description: "Choose an application to launch from the graph".into(),
             kind: NodeKind::Window,
             command: String::new(),
         },

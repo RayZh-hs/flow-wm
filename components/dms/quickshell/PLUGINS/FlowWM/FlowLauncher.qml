@@ -50,6 +50,13 @@ Scope {
             itemsChanged();
             return { keepOpen: true, query: "@ " + (!outputName && catalog.lookup.outputs.length > 1 ? catalog.lookup.title + ": " : "") };
         }
+        if (item?.flowwmArgs?.[0] === "create" && item.flowwmArgs[1] === "window") {
+            return { keepOpen: true, query: "", selectApplication: app => {
+                bridge?.completeSelection();
+                const request = { op: "ui", command: { action: "create_application", id: app.id, name: app.name } };
+                Qt.callLater(() => bridge?.command(["send", JSON.stringify(request)]));
+            } };
+        }
         if (!item?.flowwmArgs) return;
         bridge?.completeSelection();
         const args = item.flowwmArgs.slice();

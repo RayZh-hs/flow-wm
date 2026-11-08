@@ -67,6 +67,10 @@ pub enum UiCommand {
         id: String,
         expand: bool,
     },
+    CreateApplication {
+        id: String,
+        name: String,
+    },
     CreateMacro {
         id: String,
     },
@@ -1511,7 +1515,9 @@ impl Runtime {
             );
             return Ok(());
         }
-        if matches!(node.kind, NodeKind::Human | NodeKind::Window) {
+        if node.kind == NodeKind::Human
+            || (node.kind == NodeKind::Window && !node.flow.properties.contains_key("application"))
+        {
             node.log("system", "Your work is active. Mark it done when ready.");
             return Ok(());
         }
@@ -1520,7 +1526,17 @@ impl Runtime {
         if agent && context.is_none() {
             std::fs::write(&schema_path, AGENT_SCHEMA)?;
         }
-        let mut command = if context.is_some() {
+        let mut command = if let Some(application) = node
+            .flow
+            .properties
+            .get("application")
+            .and_then(Value::as_str)
+            .filter(|_| node.kind == NodeKind::Window)
+        {
+            let mut command = Command::new("gtk-launch");
+            command.arg(application);
+            command
+        } else if context.is_some() {
             crate::agent::Config::load()?.process(node)
         } else if agent {
             let mut c = Command::new("codex");

@@ -67,8 +67,9 @@ function items(catalog, query, labels) {
             add("node:" + node.id, node.title, description, ({ agent: "smart_toy", shell: "terminal", metric: "monitoring", gate: "rule", human: "edit_note", window: "window" })[node.kind] || "account_tree", args, mode === "open" ? labels.expand : labels.reveal);
         });
     }
-    if (mode === "create") {
+    if (mode === "create" || (mode === "nodes" && query)) {
         (catalog.macros || []).forEach(function (macro) {
+            if (mode !== "create" && macro.kind !== "window") return;
             add("macro:" + macro.id, macro.name, macro.description, "add_circle", ["create", macro.id], labels.create);
         });
     }

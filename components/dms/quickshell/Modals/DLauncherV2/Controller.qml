@@ -40,6 +40,7 @@ Item {
     property string viewModeContext: "spotlight"
     property bool forceLinearNavigation: false
     property bool explicitQuerySession: false
+    property var applicationSelection: null
 
     // dmenu mode items
     // come from a socket opened by `dms dmenu`, not from AppSearchService
@@ -186,6 +187,7 @@ Item {
         } else {
             SessionData.addLauncherHistory(searchQuery, explicitQuerySession);
         }
+        applicationSelection = null;
         _cancelSearch();
         selectedFlatIndex = -1;
         selectedItem = null;
@@ -694,6 +696,7 @@ Item {
     }
 
     function reset() {
+        applicationSelection = null;
         _cancelSearch();
         searchQuery = "";
         searchMode = "all";
@@ -2696,6 +2699,14 @@ Item {
 
         switch (item.type) {
         case "app":
+            if (applicationSelection) {
+                const entry = !item.isCore && !item.data?.isAction ? _resolveDesktopEntry(item.data) : null;
+                if (!entry) return;
+                const choose = applicationSelection;
+                applicationSelection = null;
+                choose(entry);
+                break;
+            }
             if (item.isCore) {
                 AppSearchService.executeCoreApp(item.data);
             } else if (item.data?.isAction) {
@@ -2710,6 +2721,10 @@ Item {
             } else {
                 const result = AppSearchService.executePluginItem(item.data, item.pluginId);
                 if (result?.keepOpen) {
+                    if (typeof result.selectApplication === "function") {
+                        applicationSelection = result.selectApplication;
+                        setMode("apps", false, undefined, true);
+                    }
                     searchQueryRequested(result.query ?? searchQuery);
                     return;
                 }
