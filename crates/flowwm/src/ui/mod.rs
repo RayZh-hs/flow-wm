@@ -2,6 +2,7 @@ mod canvas;
 mod collapse;
 mod empty;
 mod gpu;
+mod keybindings;
 mod layout;
 mod native;
 mod parameters;

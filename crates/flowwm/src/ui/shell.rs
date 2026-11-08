@@ -521,7 +521,7 @@ impl Shell {
         ws_navigation.append(&workspace_title);
         ws_navigation.append(&next);
         footer_box.set_center_widget(Some(&ws_navigation));
-        let help_button = gtk::Button::with_label("?  Shortcuts");
+        let help_button = gtk::Button::with_label("?  Key bindings");
         help_button.add_css_class("flat");
         footer_box.set_end_widget(Some(&help_button));
         let error = label("", "error-banner");
@@ -3321,45 +3321,16 @@ impl Shell {
             .app
             .windows()
             .into_iter()
-            .find(|w| w.title().as_deref() == Some("FlowWM shortcuts"))
+            .find(|w| w.title().as_deref() == Some("Key bindings"))
         {
             window.present();
             return;
         }
-        let dialog = self.dialog("FlowWM shortcuts", 650, 720);
-        let root = column(18);
-        root.add_css_class("dialog-body");
-        root.append(&label("Stay in your flow.", "dialog-title"));
-        for shortcut in crate::config::shortcuts() {
-            let keys = shortcut
-                .keys
-                .join(" / ")
-                .replace("<Control>", "Ctrl+")
-                .replace("<Shift>", "Shift+")
-                .replace("<Alt>", "Alt+")
-                .replace("Mod+", "Win+");
-            let key = keys.as_str();
-            let description = format!(
-                "{}{}",
-                shortcut.description,
-                if shortcut.scope == "global" {
-                    " · both views"
-                } else {
-                    ""
-                }
-            );
-            let action = description.as_str();
-            let line = row(24);
-            let k = label(key, "shortcut");
-            k.set_width_chars(24);
-            line.append(&k);
-            let a = label(action, "muted");
-            a.set_wrap(true);
-            line.append(&a);
-            root.append(&line);
-        }
-        dialog.set_child(Some(&gtk::ScrolledWindow::builder().child(&root).build()));
+        let dialog = self.dialog("Key bindings", 800, 640);
+        let (root, search) = super::keybindings::content(crate::config::shortcuts());
+        dialog.set_child(Some(&root));
         dialog.present();
+        search.grab_focus();
     }
     fn dialog(&self, title: &str, width: i32, height: i32) -> gtk::Window {
         let dialog = gtk::Window::builder()

@@ -46,7 +46,7 @@ flowwm-session describe                          # inspect selected paths and bi
 
 ## Keyboard and mouse
 
-**Win** is niri's `Mod` key. **Win+?** opens FlowWM's shortcut help in either view; **?** opens the same help from the graph. Help comes from the same [registry](../config/keybindings.json) that defines graph shortcuts and generates compositor bindings.
+**Win** is niri's `Mod` key. **Win+?** opens the searchable **Key bindings** window in either view; **?** opens the same help from the graph. Help comes from the same [registry](../config/keybindings.json) that defines graph shortcuts and generates compositor bindings.
 
 | Shortcut | Action |
 | --- | --- |

@@ -77,3 +77,9 @@ dropdown button { border: 1px solid @flow_outline; background: @flow_surface_hig
 .chat-status { font-size: 12px; color: @flow_muted; }
 .chat-transcript, .chat-transcript text { background: @flow_surface_low; color: @flow_text; }
 .chat-transcript { padding: 8px 2px; font-size: 13px; }
+
+.keybindings { background: transparent; }
+.keybindings > row { border-bottom: 1px solid alpha(@flow_outline, 0.3); }
+.binding-row { padding: 12px 0; }
+.keycap { font-family: monospace; font-size: 11px; color: @flow_primary; background: @flow_surface_high; border: 1px solid alpha(@flow_outline, 0.65); border-radius: 6px; padding: 4px 8px; }
+.binding-scope { font-size: 10px; color: alpha(@flow_muted, 0.7); padding-top: 5px; }

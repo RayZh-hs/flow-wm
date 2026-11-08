@@ -69,7 +69,7 @@
       "Mod+Shift+slash"
     ],
     "action": "help",
-    "description": "Show FlowWM shortcuts",
+    "description": "Show key bindings",
     "scope": "global",
     "command": [
       "send",
@@ -216,7 +216,7 @@
       "question"
     ],
     "action": "help",
-    "description": "Show shortcuts",
+    "description": "Show key bindings",
     "scope": "graph"
   },
   {
