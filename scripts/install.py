@@ -12,7 +12,11 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-REPLACE_SERVICES = ("flowwm.service", "flowwm-dms.service")
+REPLACE_SERVICES = ("flowwm.service", "flowwm-dms.service", "flowwm-agent-sessions.service")
+
+
+def services_for(bundle):
+    return REPLACE_SERVICES if (Path(bundle) / "extensions/agent-sessions/agent_sessions.py").is_file() else REPLACE_SERVICES[:2]
 
 
 def run(*arguments, **kwargs):
@@ -68,7 +72,12 @@ def prepare_profile(config, state, cache, bundle, user_config, user_state, user_
         atomic_text(niri_config, (ROOT / "config/compositor.kdl").read_text())
     registry = config / "keybindings.json"
     if not registry.exists():
-        atomic_text(registry, (ROOT / "config/keybindings.json").read_text())
+        defaults = json.loads((ROOT / "config/keybindings.json").read_text())
+        terminal = next((name for name in (os.environ.get("TERMINAL", ""), "foot", "alacritty", "kitty", "konsole", "gnome-terminal", "xterm") if name and shutil.which(name)), "foot")
+        for binding in defaults:
+            if binding.get("niri") == 'spawn "foot"':
+                binding["niri"] = "spawn " + json.dumps(terminal)
+        atomic_text(registry, json.dumps(defaults, indent=2) + "\n")
     bindings = json.loads(registry.read_text())
     lines = ["// Generated from keybindings.json by the FlowWM installer.", "binds {"]
     used = set()
@@ -77,9 +86,6 @@ def prepare_profile(config, state, cache, bundle, user_config, user_state, user_
         if binding.get("scope") != "global":
             continue
         command = binding.get("niri")
-        if command == 'spawn "foot"':
-            terminal = next((name for name in (os.environ.get("TERMINAL", ""), "foot", "alacritty", "kitty", "konsole", "gnome-terminal", "xterm") if name and shutil.which(name)), "foot")
-            command = "spawn " + json.dumps(terminal)
         if not command:
             command = "spawn " + " ".join(json.dumps(arg) for arg in [flowwm, *binding["command"]])
         for key in binding["keys"]:
@@ -137,7 +143,7 @@ WorkingDirectory={user_home}
     atomic_text(units / "flowwm-session.target", '''[Unit]
 Description=FlowWM desktop session
 Requires=flowwm-compositor.service
-Wants=flowwm.service flowwm-dms.service
+Wants=flowwm.service flowwm-dms.service flowwm-agent-sessions.service
 After=flowwm-compositor.service graphical-session.target
 PartOf=graphical-session.target
 ''')
@@ -158,6 +164,18 @@ Restart=on-failure
 RestartSec=2
 TimeoutStopSec=8
 ''')
+    atomic_text(units / "flowwm-agent-sessions.service", f'''[Unit]
+Description=FlowWM terminal session extension
+PartOf=graphical-session.target flowwm-session.target
+After=flowwm.service
+Requisite=flowwm-compositor.service
+
+[Service]
+Type=simple
+ExecStart={command} agent-sessions
+Restart=on-failure
+RestartSec=2
+''')
     # Niri keeps its original DMS service; FlowWM has a separate DMS service.
     atomic_text(units / "dms.service.d/flowwm-isolation.conf", '''[Service]
 ExecCondition=/bin/sh -c "! /usr/bin/systemctl --user --quiet is-active flowwm-compositor.service"
@@ -166,7 +184,7 @@ ExecCondition=/bin/sh -c "! /usr/bin/systemctl --user --quiet is-active flowwm-c
     if link.is_symlink():
         run("systemctl", "--user", "disable", "flowwm.service")
     run("systemctl", "--user", "daemon-reload")
-    run("systemd-analyze", "--user", "verify", "flowwm-compositor.service", "flowwm.service", "flowwm-dms.service", "flowwm-session.target", "dms.service")
+    run("systemd-analyze", "--user", "verify", "flowwm-compositor.service", "flowwm.service", "flowwm-dms.service", "flowwm-session.target", "flowwm-agent-sessions.service", "dms.service")
 
 
 def service_pid(unit):
@@ -194,7 +212,7 @@ def running_session():
 def verify_services(bundle, compositor_pid):
     if service_pid("flowwm-compositor.service") != compositor_pid:
         raise RuntimeError("The compositor changed while the services were reloading")
-    for unit in REPLACE_SERVICES:
+    for unit in services_for(bundle):
         pid = service_pid(unit)
         if not pid:
             raise RuntimeError(f"{unit} did not start")
@@ -213,14 +231,14 @@ def replace_session(bundle, session):
         # Stop both services before the DMS launcher repoints its plugin to the new shell.
         run("systemctl", "--user", "stop", *REPLACE_SERVICES)
         run("systemctl", "--user", "set-environment", "FLOWWM_INSTALL_ROOT=" + str(bundle))
-        run("systemctl", "--user", "start", *REPLACE_SERVICES)
+        run("systemctl", "--user", "start", *services_for(bundle))
         verify_services(bundle, session[0])
     except BaseException as error:
         print("Replacement failed; restoring the previous FlowWM and DMS snapshot.", flush=True)
         try:
             run("systemctl", "--user", "stop", *REPLACE_SERVICES)
             run("systemctl", "--user", "set-environment", "FLOWWM_INSTALL_ROOT=" + previous)
-            run("systemctl", "--user", "start", *REPLACE_SERVICES)
+            run("systemctl", "--user", "start", *services_for(previous))
             verify_services(previous, session[0])
         except BaseException as recovery:
             raise RuntimeError(f"Replacement failed ({error}); restoring the previous services also failed ({recovery}). "
@@ -288,6 +306,8 @@ def main():
         shutil.copytree(ROOT / "components/dms/quickshell", bundle / "shell", symlinks=False,
                         ignore=shutil.ignore_patterns(".git", ".github", "tests", "__pycache__"))
         shutil.copy2(ROOT / "scripts/session.py", bundle / "session.py")
+        if (ROOT / "extensions").is_dir():
+            shutil.copytree(ROOT / "extensions", bundle / "extensions", ignore=shutil.ignore_patterns("__pycache__", "test_*.py"))
         profile = user_config / "flow-wm"
         config = profile
         state = user_state / "flow-wm"
@@ -298,6 +318,9 @@ def main():
         atomic_text(bundle / "installation.json", json.dumps(metadata, indent=2) + "\n")
         launcher = user_home / ".local/bin/flowwm-session"
         prepare_profile(config, state, cache, bundle, user_config, user_state, user_cache, launcher)
+        desktop_template = ROOT / "config/flowwm.desktop.in"
+        if desktop_template.is_file():
+            atomic_text(config / "flowwm.desktop", desktop_template.read_text().replace("@SESSION@", json.dumps(str(launcher))))
         wrapper = '#!/usr/bin/env python3\nimport os, sys\nfrom pathlib import Path\np=Path(__file__).resolve().parents[1]/"session.py"\nos.execv(sys.executable,[sys.executable,str(p),"dms-cli",*sys.argv[1:]])\n'
         atomic_text(bundle / "bin/dms", wrapper, 0o755)
         run(bundle / "bin/niri", "validate", "--config", config / "config.kdl")

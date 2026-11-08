@@ -1,0 +1,73 @@
+{
+  "version": 2,
+  "types": [
+    {
+      "name": "Error",
+      "representation": {
+        "kind": "record",
+        "fields": {
+          "code": {
+            "kind": "int"
+          },
+          "kind": {
+            "kind": "string"
+          },
+          "message": {
+            "kind": "string"
+          }
+        },
+        "open": false
+      }
+    }
+  ],
+  "nodes": [
+    {
+      "id": "agent_sessions.handle_error",
+      "name": "Handle session error",
+      "inputs": [
+        {
+          "name": "in",
+          "ty": {
+            "kind": "signal",
+            "args": {
+              "ERROR": {
+                "kind": "named",
+                "name": "Error"
+              }
+            },
+            "open": true
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "success",
+          "ty": {
+            "kind": "signal",
+            "args": {
+              "ERROR": {
+                "kind": "named",
+                "name": "Error"
+              }
+            },
+            "open": true
+          }
+        },
+        {
+          "name": "error",
+          "ty": {
+            "kind": "signal",
+            "args": {
+              "ERROR": {
+                "kind": "named",
+                "name": "Error"
+              }
+            },
+            "open": true
+          }
+        }
+      ],
+      "source": "if (args.ERROR.code == 0) { { success = args, } } else { { error = args, } }"
+    }
+  ]
+}

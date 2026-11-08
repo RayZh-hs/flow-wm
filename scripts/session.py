@@ -25,7 +25,11 @@ def environment(profile=False):
     result["FLOWWM_SESSION"] = "1"
     result["FLOWWM_CONFIG_DIR"] = data["config"]
     result["FLOWWM_INSTALL_ROOT"] = str(ROOT)
-    result["PATH"] = str(ROOT / "bin") + os.pathsep + result.get("PATH", "")
+    adapters = ROOT / "extensions/agent-sessions/bin"
+    paths = [str(ROOT / "bin")]
+    if adapters.is_dir() and result.get("FLOWWM_AGENT_SESSIONS") != "0":
+        paths.insert(0, str(adapters))
+    result["PATH"] = os.pathsep.join(paths + [result.get("PATH", "")])
     if profile:
         result.update({"XDG_CONFIG_HOME": data["config"], "XDG_STATE_HOME": data["state"],
                        "XDG_CACHE_HOME": data["cache"], "DMS_SHELL_DIR": str(ROOT / "shell")})
@@ -38,6 +42,8 @@ def command(kind, arguments=()):
         return [str(ROOT / "bin/niri"), "--config", str(Path(data["config"]) / "config.kdl"), "--session"]
     if kind == "shell":
         return [str(ROOT / "bin/flowwm"), "--data-dir", data["workflow_data"], "start", "--dms", "--background"]
+    if kind == "agent-sessions":
+        return [sys.executable, str(ROOT / "extensions/agent-sessions/agent_sessions.py"), "watch"]
     if kind == "dms":
         return [str(ROOT / "bin/dms.real"), "run", "--session"]
     if kind == "dms-cli":
@@ -93,7 +99,7 @@ def main():
             raise RuntimeError(f"FlowWM's private plugin slot is not a symlink: {plugin}")
         plugin.symlink_to(target, target_is_directory=True)
     argv = command(kind, arguments)
-    os.execvpe(argv[0], argv, environment(profile=kind != "compositor"))
+    os.execvpe(argv[0], argv, environment(profile=kind in ("shell", "dms", "dms-cli")))
 
 
 if __name__ == "__main__":

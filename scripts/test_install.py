@@ -53,6 +53,9 @@ class ProfileIsolation(unittest.TestCase):
             installer.prepare_profile(config, root / 'state', root / 'cache', root / 'bundle', root / 'missing-config', root / 'missing-state', root / 'missing-cache', root / 'bin/flowwm-session')
             self.assertTrue((config / 'config.kdl').is_file())
             self.assertTrue((config / 'keybindings.kdl').is_file())
+            compositor = installer.ROOT / 'target/niri/debug/niri'
+            if compositor.is_file():
+                subprocess.run([str(compositor), 'validate', '--config', str(config / 'config.kdl')], check=True, capture_output=True)
             self.assertFalse((config / 'niri/config.kdl').exists())
             self.assertEqual(json.loads((config / 'dms/plugin_settings.json').read_text())['flowwm']['enabled'], True)
 
@@ -157,6 +160,16 @@ class ReplaceSession(unittest.TestCase):
             self.assertNotIn('flowwm-compositor.service', command)
             self.assertNotIn('niri.service', command)
             self.assertNotIn('dms.service', command)
+
+    def test_extension_adopts_the_snapshot_and_old_snapshot_rollback_skips_it(self):
+        extension = self.new / 'extensions/agent-sessions/agent_sessions.py'
+        extension.parent.mkdir(parents=True)
+        extension.touch()
+        installer.replace_session(self.new, installer.running_session())
+        self.assertIn('flowwm-agent-sessions.service', self.pids)
+        self.assertEqual(installer.services_for(self.old), installer.REPLACE_SERVICES[:2])
+        installer.replace_session(self.old, installer.running_session())
+        self.assertNotIn('flowwm-agent-sessions.service', self.pids)
 
     def test_partial_start_failure_restores_previous_services_and_pin(self):
         self.failed_roots.add(str(self.new))

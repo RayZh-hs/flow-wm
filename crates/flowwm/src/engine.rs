@@ -115,6 +115,10 @@ pub enum Control {
     Pins {
         id: String,
     },
+    ExposeOutput {
+        id: String,
+        pin: crate::graph::Pin,
+    },
     PublishProperties {
         id: String,
         properties: crate::graph::Record,
@@ -654,6 +658,7 @@ impl Runtime {
                         | Control::Instantiate { .. }
                         | Control::Paste { .. }
                         | Control::PublishProperties { .. }
+                        | Control::ExposeOutput { .. }
                         | Control::ClearHistory
                 ),
                 "Stop the active graph evaluation before editing its nodes or connections"
@@ -704,6 +709,14 @@ impl Runtime {
                 return Ok(
                     json!({"inputs":crate::graph::pins(&self.state, node, false), "outputs":crate::graph::pins(&self.state, node, true)}),
                 );
+            }
+            Control::ExposeOutput { id, pin } => {
+                let mut candidate = self.state.clone();
+                let node = candidate.node_mut(&id).context("Node not found")?;
+                node.flow.outputs.retain(|p| p.name != pin.name);
+                node.flow.outputs.push(pin);
+                candidate.validate()?;
+                self.state = candidate;
             }
             Control::PublishProperties { id, properties } => {
                 let mut candidate = self.state.clone();
