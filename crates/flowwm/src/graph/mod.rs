@@ -138,6 +138,7 @@ pub fn type_id(node: &Node) -> &str {
     match node.kind {
         NodeKind::Constant => "constant",
         NodeKind::Display => "display",
+        NodeKind::Alert => "alert",
         NodeKind::BreakSignal => "break_signal",
         NodeKind::MergeSignal => "merge_signal",
         NodeKind::Conditional => "conditional",
@@ -169,6 +170,20 @@ pub fn pins(state: &State, node: &Node, output: bool) -> Vec<Pin> {
                 ..Pin::new("value", Type::Any)
             }],
             ("display", true) => vec![Pin::new("value", Type::Any)],
+            ("alert", false) => vec![
+                Pin::new("in", event()),
+                Pin {
+                    property: Some("message".into()),
+                    default: Some(json!("Needs your attention")),
+                    ..Pin::new("message", Type::String)
+                },
+                Pin {
+                    property: Some("critical".into()),
+                    default: Some(json!(false)),
+                    ..Pin::new("critical", Type::Bool)
+                },
+            ],
+            ("alert", true) => vec![Pin::new("out", event())],
             ("break_signal", false) => vec![Pin::new("in", event())],
             ("break_signal", true) => {
                 vec![Pin::new("out", signal()), Pin::new("args", Type::record())]

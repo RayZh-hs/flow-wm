@@ -206,3 +206,23 @@ the change. The bundled [terminal session extension](../extensions/agent-session
 uses this operation for `on_session_finish`; all agent-specific detection and
 notification code stays in the extension. Its `Error` record contains `code`,
 `kind`, and `message`, and its handler routes zero/nonzero codes separately.
+
+## Desktop alerts
+
+Create an **Alert** node from search. Set its message and Critical flag in node
+parameters, or connect typed data to those pins. Its Run input sends a desktop
+notification through DMS and marks the owning workspace indicator with the urgent
+color. Completed continues the workflow after the alert is raised. Reading data
+never sends a notification. The desktop needs `notify-send` (libnotify).
+
+To raise an alert for an existing node or window from a script:
+
+```sh
+flowwm send '{"op":"alert","id":"NODE_ID","message":"Ready for review","critical":false}'
+flowwm send '{"op":"clear_alert","id":"NODE_ID"}'
+```
+
+DMS also marks workspaces when an unfocused window sends a notification with a
+matching desktop entry. Native window urgency remains supported. Inspect the node,
+use Clear alert in its parameters, or focus the window to clear the workspace mark.
+Dismissing a notification popup does not silently clear an uninspected node alert.

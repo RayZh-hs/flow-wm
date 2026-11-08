@@ -99,3 +99,41 @@ fn catalog_subscription_does_not_block_commands_and_updates_on_graph_changes() {
     );
     engine.shutdown();
 }
+
+#[test]
+fn alerts_mark_the_owning_workspace_and_clear_without_changing_execution_status() {
+    let mut state = State::empty("/tmp".into());
+    let node = Node::new(
+        &state.selected_workspace,
+        NodeKind::Alert,
+        "/tmp".into(),
+        Position::default(),
+    );
+    let id = node.id.clone();
+    state.nodes.push(node);
+    let directory = tempfile::tempdir().unwrap();
+    let (engine, _) = Engine::new(state, Store::new(directory.path().into()).unwrap());
+    engine
+        .request(Control::Alert {
+            id: id.clone(),
+            message: "Review this".into(),
+            critical: true,
+            notify: false,
+        })
+        .unwrap();
+    let catalog = Catalog::new(
+        &engine.snapshot(),
+        Presentation::default(),
+        &extensions::builtins(),
+    );
+    assert_eq!(catalog.attention, 1);
+    assert_eq!(catalog.workspaces[0].attention, 1);
+    assert!(catalog.nodes[0].alert);
+    assert_eq!(catalog.nodes[0].status, Status::Idle);
+    engine.request(Control::ClearAlert { id }).unwrap();
+    assert_eq!(
+        Catalog::new(&engine.snapshot(), Presentation::default(), &[]).attention,
+        0
+    );
+    engine.shutdown();
+}

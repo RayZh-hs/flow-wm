@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Common
+import qs.Services
 
 Scope {
     id: root
@@ -54,6 +55,20 @@ Scope {
         launcherSeen = false;
         if (!selectionInProgress && catalog.presentation?.lookup_return)
             Qt.callLater(() => { if (!root.launcherOpen && !root.selectionInProgress && root.catalog.presentation?.lookup_return) root.action("resume_lookup"); });
+    }
+
+    Connections {
+        target: NotificationService
+        function onDesktopNotification(notification) {
+            if (!root.online || notification.appName === "FlowWM" || notification.urgency < 1) return;
+            const app = String(notification.hints?.["desktop-entry"] || notification.appName || "").replace(/\.desktop$/, "").toLowerCase();
+            if (!app) return;
+            const nodes = root.catalog.nodes || [];
+            nodes.filter(node => node.window_id && String(node.app_id || "").toLowerCase() === app).forEach(node => {
+                if (NiriService.windows.some(window => window.id === node.window_id && window.is_focused)) return;
+                root.command(["send", JSON.stringify({op:"alert", id:node.id, message:notification.summary || notification.body || "", critical:notification.urgency === 2, notify:false})]);
+            });
+        }
     }
 
     onOnlineChanged: { if (online) Qt.callLater(() => root.installWidget()); }

@@ -8,7 +8,7 @@ evil fun evaluate(node: String, args: String, active: Bool): String {
     if (!active && cached != "") { return cached; }
     host.call("enter", node, "", "");
     val kind = host.call("kind", node, "", "");
-    if (!active && (kind == "break_signal" || kind == "workflow")) {
+    if (!active && (kind == "break_signal" || kind == "workflow" || kind == "alert")) {
         val result = host.call("snapshot", node, "", "");
         host.call("store", node, result, "");
         return result;
@@ -41,6 +41,8 @@ evil fun evaluate(node: String, args: String, active: Bool): String {
         result = host.call("put", "{}", "value", host.call("constant", node, inputs, ""));
     } else if (kind == "display") {
         result = host.call("put", "{}", "value", host.call("get", inputs, "value", ""));
+    } else if (kind == "alert") {
+        result = host.call("alert", node, inputs, "");
     } else if (kind == "break_signal") {
         result = host.call("break", node, args, "");
     } else if (kind == "merge_signal") {

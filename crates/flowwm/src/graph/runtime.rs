@@ -26,11 +26,20 @@ pub struct Activation {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Evaluation {
+    #[serde(default)]
+    pub alerts: Vec<Alert>,
     pub values: BTreeMap<String, Record>,
     pub activations: Vec<Activation>,
     pub executed: Vec<String>,
     pub errors: BTreeMap<String, String>,
     pub answer: Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Alert {
+    pub id: String,
+    pub message: String,
+    pub critical: bool,
 }
 
 struct ContextData {
@@ -514,11 +523,25 @@ impl ContextData {
                 self.emit(a, b, parse(c)?)?;
                 Ok(String::new())
             }
+            "alert" => {
+                let inputs = parse(b)?;
+                self.result.alerts.push(Alert {
+                    id: a.into(),
+                    message: inputs["message"]
+                        .as_str()
+                        .unwrap_or("Needs your attention")
+                        .chars()
+                        .take(4096)
+                        .collect(),
+                    critical: inputs["critical"].as_bool().unwrap_or(false),
+                });
+                Ok("{}".into())
+            }
             "emit_results" => {
                 let node = self.node(a)?;
                 let result = parse(b)?;
                 let outputs = pins(&self.state, node, true);
-                let builtin = matches!(type_id(node), "vox" | "python");
+                let builtin = matches!(type_id(node), "vox" | "python" | "alert");
                 for pin in outputs.into_iter().filter(|p| p.ty.is_signal()) {
                     if let Some(args) = result.get(&pin.name) {
                         self.emit(a, &pin.name, args.clone())?;

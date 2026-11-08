@@ -107,10 +107,25 @@ pub enum UiCommand {
     AgentChat,
 }
 
+fn notify_default() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Control {
     Status,
+    Alert {
+        id: String,
+        message: String,
+        #[serde(default)]
+        critical: bool,
+        #[serde(default = "notify_default")]
+        notify: bool,
+    },
+    ClearAlert {
+        id: String,
+    },
     Paste {
         recipe: Recipe,
         offset: Position,
@@ -714,6 +729,20 @@ impl Runtime {
                 let ids = self.state.instantiate(&recipe, &workspace, cwd)?;
                 return Ok(json!({"ids": ids}));
             }
+            Control::Alert {
+                id,
+                message,
+                critical,
+                notify,
+            } => self.raise_alert(&id, &message, critical, notify)?,
+            Control::ClearAlert { id } => {
+                self.state
+                    .node_mut(&id)
+                    .context("Node not found")?
+                    .flow
+                    .properties
+                    .remove("_alert");
+            }
             Control::Pins { id } => {
                 let node = self.state.node(&id).context("Node not found")?;
                 return Ok(
@@ -1277,6 +1306,34 @@ impl Runtime {
         }
         Ok(())
     }
+    fn raise_alert(&mut self, id: &str, message: &str, critical: bool, notify: bool) -> Result<()> {
+        let node = self.state.node_mut(id).context("Node not found")?;
+        let message: String = message.chars().take(4096).collect();
+        node.flow.properties.insert(
+            "_alert".into(),
+            json!({"message": message, "critical": critical}),
+        );
+        if notify {
+            let title = node.title.clone();
+            thread::spawn(move || {
+                let result = Command::new("notify-send")
+                    .args([
+                        "--app-name=FlowWM",
+                        "--hint=string:desktop-entry:flowwm",
+                        "--urgency",
+                        if critical { "critical" } else { "normal" },
+                        "--",
+                        &title,
+                        &message,
+                    ])
+                    .status();
+                if let Err(error) = result {
+                    eprintln!("FlowWM notification: {error}");
+                }
+            });
+        }
+        Ok(())
+    }
     fn finish_graph(
         &mut self,
         root: &str,
@@ -1284,6 +1341,13 @@ impl Runtime {
     ) {
         match result {
             Ok(result) => {
+                for alert in result.alerts {
+                    if let Err(error) =
+                        self.raise_alert(&alert.id, &alert.message, alert.critical, true)
+                    {
+                        self.error = Some(error.to_string());
+                    }
+                }
                 for (id, values) in result.values {
                     if let Some(node) = self.state.node_mut(&id) {
                         node.flow.values.extend(values);

@@ -28,6 +28,7 @@ pub enum NodeKind {
     Window,
     Constant,
     Display,
+    Alert,
     BreakSignal,
     MergeSignal,
     Conditional,
@@ -46,6 +47,7 @@ impl NodeKind {
             Self::Window => "Window",
             Self::Constant => "Constant",
             Self::Display => "Display",
+            Self::Alert => "Alert",
             Self::BreakSignal => "Break signal",
             Self::MergeSignal => "Merge signal",
             Self::Conditional => "Conditional",
@@ -64,6 +66,7 @@ impl NodeKind {
             Self::Window => "▤",
             Self::Constant => "=",
             Self::Display => "▣",
+            Self::Alert => "!",
             Self::BreakSignal => "↙",
             Self::MergeSignal => "↗",
             Self::Conditional => "?",
@@ -77,6 +80,7 @@ impl NodeKind {
             self,
             Self::Constant
                 | Self::Display
+                | Self::Alert
                 | Self::BreakSignal
                 | Self::MergeSignal
                 | Self::Conditional
@@ -234,6 +238,7 @@ impl Node {
             NodeKind::Window => ("Application window", ""),
             NodeKind::Constant => ("Constant", ""),
             NodeKind::Display => ("Display", ""),
+            NodeKind::Alert => ("Alert", ""),
             NodeKind::BreakSignal => ("Break signal", ""),
             NodeKind::MergeSignal => ("Merge signal", ""),
             NodeKind::Conditional => ("Conditional", ""),

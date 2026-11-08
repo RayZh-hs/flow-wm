@@ -57,6 +57,7 @@ Singleton {
     property var _recentDedupKeys: []
 
     signal notificationDeduplicated(var wrapper)
+    signal desktopNotification(var notification)
 
     property var _dismissQueue: []
     property int _dismissBatchSize: 8
@@ -775,6 +776,7 @@ Singleton {
             });
 
             if (wrapper) {
+                root.desktopNotification(notif);
                 if (SettingsData.notificationDedupeEnabled)
                     _recordDedupKey(_notificationDedupKey(notif));
 

@@ -13,6 +13,7 @@ import "../../../DCommon/Common/WheelInput.js" as WheelInput
 
 BasePill {
     id: root
+    readonly property var flowWorkspaces: PluginService.pluginDaemonInstances?.flowwm?.catalog?.workspaces ?? []
 
     // sized from its label and centered on the glyph box, since a digit's line box is off-center
     component CountBadge: Rectangle {
@@ -407,7 +408,8 @@ BasePill {
                 property bool isHovered: pillHover.hovered
 
                 property bool loadedIsUrgent: false
-                property bool isUrgent: root.useNativeWorkspaces ? CompositorService.workspaceUrgent(record, loadedIsUrgent) : (modelData?.urgent ?? false)
+                readonly property bool flowUrgent: root.flowWorkspaces.some(workspace => workspace.row?.id === record?.id && workspace.attention > 0)
+                property bool isUrgent: flowUrgent || (root.useNativeWorkspaces ? CompositorService.workspaceUrgent(record, loadedIsUrgent) : (modelData?.urgent ?? false))
                 readonly property var loadedIconData: {
                     if (isPlaceholder)
                         return null;
@@ -633,7 +635,7 @@ BasePill {
 
                 // a translucent fill gains a state layer on hover, an opaque one fades
                 readonly property color hoverColor: Theme.withAlpha(unfocusedColor, unfocusedColor.a < 1 ? Math.min(1, unfocusedColor.a + Theme.stateLayerFocus) : root.hoverFadeAlpha)
-                readonly property color requestedColor: isActive ? activeColor : isUrgent ? urgentColor : isPlaceholder ? Theme.surfaceTextLight : isHovered ? hoverColor : isOccupied ? occupiedColor : unfocusedColor
+                readonly property color requestedColor: isUrgent ? urgentColor : isActive ? activeColor : isPlaceholder ? Theme.surfaceTextLight : isHovered ? hoverColor : isOccupied ? occupiedColor : unfocusedColor
 
                 property bool colorAnimationReady: false
 

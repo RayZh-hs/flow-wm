@@ -457,3 +457,26 @@ fn stop_interrupts_vox_and_python_loops_without_blocking_control() {
         engine.shutdown();
     }
 }
+
+#[test]
+fn alert_nodes_evaluate_their_message_lazily_and_emit_only_when_triggered() {
+    let mut state = State::empty("/tmp".into());
+    let message = node(&mut state, NodeKind::Constant);
+    state
+        .node_mut(&message)
+        .unwrap()
+        .flow
+        .properties
+        .insert("value".into(), json!("Build needs review"));
+    let alert = node(&mut state, NodeKind::Alert);
+    wire(&mut state, &message, "value", &alert, "message");
+    let observer = node(&mut state, NodeKind::Python);
+    state.node_mut(&observer).unwrap().command = "outputs = {'value': 'continued'}".into();
+    wire(&mut state, &alert, "out", &observer, "in");
+    assert!(run(state.clone(), &alert, None).alerts.is_empty());
+    let result = run(state, &alert, Some(("", json!({}))));
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    assert_eq!(result.alerts.len(), 1);
+    assert_eq!(result.alerts[0].message, "Build needs review");
+    assert_eq!(result.values[&observer]["value"], "continued");
+}

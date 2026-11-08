@@ -795,6 +795,15 @@ impl Shell {
         });
     }
     fn select(&self, id: Option<String>) {
+        if let Some(id) = id.as_ref().filter(|id| {
+            self.engine
+                .snapshot()
+                .state
+                .node(id)
+                .is_some_and(|n| n.flow.properties.contains_key("_alert"))
+        }) {
+            self.engine.dispatch(Control::ClearAlert { id: id.clone() });
+        }
         let mut view = self.view.borrow_mut();
         view.selected = id.clone();
         if let Some(id) = id {
@@ -2988,6 +2997,18 @@ impl Shell {
                 "Application",
                 &label(window.app_id.as_deref().unwrap_or("Application"), "muted"),
             );
+        }
+        if let Some(alert) = node.flow.properties.get("_alert") {
+            let message = alert["message"].as_str().unwrap_or("Needs your attention");
+            root.append(&label(message, "hint"));
+            let clear = gtk::Button::with_label("Clear alert");
+            let engine = self.engine.clone();
+            let id = node.id.clone();
+            clear.connect_clicked(move |button| {
+                engine.dispatch(Control::ClearAlert { id: id.clone() });
+                button.set_sensitive(false);
+            });
+            root.append(&clear);
         }
         let actions = row(10);
         actions.set_halign(gtk::Align::End);

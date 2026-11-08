@@ -84,6 +84,11 @@ pub fn builtins() -> Vec<Macro> {
             "A typed constant data value",
         ),
         (
+            "alert",
+            NodeKind::Alert,
+            "Send a desktop notification and mark this workspace for attention",
+        ),
+        (
             "display",
             NodeKind::Display,
             "Display and pass through a data input",

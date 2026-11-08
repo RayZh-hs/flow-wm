@@ -74,6 +74,9 @@ impl Fields {
             }));
         } else {
             let description = match node.kind {
+                NodeKind::Alert => {
+                    "Sends a desktop notification and marks this workspace until you inspect the alert. Message and Critical can also be connected in the graph."
+                }
                 NodeKind::Display => {
                     "Displays its value input. Run to refresh; data is evaluated only when needed."
                 }
@@ -102,6 +105,13 @@ impl Fields {
                 root.append(&hint);
             }
             let mut properties = std::collections::BTreeMap::new();
+            if node.kind == NodeKind::Alert {
+                properties.insert(
+                    "message".to_string(),
+                    (Type::String, json!("Needs your attention")),
+                );
+                properties.insert("critical".to_string(), (Type::Bool, json!(false)));
+            }
             if node.kind == NodeKind::MergeSignal {
                 properties.insert("args".to_string(), (Type::record(), json!({})));
             }

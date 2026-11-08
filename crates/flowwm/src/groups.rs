@@ -238,6 +238,9 @@ pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
         }
         changed |= assign(&mut node.window_id, Some(window.id));
         seen.insert(node.id.clone());
+        if window.is_focused {
+            changed |= node.flow.properties.remove("_alert").is_some();
+        }
         if node.kind == NodeKind::Window {
             if (newly_bound && node.status != Status::Done)
                 || (node.desktop_window && node.status == Status::Stopped)

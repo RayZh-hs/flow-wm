@@ -16,12 +16,15 @@ pub struct CatalogNode {
     pub window_id: Option<u64>,
     pub column: Option<String>,
     pub column_mode: ColumnMode,
+    pub alert: bool,
+    pub app_id: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CatalogWorkspace {
     pub id: String,
     pub name: String,
     pub nodes: usize,
+    pub attention: usize,
     pub row: Option<Row>,
     #[serde(default)]
     pub view: RowView,
@@ -182,6 +185,11 @@ impl Catalog {
                     window_id: n.window_id,
                     column: n.column.clone(),
                     column_mode: n.column_mode,
+                    alert: n.flow.properties.contains_key("_alert"),
+                    app_id: n
+                        .window_match
+                        .as_ref()
+                        .map(|s| s.split("::").next().unwrap_or_default().to_string()),
                     summary: n
                         .command
                         .lines()
@@ -199,6 +207,11 @@ impl Catalog {
                     id: w.id.clone(),
                     name: w.name.clone(),
                     nodes: state.nodes.iter().filter(|n| n.workspace == w.id).count(),
+                    attention: state
+                        .nodes
+                        .iter()
+                        .filter(|n| n.workspace == w.id && n.flow.properties.contains_key("_alert"))
+                        .count(),
                     row: w.row.clone(),
                     view: w.view,
                 })
@@ -226,7 +239,10 @@ impl Catalog {
             attention: state
                 .nodes
                 .iter()
-                .filter(|n| matches!(n.status, Status::Failed | Status::Review))
+                .filter(|n| {
+                    matches!(n.status, Status::Failed | Status::Review)
+                        || n.flow.properties.contains_key("_alert")
+                })
                 .count(),
         }
     }
