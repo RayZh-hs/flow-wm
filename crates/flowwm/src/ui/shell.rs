@@ -872,8 +872,8 @@ impl Shell {
         }
         self.select(None);
     }
-    fn fit_immediate(&self) {
-        canvas::fit_immediate(&self.canvas(), &self.view, &self.engine.snapshot().state);
+    fn fit_immediate(&self) -> bool {
+        canvas::fit_immediate(&self.canvas(), &self.view, &self.engine.snapshot().state)
     }
     fn fit(&self) {
         self.prepare_camera();
@@ -1239,8 +1239,7 @@ impl Shell {
                 "transition_frame_gap",
                 previous.replace(std::time::Instant::now()).elapsed(),
             );
-            if visible && shell.first_frame.get() && shell.canvas().width() > 0 {
-                shell.fit_immediate();
+            if visible && shell.first_frame.get() && shell.fit_immediate() {
                 shell.first_frame.set(false);
                 gtk::prelude::GtkWindowExt::set_focus(&shell.window(), Some(&shell.canvas()));
                 shell.canvas().grab_focus();
@@ -2214,10 +2213,9 @@ impl Shell {
                     if !shell.first_frame.get() {
                         return glib::ControlFlow::Break;
                     }
-                    if canvas.width() < 100 || canvas.height() < 100 {
+                    if canvas.width() <= 160 || canvas.height() <= 160 || !shell.fit_immediate() {
                         return glib::ControlFlow::Continue;
                     }
-                    shell.fit_immediate();
                     shell.first_frame.set(false);
                     glib::ControlFlow::Break
                 });

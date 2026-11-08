@@ -16,6 +16,10 @@ use std::{
 
 pub const WIDTH: f64 = 292.0;
 pub const HEIGHT: f64 = 154.0;
+const FIT_PADDING: f64 = 160.;
+fn usable_viewport(width: f64, height: f64) -> bool {
+    width.is_finite() && height.is_finite() && width > FIT_PADDING && height > FIT_PADDING
+}
 pub fn node_height(node: &Node) -> f64 {
     if node.closed_window() {
         super::layout::CLOSED_HEIGHT
@@ -274,23 +278,31 @@ pub fn animate_camera(area: &super::surface::Surface, view: &Rc<RefCell<View>>, 
     });
 }
 pub fn fit_animated(area: &super::surface::Surface, view: &Rc<RefCell<View>>, state: &State) {
+    if !usable_viewport(area.width() as f64, area.height() as f64) {
+        return;
+    }
     view.borrow_mut()
         .arrangement
         .update(state, area.width(), area.height());
-    if area.width() < 100 || area.height() < 100 {
-        return;
-    }
     let mut target = view.borrow().clone();
     target.fit(state, area.width() as f64, area.height() as f64);
     animate_camera(area, view, &target);
 }
-pub fn fit_immediate(area: &super::surface::Surface, view: &Rc<RefCell<View>>, state: &State) {
+pub fn fit_immediate(
+    area: &super::surface::Surface,
+    view: &Rc<RefCell<View>>,
+    state: &State,
+) -> bool {
+    if !usable_viewport(area.width() as f64, area.height() as f64) {
+        return false;
+    }
     let mut view = view.borrow_mut();
     view.motion_serial += 1;
     view.camera_target = None;
     view.arrangement.update(state, area.width(), area.height());
     view.fit(state, area.width() as f64, area.height() as f64);
     area.queue_draw();
+    true
 }
 pub fn suspend(view: &Rc<RefCell<View>>) {
     let mut view = view.borrow_mut();
@@ -441,6 +453,9 @@ impl View {
         }
     }
     pub fn fit(&mut self, state: &State, width: f64, height: f64) {
+        if !usable_viewport(width, height) {
+            return;
+        }
         self.fitted = true;
         let nodes: Vec<_> = state
             .nodes
@@ -469,8 +484,8 @@ impl View {
             .iter()
             .map(|n| self.arrangement.position(n).y + node_height(n))
             .fold(f64::NEG_INFINITY, f64::max);
-        self.zoom = ((width - 160.0) / (max_x - min_x))
-            .min((height - 160.0) / (max_y - min_y))
+        self.zoom = ((width - FIT_PADDING) / (max_x - min_x))
+            .min((height - FIT_PADDING) / (max_y - min_y))
             .clamp(0.000001, 1.2);
         self.pan_x = (width - (max_x - min_x) * self.zoom) / 2.0 - min_x * self.zoom;
         self.pan_y = (height - (max_y - min_y) * self.zoom) / 2.0 - min_y * self.zoom;
@@ -659,7 +674,7 @@ fn make_scoped(
             let state = &scoped.as_ref().unwrap().1;
             let mut current = v.borrow_mut();
             if current.workspace == *id {
-                if !current.fitted && width > 100 && height > 100 {
+                if !current.fitted && usable_viewport(width as f64, height as f64) {
                     current.arrangement.update(state, width, height);
                     current.fit(state, width as f64, height as f64);
                 }
@@ -675,7 +690,7 @@ fn make_scoped(
                 saved.images.extend(current.images.clone());
                 saved.image_textures.extend(current.image_textures.clone());
                 saved.arrangement.update(state, width, height);
-                if !saved.fitted && width > 100 && height > 100 {
+                if !saved.fitted && usable_viewport(width as f64, height as f64) {
                     saved.fit(state, width as f64, height as f64);
                     saved.fitted = true;
                 }
@@ -2408,6 +2423,35 @@ mod rendering_tests {
         ));
         assert!(!crossing((0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (3.0, 3.0)));
     }
+    #[test]
+    fn fitting_waits_for_the_first_real_allocation_without_collapsing_the_camera() {
+        let mut state = State::empty("/tmp".into());
+        state.nodes.push(Node::new(
+            &state.selected_workspace,
+            NodeKind::Constant,
+            "/tmp".into(),
+            Position { x: 500., y: 300. },
+        ));
+        let mut view = View::default();
+        for (width, height) in [(0., 0.), (100., 100.), (800., 0.), (160., 600.)] {
+            view.fit(&state, width, height);
+            assert!(
+                !view.fitted,
+                "a provisional allocation must leave the first fit pending"
+            );
+            assert_eq!(view.zoom, 0.9);
+            assert_eq!((view.pan_x, view.pan_y), (60., 60.));
+        }
+        view.fit(&state, 800., 600.);
+        assert!(view.fitted);
+        assert!(view.zoom >= 0.9);
+        assert!((500. * view.zoom + view.pan_x - (800. - WIDTH * view.zoom) / 2.).abs() < 0.01);
+        let camera = (view.zoom, view.pan_x, view.pan_y);
+        view.fit(&state, 0., 0.);
+        assert!(view.fitted);
+        assert_eq!((view.zoom, view.pan_x, view.pan_y), camera);
+    }
+
     #[test]
     fn framing_large_graphs_includes_every_card() {
         let mut state = State::empty("/tmp".into());
