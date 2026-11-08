@@ -130,6 +130,10 @@ def run(state_file=None):
                 subprocess.run(["grim", "-o", "winit", str(path)], env=environment, check=True)
                 return Image.open(path).convert("RGB")
 
+            def card_pixels(image):
+                pixels = image.load()
+                return sum(max(pixels[x,y]) < 80 for y in range(image.height) for x in range(image.width))
+
             def settled_capture(name):
                 previous = None
                 def settled():
@@ -150,8 +154,13 @@ def run(state_file=None):
             assert ImageChops.difference(before, during).getbbox() is None, "wallpaper must stay fixed during workspace scrolling"
             wait(lambda: catalog()["selected_workspace"] == second["id"], compositor)
             time.sleep(2)
+            seed = json.loads(subprocess.check_output([str(ROOT / "target/debug/flowwm"), "add", "human", "First toggle must show this node"], env=environment, text=True))["id"]
             key("super+Tab")
             wait(lambda: catalog()["presentation"]["graph_visible"], compositor)
+            time.sleep(0.25)
+            first_toggle = capture("first-toggle-existing-node.png")
+            assert card_pixels(first_toggle) > 5000, "the first toggle must fit the graph before rendering existing nodes"
+            request(flow_socket, {"op":"delete", "id":seed})
             search("super+space", ["openQuery", "@ + "])
             assert catalog()["presentation"]["graph_visible"], "creation search must keep Nodes view"
             search("alt+space", ["toggle"])
@@ -162,7 +171,11 @@ def run(state_file=None):
             wait(lambda: catalog()["selected_workspace"] == first["id"], compositor)
             children.append(subprocess.Popen([sys.executable, __file__, "--application"], env=environment, stdout=log, stderr=log))
             source = wait(lambda: next((n["id"] for n in catalog()["nodes"] if n["title"] == "Application connection source"), None), compositor)
-            request(flow_socket, {"op": "ui", "command": {"action": "nodes"}})
+            key("super+Tab")
+            wait(lambda: catalog()["presentation"]["graph_visible"], compositor)
+            time.sleep(0.25)
+            new_row = capture("first-toggle-new-row.png")
+            assert card_pixels(new_row) > 5000, "a newly allocated row must fit on its first toggle even after another row was shown"
             request(flow_socket, {"op": "ui", "command": {"action": "select", "id": source}})
             request(flow_socket, {"op": "ui", "command": {"action": "fit"}})
             wait(lambda: catalog()["presentation"]["graph_visible"] and not any(w["is_focused"] for w in request(niri_socket, "Windows")["Windows"]), compositor)
@@ -181,10 +194,104 @@ def run(state_file=None):
             dismissed = settled_capture("display-dialog-dismissed.png")
             assert sum(v > 30 for v in ImageChops.difference(dialog, dismissed).convert("L").tobytes()) > 1000, "the parameter dialog must render visibly and dismiss with Escape"
             assert any(w["title"] == "Application connection source" for w in request(niri_socket, "Windows")["Windows"])
+            def ui(action, **values):
+                return request(flow_socket, {"op":"ui", "command":{"action":action, **values}})
+
+            def dialog_open():
+                return any(layer["namespace"] == "flowwm-dialog" for layer in request(niri_socket, "Layers")["Layers"])
+
+            def type_text(text):
+                subprocess.run(["xdotool", "type", "--clearmodifiers", text], env=environment, check=True)
+
+            def dialog_capture(name):
+                path = artifacts / name
+                path.unlink(missing_ok=True)
+                ui("capture", path=str(path))
+                wait(lambda: path.exists(), compositor)
+                return Image.open(path).convert("RGB")
+
+            # Native window editing uses normal parameters and can save while the window is open.
+            ui("select", id=source)
+            key("shift+Tab")
+            wait(dialog_open, compositor)
+            key("ctrl+a")
+            type_text("Renamed application")
+            key("Return")
+            wait(lambda: not dialog_open(), compositor)
+            assert next(n for n in catalog()["nodes"] if n["id"] == source)["title"] == "Renamed application"
+
+            request(niri_socket, {"Action": {"FocusWorkspace": {"reference": {"Id": second["row"]["id"]}}}})
+            wait(lambda: catalog()["selected_workspace"] == second["id"], compositor)
+            ui("nodes")
+            ui("create_macro", id="constant_int")
+            wait(dialog_open, compositor)
+            constant_dialog = dialog_capture("compact-constant-parameters.png")
+            assert constant_dialog.height < 600, ("constant parameters should fit their content at 2x", constant_dialog.size)
+            key("ctrl+a")
+            type_text("Integer input")
+            key("Return")
+            wait(lambda: not dialog_open(), compositor)
+            constant = next(n["id"] for n in catalog()["nodes"] if n["title"] == "Integer input")
+            ui("create_macro", id="display")
+            wait(dialog_open, compositor)
+            key("Return")
+            wait(lambda: not dialog_open(), compositor)
+            sink = next(n["id"] for n in catalog()["nodes"] if n["kind"] == "display" and n["workspace"] == second["id"])
+            request(flow_socket, {"op":"arrange", "positions":[(constant,{"x":100,"y":100}),(sink,{"x":500,"y":100})]})
+            ui("bar_geometry", output="winit", insets=[0,0,0,0])
+            time.sleep(0.5)
+            ui("fit")
+            time.sleep(1)
+            graph = capture("pin-search-graph.png")
+            scale = 2
+            width, height = graph.width / scale, graph.height / scale
+            zoom = min((width - 160) / 692, (height - 160) / 154, 1.2)
+            def drag(x):
+                px, py = round(port_x + (x - 392) * zoom * scale), round(port_y)
+                subprocess.run(["xdotool", "mousemove", "--sync", str(px), str(py)], env=environment, check=True)
+                time.sleep(0.05)
+                subprocess.run(["xdotool", "mousedown", "1"], env=environment, check=True)
+                time.sleep(0.05)
+                subprocess.run(["xdotool", "mousemove", "--sync", str(px), str(py + 180)], env=environment, check=True)
+                time.sleep(0.1)
+                subprocess.run(["xdotool", "mouseup", "1"], env=environment, check=True)
+                capture("pin-after-drag.png")
+            for node, x, reverse in [(constant,392,False),(sink,500,True)]:
+                graph = settled_capture("pin-before-drag.png")
+                pixels = graph.load()
+                marker = [(x,y) for y in range(graph.height) for x in range(graph.width // 3, graph.width // 2)
+                          if pixels[x,y][1] > 140 and pixels[x,y][1] > pixels[x,y][0] * 1.2 and pixels[x,y][1] > pixels[x,y][2] * 1.05]
+                assert marker, "the constant data output should be visible"
+                port_x = sum(x for x,y in marker) / len(marker)
+                port_y = sum(y for x,y in marker) / len(marker)
+                drag(x)
+                wait(lambda: catalog().get("lookup") and catalog()["lookup"]["node"] == node, compositor)
+                lookup = catalog()["lookup"]
+                assert lookup["input"] == reverse and lookup["selected"] == "value", lookup
+                assert len(lookup["outputs"]) == 1
+                ui("resume_lookup")
+                time.sleep(0.5)
+
+            key("super+shift+slash")
+            wait(dialog_open, compositor)
+            all_bindings = dialog_capture("keybindings-all.png")
+            type_text("create")
+            time.sleep(0.3)
+            filtered_bindings = dialog_capture("keybindings-search.png")
+            assert sum(value > 30 for value in ImageChops.difference(all_bindings, filtered_bindings).convert("L").tobytes()) > 1000
+            key("Escape")
+            wait(lambda: not dialog_open(), compositor)
+            ui("create_application", id="org.test.Editor.desktop", name="Chosen application", app_id="test.editor")
+            wait(dialog_open, compositor)
+            selected_app = next(n for n in request(flow_socket, {"op":"status"})["nodes"] if n["title"] == "Chosen application")
+            assert selected_app["flow"]["properties"]["application"] == "org.test.Editor.desktop"
+            assert selected_app["status"] == "idle", "choosing an application must not launch it"
+            key("Return")
+            wait(lambda: not dialog_open(), compositor)
             log.flush()
             errors = (artifacts / "session.log").read_text()
             assert "drawing failure" not in errors and "Cross-workspace connection" not in errors, errors[-4000:]
-            print("Desktop smoke passed: search shortcuts, static wallpaper, and Tab -> Display creation with its parameter dialog, connection, and surviving application at 2x scale.")
+            print("Desktop smoke passed: first-toggle framing on existing and newly allocated rows, search shortcuts, static wallpaper, connected creation, compact parameters with Enter-to-save, editable live windows with Shift+Tab, pin search in both directions, key-binding search, and application selection at 2x scale.")
         finally:
             for child in reversed(children):
                 if child.poll() is None:

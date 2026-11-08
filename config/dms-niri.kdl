@@ -4,5 +4,5 @@ binds {
     Mod+Shift+Tab repeat=false allow-inhibiting=false hotkey-overlay-title="FlowWM: Return to windows" { spawn "flowwm" "windows"; }
     Mod+Space repeat=false allow-inhibiting=false hotkey-overlay-title="FlowWM: Dux search / create a node" { spawn "flowwm" "new"; }
     Mod+Shift+Space repeat=false allow-inhibiting=false hotkey-overlay-title="FlowWM: Find a node" { spawn "flowwm" "search"; }
-    Mod+Shift+slash repeat=false allow-inhibiting=false hotkey-overlay-title="FlowWM: Shortcuts" { spawn "flowwm" "send" "{\"op\":\"ui\",\"command\":{\"action\":\"help\"}}"; }
+    Mod+Shift+slash repeat=false allow-inhibiting=false hotkey-overlay-title="FlowWM: Key bindings" { spawn "flowwm" "send" "{\"op\":\"ui\",\"command\":{\"action\":\"help\"}}"; }
 }

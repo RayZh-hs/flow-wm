@@ -66,7 +66,7 @@ flowwm-session describe                          # inspect selected paths and bi
 | Ctrl+D | Duplicate the selection |
 | Tab | Choose an output, then a compatible node/input in Dux |
 | Enter or double-click | Peek at a window, edit a constant, or open workflow output |
-| Shift+Enter or E | Edit node parameters |
+| Shift+Tab, Shift+Enter or E | Edit node parameters |
 | F / Home | Center selection / frame all nodes |
 | R | Run the selected node |
 | Delete or Backspace | Delete selection; close selected live application windows |
