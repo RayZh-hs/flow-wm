@@ -2007,10 +2007,21 @@ pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, the
         } else {
             n.command.clone()
         };
-        let snippet = display
-            .lines()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or("Select a window in Parameters");
+        let snippet = display.lines().find(|l| !l.trim().is_empty()).unwrap_or(
+            if n.flow.properties.contains_key("application") {
+                "Enter or R to launch application"
+            } else if n.kind == NodeKind::Window {
+                "Application window"
+            } else if n.kind == NodeKind::Alert {
+                n.flow
+                    .properties
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Needs your attention")
+            } else {
+                "Edit node parameters to configure"
+            },
+        );
         let prefix = match n.kind {
             NodeKind::Agent => "codex · ",
             NodeKind::Shell => "$ ",

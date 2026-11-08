@@ -37,6 +37,14 @@ pub fn agent_result(output: &str) -> Result<AgentResult> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ApplicationSelection {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub app_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum UiCommand {
     Toggle,
@@ -56,6 +64,8 @@ pub enum UiCommand {
         input: String,
         #[serde(default)]
         reverse: bool,
+        #[serde(default)]
+        application: Option<ApplicationSelection>,
     },
     Open {
         id: String,

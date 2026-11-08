@@ -50,10 +50,14 @@ Scope {
             itemsChanged();
             return { keepOpen: true, query: "@ " + (!outputName && catalog.lookup.outputs.length > 1 ? catalog.lookup.title + ": " : "") };
         }
-        if (item?.flowwmArgs?.[0] === "create" && item.flowwmArgs[1] === "window") {
+        const pending = item?.flowwmArgs?.[0] === "send" ? JSON.parse(item.flowwmArgs[1]) : null;
+        const connectedApplication = pending?.command?.action === "create_connected" && pending.command.id === "window";
+        if ((item?.flowwmArgs?.[0] === "create" && item.flowwmArgs[1] === "window") || connectedApplication) {
             return { keepOpen: true, query: "", selectApplication: app => {
                 bridge?.completeSelection();
-                const request = { op: "ui", command: { action: "create_application", id: app.id, name: app.name, app_id: app.startupClass || app.id.replace(/\.desktop$/, "") } };
+                const selected = {id: app.id, name: app.name, app_id: app.startupClass || app.id.replace(/\.desktop$/, "")};
+                const request = connectedApplication ? pending : { op: "ui", command: { action: "create_application", ...selected } };
+                if (connectedApplication) request.command.application = selected;
                 Qt.callLater(() => bridge?.command(["send", JSON.stringify(request)]));
             } };
         }

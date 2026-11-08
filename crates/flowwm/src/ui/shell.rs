@@ -1579,7 +1579,7 @@ impl Shell {
             return;
         };
         if !self.integrated {
-            self.show_error("Connection search requires the FlowWM Dux desktop. Drag a pin or use node settings in standalone mode.");
+            self.show_error("Connection search requires the FlowWM Dux desktop. Drag between pins to connect in standalone mode.");
             return;
         }
         self.dms_launcher(Some("connect"));
@@ -1601,6 +1601,7 @@ impl Shell {
         source: crate::graph::Endpoint,
         input: &str,
         reverse: bool,
+        application: Option<crate::engine::ApplicationSelection>,
     ) {
         let Some(m) = self.macros.iter().find(|m| m.id == macro_id) else {
             return;
@@ -1627,6 +1628,19 @@ impl Shell {
         node.title = m.name.clone();
         node.command = m.command.clone();
         node.flow = m.flow.clone();
+        if let Some(application) = application {
+            node.title = application.name;
+            node.flow
+                .properties
+                .insert("application".into(), serde_json::json!(application.id));
+            if !application.app_id.is_empty() {
+                node.flow.properties.insert(
+                    "application_id".into(),
+                    serde_json::json!(application.app_id),
+                );
+            }
+        }
+
         let id = node.id.clone();
         let mut edge = crate::graph::Connection {
             source,
@@ -1799,7 +1813,8 @@ impl Shell {
                 source,
                 input,
                 reverse,
-            } => self.create_connected(&id, source, &input, reverse),
+                application,
+            } => self.create_connected(&id, source, &input, reverse, application),
             UiCommand::MoveSelection { direction } => {
                 if self.graph_visible.get() {
                     canvas::move_selection(&self.engine, &self.view, &direction);
@@ -2307,7 +2322,14 @@ impl Shell {
                 }
                 return;
             }
-            self.edit(id);
+            if node.flow.properties.contains_key("application") {
+                self.engine.dispatch(Control::Run {
+                    id: id.into(),
+                    downstream: false,
+                });
+            } else {
+                self.edit(id);
+            }
             return;
         }
         if !self.windowed
