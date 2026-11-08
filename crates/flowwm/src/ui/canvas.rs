@@ -1263,6 +1263,11 @@ fn make_scoped(
             | gdk::ModifierType::ALT_MASK
             | gdk::ModifierType::SUPER_MASK
             | gdk::ModifierType::META_MASK;
+        let key = if key == gdk::Key::ISO_Left_Tab {
+            gdk::Key::Tab
+        } else {
+            key
+        };
         let action = shortcuts
             .iter()
             .find(|(_, k, mods)| {
