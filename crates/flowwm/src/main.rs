@@ -25,6 +25,13 @@ enum Kind {
     Gate,
     Human,
     Window,
+    Constant,
+    Display,
+    BreakSignal,
+    MergeSignal,
+    Conditional,
+    Vox,
+    Python,
 }
 impl From<Kind> for NodeKind {
     fn from(k: Kind) -> Self {
@@ -35,11 +42,20 @@ impl From<Kind> for NodeKind {
             Kind::Gate => Self::Gate,
             Kind::Human => Self::Human,
             Kind::Window => Self::Window,
+            Kind::Constant => Self::Constant,
+            Kind::Display => Self::Display,
+            Kind::BreakSignal => Self::BreakSignal,
+            Kind::MergeSignal => Self::MergeSignal,
+            Kind::Conditional => Self::Conditional,
+            Kind::Vox => Self::Vox,
+            Kind::Python => Self::Python,
         }
     }
 }
 #[derive(Subcommand)]
 enum Cmd {
+    #[command(hide = true)]
+    EvaluateWorker,
     /// Start the native graph overlay and desktop bar.
     Start {
         #[arg(long)]
@@ -145,6 +161,7 @@ fn main() -> Result<()> {
         background: false,
     });
     let control = match command {
+        Cmd::EvaluateWorker => return flowwm::graph::run_worker(),
         Cmd::Start {
             windowed,
             example,

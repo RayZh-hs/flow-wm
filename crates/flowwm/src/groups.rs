@@ -288,6 +288,12 @@ fn relocate_component(state: &mut State, id: &str, workspace: &str) {
     let mut component = HashSet::from([id.to_string()]);
     loop {
         let count = component.len();
+        for edge in &state.connections {
+            if component.contains(&edge.source.node) || component.contains(&edge.target.node) {
+                component.insert(edge.source.node.clone());
+                component.insert(edge.target.node.clone());
+            }
+        }
         for node in &state.nodes {
             for parent in &node.dependencies {
                 if component.contains(&node.id) || component.contains(parent) {

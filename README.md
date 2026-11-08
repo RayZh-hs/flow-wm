@@ -201,6 +201,12 @@ Global keybindings belong to the compositor. The desktop installer configures th
 
 ## Workflows
 
+FlowWM also supports [typed nodes, signals, and lazy data connections](docs/nodes-and-signals.md).
+The evaluator is written in Vox, with Constants, Displays, Break/Merge signal,
+Conditional, Vox, and Python primitives. Extensions can register node schemas,
+types, and casts. Named side pins distinguish active signals from passive data;
+Parameters exposes property bindings and compatible connection choices.
+
 | Node | Behavior |
 | --- | --- |
 | Agent | Run Codex, stream activity, and produce a structured handoff |

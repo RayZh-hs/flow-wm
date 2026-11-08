@@ -3,7 +3,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     io::{BufRead, BufReader, Read, Write},
     os::unix::process::CommandExt,
     path::PathBuf,
@@ -18,6 +18,7 @@ use std::{
 };
 
 const AGENT_SCHEMA: &str = r#"{"type":"object","properties":{"outcome":{"type":"string","enum":["success","issue"]},"summary":{"type":"string"},"artifacts":{"type":"array","items":{"type":"string"}}},"required":["outcome","summary","artifacts"],"additionalProperties":false}"#;
+const GRAPH_RUN: &str = "\0graph";
 
 #[derive(Debug, Deserialize)]
 pub struct AgentResult {
@@ -70,6 +71,13 @@ pub enum UiCommand {
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Control {
     Status,
+    Pins {
+        id: String,
+    },
+    PublishProperties {
+        id: String,
+        properties: crate::graph::Record,
+    },
     Create {
         node: Box<Node>,
     },
@@ -87,6 +95,32 @@ pub enum Control {
     Connect {
         source: String,
         target: String,
+    },
+    ConnectPins {
+        connection: crate::graph::Connection,
+    },
+    DisconnectPins {
+        connection: crate::graph::Connection,
+    },
+    Evaluate {
+        id: String,
+    },
+    Emit {
+        source: crate::graph::Endpoint,
+        args: Value,
+    },
+    Activate {
+        id: String,
+        args: Value,
+    },
+    RegisterType {
+        definition: crate::graph::TypeDefinition,
+    },
+    RegisterCast {
+        definition: crate::graph::CastDefinition,
+    },
+    RegisterNode {
+        definition: crate::graph::NodeDefinition,
     },
     Disconnect {
         source: String,
@@ -177,6 +211,11 @@ struct Request {
     reply: Option<mpsc::Sender<std::result::Result<Value, String>>>,
 }
 enum Message {
+    GraphFinished {
+        id: String,
+        generation: u64,
+        result: std::result::Result<crate::graph::Evaluation, String>,
+    },
     Request(Request),
     Output {
         id: String,
@@ -245,6 +284,11 @@ impl Engine {
                 state,
                 store,
                 runs: HashMap::new(),
+                graph_active: false,
+                graph_root: None,
+                graph_pending: VecDeque::new(),
+                signal_pending: HashMap::new(),
+                signal_args: HashMap::new(),
                 suppressed_windows: HashSet::new(),
                 pending_deletions: HashSet::new(),
                 generation: 0,
@@ -332,6 +376,11 @@ struct Runtime {
     state: State,
     store: Store,
     runs: HashMap<String, Run>,
+    graph_active: bool,
+    graph_root: Option<String>,
+    graph_pending: VecDeque<(String, Option<(String, Value)>)>,
+    signal_pending: HashMap<String, VecDeque<crate::graph::Activation>>,
+    signal_args: HashMap<String, crate::graph::Activation>,
     suppressed_windows: HashSet<u64>,
     pending_deletions: HashSet<String>,
     generation: u64,
@@ -481,8 +530,33 @@ impl Runtime {
                         .is_some_and(|r| r.generation == generation)
                     {
                         self.finish(&id, success, error);
+                        self.complete_signal(&id);
                         self.dirty = true;
                     }
+                }
+                Ok(Message::GraphFinished {
+                    id,
+                    generation,
+                    result,
+                }) => {
+                    self.graph_active = false;
+                    self.graph_root = None;
+                    if self
+                        .runs
+                        .get(GRAPH_RUN)
+                        .is_some_and(|r| r.generation == generation)
+                    {
+                        let stopped = self
+                            .runs
+                            .remove(GRAPH_RUN)
+                            .unwrap()
+                            .cancel
+                            .load(Ordering::Relaxed);
+                        if !stopped {
+                            self.finish_graph(&id, result);
+                        }
+                    }
+                    self.dirty = true;
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
@@ -519,7 +593,92 @@ impl Runtime {
     }
     fn apply(&mut self, control: Control) -> Result<Value> {
         self.error = None;
+        if self.graph_active {
+            ensure!(
+                !matches!(
+                    &control,
+                    Control::Create { .. }
+                        | Control::Update { .. }
+                        | Control::MoveToWorkspace { .. }
+                        | Control::Connect { .. }
+                        | Control::ConnectPins { .. }
+                        | Control::Disconnect { .. }
+                        | Control::DisconnectPins { .. }
+                        | Control::Delete { .. }
+                        | Control::RegisterType { .. }
+                        | Control::RegisterCast { .. }
+                        | Control::RegisterNode { .. }
+                        | Control::Instantiate { .. }
+                        | Control::PublishProperties { .. }
+                        | Control::ClearHistory
+                ),
+                "Stop the active graph evaluation before editing its nodes or connections"
+            );
+        }
         match control {
+            Control::Pins { id } => {
+                let node = self.state.node(&id).context("Node not found")?;
+                return Ok(
+                    json!({"inputs":crate::graph::pins(&self.state, node, false), "outputs":crate::graph::pins(&self.state, node, true)}),
+                );
+            }
+            Control::PublishProperties { id, properties } => {
+                let mut candidate = self.state.clone();
+                candidate
+                    .node_mut(&id)
+                    .context("Node not found")?
+                    .flow
+                    .values
+                    .extend(properties);
+                candidate.validate()?;
+                self.state = candidate;
+            }
+            Control::ConnectPins { connection } => {
+                crate::graph::connect(&mut self.state, connection)?
+            }
+            Control::DisconnectPins { connection } => {
+                self.state.connections.retain(|e| *e != connection);
+            }
+            Control::Evaluate { id } => {
+                self.state.node(&id).context("Node not found")?;
+                self.graph_pending.push_back((id, None));
+            }
+            Control::Emit { source, args } => {
+                let node = self.state.node(&source.node).context("Node not found")?;
+                let pin = crate::graph::pins(&self.state, node, true)
+                    .into_iter()
+                    .find(|p| p.name == source.pin)
+                    .context("Output pin not found")?;
+                ensure!(pin.ty.is_signal(), "Expected a signal output");
+                crate::graph::check_value(&self.state, &args, &pin.ty)?;
+                crate::graph::signal_environment(&args)?;
+                self.graph_pending
+                    .push_back((source.node, Some((source.pin, args))));
+            }
+            Control::Activate { id, args } => {
+                self.state.node(&id).context("Node not found")?;
+                crate::graph::signal_environment(&args)?;
+                self.graph_pending
+                    .push_back((id, Some((String::new(), args))));
+            }
+            Control::RegisterType { definition } => {
+                let mut candidate = self.state.clone();
+                candidate.types.push(definition);
+                candidate.validate()?;
+                self.state = candidate;
+            }
+            Control::RegisterCast { definition } => {
+                let mut candidate = self.state.clone();
+                candidate.casts.push(definition);
+                candidate.validate()?;
+                self.state = candidate;
+            }
+            Control::RegisterNode { definition } => {
+                let mut candidate = self.state.clone();
+                candidate.node_types.push(definition);
+                candidate.validate()?;
+                self.state = candidate;
+            }
             Control::Status => return Ok(serde_json::to_value(&self.state)?),
             Control::Create { mut node } => {
                 ensure!(self.state.nodes.len() < 2000, "Node limit reached");
@@ -590,6 +749,11 @@ impl Runtime {
                     node.dependencies.is_empty()
                         && !self
                             .state
+                            .connections
+                            .iter()
+                            .any(|e| e.source.node == id || e.target.node == id)
+                        && !self
+                            .state
                             .nodes
                             .iter()
                             .any(|n| n.dependencies.contains(&id)),
@@ -605,7 +769,41 @@ impl Runtime {
                 );
                 self.state.node_mut(&id).unwrap().workspace = workspace;
             }
-            Control::Connect { source, target } => self.state.connect(&source, &target)?,
+            Control::Connect { source, target } => {
+                let a = self.state.node(&source).context("Source node not found")?;
+                let b = self.state.node(&target).context("Target node not found")?;
+                if a.kind.primitive() || b.kind.primitive() {
+                    let outputs = crate::graph::pins(&self.state, a, true);
+                    let inputs = crate::graph::pins(&self.state, b, false);
+                    let (output, input) = outputs
+                        .iter()
+                        .find_map(|out| {
+                            inputs
+                                .iter()
+                                .find(|input| {
+                                    out.ty.is_signal() == input.ty.is_signal()
+                                        && crate::graph::can_cast(&self.state, &out.ty, &input.ty)
+                                })
+                                .map(|input| (out, input))
+                        })
+                        .context("No compatible pins; choose pins in node parameters")?;
+                    crate::graph::connect(
+                        &mut self.state,
+                        crate::graph::Connection {
+                            source: crate::graph::Endpoint {
+                                node: source,
+                                pin: output.name.clone(),
+                            },
+                            target: crate::graph::Endpoint {
+                                node: target,
+                                pin: input.name.clone(),
+                            },
+                        },
+                    )?;
+                } else {
+                    self.state.connect(&source, &target)?;
+                }
+            }
             Control::Disconnect { source, target } => {
                 let node = self.state.node_mut(&target).context("Node not found")?;
                 ensure!(
@@ -613,6 +811,9 @@ impl Runtime {
                     "Stop the target before changing its inputs"
                 );
                 node.dependencies.retain(|d| d != &source);
+                self.state
+                    .connections
+                    .retain(|e| e.source.node != source || e.target.node != target);
             }
             Control::Delete { id } => {
                 let mut candidate = self.state.clone();
@@ -701,6 +902,21 @@ impl Runtime {
                 node.status = Status::Queued;
             }
             Control::Run { id, downstream } => {
+                if self
+                    .state
+                    .node(&id)
+                    .context("Node not found")?
+                    .kind
+                    .primitive()
+                {
+                    let node = self.state.node(&id).unwrap();
+                    let signal = crate::graph::pins(&self.state, node, false)
+                        .iter()
+                        .any(|p| p.ty.is_signal())
+                        .then(|| (String::new(), json!({})));
+                    self.graph_pending.push_back((id, signal));
+                    return Ok(json!({"ok":true}));
+                }
                 ensure!(self.state.node(&id).is_some(), "Node not found");
                 let mut selected = HashSet::from([id.clone()]);
                 if downstream {
@@ -732,11 +948,45 @@ impl Runtime {
             }
             Control::RunWorkspace => {
                 let workspace = self.state.selected_workspace.clone();
+                let incoming: HashSet<_> = self
+                    .state
+                    .connections
+                    .iter()
+                    .filter(|e| {
+                        self.state.node(&e.source.node).is_some_and(|n| {
+                            crate::graph::pins(&self.state, n, true)
+                                .iter()
+                                .any(|p| p.name == e.source.pin && p.ty.is_signal())
+                        })
+                    })
+                    .map(|e| e.target.node.clone())
+                    .collect();
+                let roots: Vec<_> = self
+                    .state
+                    .nodes
+                    .iter()
+                    .filter(|n| {
+                        n.workspace == workspace
+                            && n.kind.primitive()
+                            && !n.status.active()
+                            && !incoming.contains(&n.id)
+                            && crate::graph::pins(&self.state, n, false)
+                                .iter()
+                                .any(|p| p.ty.is_signal())
+                    })
+                    .map(|n| n.id.clone())
+                    .collect();
+                for id in roots {
+                    self.graph_pending
+                        .push_back((id, Some((String::new(), json!({})))));
+                }
                 for n in &mut self.state.nodes {
                     if n.workspace == workspace
                         && !n.desktop_window
                         && !n.status.active()
                         && !self.runs.contains_key(&n.id)
+                        && !n.kind.primitive()
+                        && !incoming.contains(&n.id)
                     {
                         n.status = Status::Queued;
                         n.log("system", "Workflow queued.");
@@ -763,6 +1013,7 @@ impl Runtime {
                 node.status = Status::Done;
                 node.finished_at = Some(now());
                 node.log("system", "Approved by you. The workflow can continue.");
+                self.complete_signal(&id);
             }
             Control::Reject { id } => {
                 let node = self.state.node_mut(&id).context("Node not found")?;
@@ -776,6 +1027,7 @@ impl Runtime {
                     "error",
                     "Rejected by you. Success branches are blocked; failure branches may continue.",
                 );
+                self.complete_signal(&id);
             }
             Control::CreateWorkspace { name, cwd } => {
                 ensure!(
@@ -895,14 +1147,21 @@ impl Runtime {
         Ok(json!({"ok":true}))
     }
     fn stop(&mut self, id: &str) -> Result<()> {
+        self.graph_pending.retain(|(root, _)| root != id);
+        self.signal_pending.remove(id);
+        self.signal_args.remove(id);
+        let graph = self.graph_root.as_deref() == Some(id);
         let node = self.state.node_mut(id).context("Node not found")?;
         ensure!(
-            node.status.active() || self.runs.contains_key(id),
+            node.status.active() || self.runs.contains_key(id) || graph,
             "Node is not active"
         );
         node.status = Status::Stopped;
         node.finished_at = Some(now());
         node.log("system", "Stopped by you.");
+        if graph && let Some(run) = self.runs.get(GRAPH_RUN) {
+            run.cancel.store(true, Ordering::Relaxed);
+        }
         if let Some(run) = self.runs.get(id) {
             run.cancel.store(true, Ordering::Relaxed);
             if run.metric_due.is_some() {
@@ -911,7 +1170,149 @@ impl Runtime {
         }
         Ok(())
     }
+    fn finish_graph(
+        &mut self,
+        root: &str,
+        result: std::result::Result<crate::graph::Evaluation, String>,
+    ) {
+        match result {
+            Ok(result) => {
+                for (id, values) in result.values {
+                    if let Some(node) = self.state.node_mut(&id) {
+                        node.flow.values.extend(values);
+                        if node.kind.primitive() {
+                            node.status = Status::Done;
+                            node.finished_at = Some(now());
+                        }
+                        if let Some(value) = node.flow.values.get("value") {
+                            node.output = value
+                                .as_str()
+                                .map(str::to_string)
+                                .unwrap_or_else(|| value.to_string());
+                        }
+                    }
+                }
+                for id in result.executed {
+                    if let Some(node) = self.state.node_mut(&id).filter(|n| n.kind.primitive()) {
+                        node.status = Status::Done;
+                        node.finished_at = Some(now());
+                    }
+                }
+                for (id, error) in result.errors {
+                    if let Some(node) = self.state.node_mut(&id) {
+                        node.status = Status::Failed;
+                        node.log("error", error);
+                    }
+                }
+                for activation in result.activations {
+                    self.signal_pending
+                        .entry(activation.id.clone())
+                        .or_default()
+                        .push_back(activation);
+                }
+                if let Some(node) = self
+                    .state
+                    .node_mut(root)
+                    .filter(|n| n.kind.primitive() && n.status == Status::Running)
+                {
+                    node.status = Status::Done;
+                    node.finished_at = Some(now());
+                }
+            }
+            Err(error) => {
+                if let Some(node) = self.state.node_mut(root).filter(|n| n.kind.primitive()) {
+                    node.status = Status::Failed;
+                    node.finished_at = Some(now());
+                    node.log("error", &error);
+                }
+                self.error = Some(error);
+            }
+        }
+    }
+    fn complete_signal(&mut self, id: &str) {
+        let Some(node) = self.state.node(id) else {
+            return;
+        };
+        let pin = match node.status {
+            Status::Done => "out",
+            Status::Failed => "failed",
+            _ => return,
+        };
+        let args = self
+            .signal_args
+            .remove(id)
+            .map(|a| a.args)
+            .unwrap_or_else(|| json!({}));
+        if self
+            .state
+            .connections
+            .iter()
+            .any(|e| e.source.node == id && e.source.pin == pin)
+        {
+            self.graph_pending
+                .push_back((id.into(), Some((pin.into(), args))));
+        }
+    }
     fn schedule(&mut self) {
+        if !self.graph_active
+            && let Some((id, signal)) = self.graph_pending.pop_front()
+            && self.state.node(&id).is_some()
+        {
+            self.generation += 1;
+            let generation = self.generation;
+            let cancel = Arc::new(AtomicBool::new(false));
+            self.runs.insert(
+                GRAPH_RUN.into(),
+                Run {
+                    generation,
+                    cancel: cancel.clone(),
+                    metric_due: None,
+                    writer: true,
+                },
+            );
+            if let Some(node) = self.state.node_mut(&id).filter(|n| n.kind.primitive()) {
+                node.status = Status::Running;
+                node.started_at = Some(now());
+                node.finished_at = None;
+            }
+            self.graph_active = true;
+            self.graph_root = Some(id.clone());
+            self.dirty = true;
+            let state = self.state.clone();
+            let tx = self.tx.clone();
+            thread::spawn(move || {
+                let result = crate::graph::evaluate_isolated(state, &id, signal, cancel)
+                    .map_err(|e| format!("{e:#}"));
+                let _ = tx.send(Message::GraphFinished {
+                    id,
+                    generation,
+                    result,
+                });
+            });
+        }
+        let pending: Vec<_> = self.signal_pending.keys().cloned().collect();
+        for id in pending {
+            if self.state.node(&id).is_none() {
+                self.signal_pending.remove(&id);
+                continue;
+            }
+            if !self.runs.contains_key(&id)
+                && self.state.node(&id).is_some_and(|n| !n.status.active())
+            {
+                if let Some(activation) = self
+                    .signal_pending
+                    .get_mut(&id)
+                    .and_then(VecDeque::pop_front)
+                {
+                    self.signal_args.insert(id.clone(), activation);
+                    self.state.node_mut(&id).unwrap().status = Status::Queued;
+                    self.dirty = true;
+                }
+                if self.signal_pending.get(&id).is_some_and(VecDeque::is_empty) {
+                    self.signal_pending.remove(&id);
+                }
+            }
+        }
         let due: Vec<_> = self
             .runs
             .iter()
@@ -930,7 +1331,10 @@ impl Runtime {
             .state
             .nodes
             .iter()
-            .filter(|n| n.status == Status::Queued && self.state.ready(n))
+            .filter(|n| {
+                n.status == Status::Queued
+                    && (self.signal_args.contains_key(&n.id) || self.state.ready(n))
+            })
             .map(|n| n.id.clone())
             .collect();
         for id in ids {
@@ -963,11 +1367,17 @@ impl Runtime {
             {
                 node.status = Status::Failed;
                 node.log("error", format!("{error:#}"));
+                self.complete_signal(&id);
             }
             self.dirty = true;
         }
     }
     fn launch(&mut self, id: &str) -> Result<()> {
+        if self.state.node(id).is_some_and(|n| n.kind.primitive()) {
+            self.graph_pending.push_back((id.into(), None));
+            self.state.node_mut(id).unwrap().status = Status::Idle;
+            return Ok(());
+        }
         let context = self
             .state
             .node(id)
@@ -1047,6 +1457,16 @@ impl Runtime {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
+        // Child processes never inherit arguments from an unrelated signal.
+        for (key, _) in
+            std::env::vars_os().filter(|(k, _)| k.as_encoded_bytes().starts_with(b"FLOWWM_ARG_"))
+        {
+            command.env_remove(key);
+        }
+        if let Some(activation) = self.signal_args.get(id) {
+            command.envs(crate::graph::signal_environment(&activation.args)?);
+            command.env("FLOWWM_DATA_INPUTS", activation.inputs.to_string());
+        }
         let mut child = command.spawn().with_context(|| {
             if agent {
                 "Start Codex (install and authenticate the codex CLI first)"

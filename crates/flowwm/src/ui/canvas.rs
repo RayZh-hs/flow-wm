@@ -107,6 +107,9 @@ enum Drag {
     Wire {
         source: String,
     },
+    Pin {
+        source: crate::graph::Endpoint,
+    },
     Box {
         start: (f64, f64),
         end: (f64, f64),
@@ -328,6 +331,7 @@ impl View {
                 Drag::Box { start, end, .. } => format!("box:{start:?}:{end:?}"),
                 Drag::Cut { points } => format!("cut:{points:?}"),
                 Drag::Wire { source } => format!("wire:{source}"),
+                Drag::Pin { source } => format!("pin:{}:{}", source.node, source.pin),
                 _ => String::new(),
             })
         )
@@ -460,6 +464,7 @@ pub type RowViews = Rc<RefCell<HashMap<String, View>>>;
 
 fn canvas_node(node: &Node) -> Node {
     Node {
+        flow: node.flow.clone(),
         id: node.id.clone(),
         workspace: node.workspace.clone(),
         title: node.title.clone(),
@@ -489,6 +494,19 @@ fn canvas_node(node: &Node) -> Node {
 
 pub(super) fn row_state(state: &State, workspace: &str) -> State {
     State {
+        connections: state
+            .connections
+            .iter()
+            .filter(|e| {
+                state
+                    .node(&e.source.node)
+                    .is_some_and(|n| n.workspace == workspace)
+            })
+            .cloned()
+            .collect(),
+        types: state.types.clone(),
+        casts: state.casts.clone(),
+        node_types: state.node_types.clone(),
         version: state.version,
         selected_workspace: workspace.into(),
         workspaces: state
@@ -666,6 +684,22 @@ fn make_scoped(
     let v = view.clone();
     let a = area.clone();
     motion.connect_motion(move |_, x, y| {
+        let state = e.snapshot().state;
+        let view = v.borrow();
+        let (wx, wy) = view.world(x, y);
+        let hovered_pin = hit_pin(&state, &view, wx, wy, true)
+            .map(|p| (p, true))
+            .or_else(|| hit_pin(&state, &view, wx, wy, false).map(|p| (p, false)));
+        let tooltip = hovered_pin.and_then(|(endpoint, output)| {
+            state.node(&endpoint.node).and_then(|n| {
+                crate::graph::pins(&state, n, output)
+                    .into_iter()
+                    .find(|p| p.name == endpoint.pin)
+                    .map(|p| format!("{}.{}: {}", n.title, p.name, p.ty))
+            })
+        });
+        drop(view);
+        a.set_tooltip_text(tooltip.as_deref());
         let hit = super::empty::hit(a.width() as f64, a.height() as f64, x, y);
         let hover = hit.filter(|_| !v.borrow().space_down && workspace_empty(&e.snapshot().state));
         if v.borrow().empty_hover != hover {
@@ -717,6 +751,8 @@ fn make_scoped(
                 x: view.pan_x,
                 y: view.pan_y,
             });
+        } else if let Some(source) = hit_pin(&state, &view, wx, wy, true) {
+            view.drag = Some(Drag::Pin { source });
         } else if let Some(node) = state.nodes.iter().find(|n| {
             n.workspace == state.selected_workspace
                 && (wx - view.position(n).x - WIDTH / 2.0)
@@ -782,7 +818,7 @@ fn make_scoped(
                 view.pan_x = x + dx;
                 view.pan_y = y + dy;
             }
-            Some(Drag::Wire { .. }) => {
+            Some(Drag::Wire { .. } | Drag::Pin { .. }) => {
                 if let Some((x, y)) = g.start_point() {
                     view.pointer = view.world(x + dx, y + dy);
                 }
@@ -818,6 +854,14 @@ fn make_scoped(
             }
         }
         match view.drag.take() {
+            Some(Drag::Pin { source }) => {
+                if let Some(target) = hit_pin(&state, &view, view.pointer.0, view.pointer.1, false)
+                {
+                    e.dispatch(Control::ConnectPins {
+                        connection: crate::graph::Connection { source, target },
+                    });
+                }
+            }
             Some(Drag::Wire { source }) => {
                 let (x, y) = view.pointer;
                 if let Some(target) = state.nodes.iter().find(|n| {
@@ -923,6 +967,33 @@ fn make_scoped(
         };
         let state = e.snapshot().state;
         let view = v.borrow();
+        for edge in &state.connections {
+            if let (Some(source), Some(target)) =
+                (state.node(&edge.source.node), state.node(&edge.target.node))
+                && source.workspace == state.selected_workspace
+                && let (Some(from), Some(to)) = (
+                    pin_position(
+                        &state,
+                        source,
+                        &view.position(source),
+                        &edge.source.pin,
+                        true,
+                    ),
+                    pin_position(
+                        &state,
+                        target,
+                        &view.position(target),
+                        &edge.target.pin,
+                        false,
+                    ),
+                )
+                && pin_wire_cut(from, to, &points)
+            {
+                e.dispatch(Control::DisconnectPins {
+                    connection: edge.clone(),
+                });
+            }
+        }
         for node in state
             .nodes
             .iter()
@@ -997,7 +1068,12 @@ fn make_scoped(
             if let Some(target) = ordered_nodes(&state).get(index) {
                 if v.borrow().space_down {
                     if let Some(source) = selected.filter(|id| id != &target.id) {
-                        if target.dependencies.contains(&source) {
+                        if target.dependencies.contains(&source)
+                            || state
+                                .connections
+                                .iter()
+                                .any(|e| e.source.node == source && e.target.node == target.id)
+                        {
                             e.dispatch(Control::Disconnect {
                                 source,
                                 target: target.id.clone(),
@@ -1005,6 +1081,10 @@ fn make_scoped(
                         } else if state
                             .node(&source)
                             .is_some_and(|n| n.dependencies.contains(&target.id))
+                            || state
+                                .connections
+                                .iter()
+                                .any(|e| e.source.node == target.id && e.target.node == source)
                         {
                             e.dispatch(Control::Disconnect {
                                 source: target.id.clone(),
@@ -1282,6 +1362,53 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
             c.set_dash(&[], 0.0);
         }
     }
+    for edge in &state.connections {
+        if let (Some(source), Some(target)) =
+            (state.node(&edge.source.node), state.node(&edge.target.node))
+            && source.workspace == state.selected_workspace
+            && let (Some(from), Some(to)) = (
+                pin_position(
+                    state,
+                    source,
+                    &view.position(source),
+                    &edge.source.pin,
+                    true,
+                ),
+                pin_position(
+                    state,
+                    target,
+                    &view.position(target),
+                    &edge.target.pin,
+                    false,
+                ),
+            )
+        {
+            let signal = crate::graph::pins(state, source, true)
+                .iter()
+                .any(|p| p.name == edge.source.pin && p.ty.is_signal());
+            if signal {
+                theme.primary.source(c);
+            } else {
+                theme.muted.source(c);
+            }
+            c.set_line_width(1.6);
+            if !signal {
+                c.set_dash(&[4.0, 3.0], 0.0);
+            }
+            pin_wire(c, from, to);
+            let _ = c.stroke();
+            c.set_dash(&[], 0.0);
+        }
+    }
+    if let Some(Drag::Pin { source }) = &view.drag
+        && let Some(node) = state.node(&source.node)
+        && let Some(from) = pin_position(state, node, &view.position(node), &source.pin, true)
+    {
+        theme.primary.source(c);
+        c.set_line_width(2.0);
+        pin_wire(c, from, view.pointer);
+        let _ = c.stroke();
+    }
     if let Some(Drag::Wire { source }) = &view.drag
         && let Some(n) = state.node(source)
     {
@@ -1364,6 +1491,22 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
             draw_window_node(c, node, &p, visible_rect, progress, selected, view);
         } else {
             draw_node(c, node, &p, selected, theme);
+        }
+        if !node.closed_window() {
+            for output in [false, true] {
+                for pin in crate::graph::pins(state, node, output) {
+                    if let Some((x, y)) = pin_position(state, node, &p, &pin.name, output) {
+                        theme.primary.source(c);
+                        if pin.ty.is_signal() {
+                            c.arc(x, y, 4.0, 0.0, std::f64::consts::TAU);
+                            let _ = c.stroke();
+                        } else {
+                            c.rectangle(x - 3.5, y - 3.5, 7.0, 7.0);
+                            let _ = c.fill();
+                        }
+                    }
+                }
+            }
         }
         if !view.query.is_empty() && matches {
             rounded(
@@ -1695,6 +1838,7 @@ pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, the
         NodeKind::Gate => "?",
         NodeKind::Human => "@",
         NodeKind::Window => "[]",
+        _ => n.kind.symbol(),
     };
     text(c, x + 20.0, y + 32.0, glyph, 12.0, accent, true);
     text(
@@ -1762,8 +1906,26 @@ pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, the
             accent,
         );
     } else {
-        let snippet = n
-            .command
+        let display = if n.kind == NodeKind::Display {
+            n.flow
+                .values
+                .get("value")
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| v.to_string())
+                })
+                .unwrap_or_else(|| "Waiting for input".into())
+        } else if n.kind == NodeKind::Constant {
+            n.flow
+                .properties
+                .get("value")
+                .unwrap_or(&serde_json::Value::Null)
+                .to_string()
+        } else {
+            n.command.clone()
+        };
+        let snippet = display
             .lines()
             .find(|l| !l.trim().is_empty())
             .unwrap_or("Select a window in Parameters");
@@ -1856,6 +2018,78 @@ fn wire(c: &Context, x1: f64, y1: f64, x2: f64, y2: f64) {
     let bend = ((y2 - y1).abs() * 0.5).max(50.0);
     c.move_to(x1, y1);
     c.curve_to(x1, y1 + bend, x2, y2 - bend, x2, y2);
+}
+fn pin_position(
+    state: &State,
+    node: &Node,
+    p: &Position,
+    name: &str,
+    output: bool,
+) -> Option<(f64, f64)> {
+    let pins = crate::graph::pins(state, node, output);
+    let index = pins.iter().position(|pin| pin.name == name)?;
+    Some((
+        p.x + if output { WIDTH } else { 0.0 },
+        p.y + node_height(node) * (index + 1) as f64 / (pins.len() + 1) as f64,
+    ))
+}
+fn hit_pin(
+    state: &State,
+    view: &View,
+    x: f64,
+    y: f64,
+    output: bool,
+) -> Option<crate::graph::Endpoint> {
+    for node in state
+        .nodes
+        .iter()
+        .rev()
+        .filter(|n| n.workspace == state.selected_workspace && !n.closed_window())
+    {
+        for pin in crate::graph::pins(state, node, output) {
+            if let Some((px, py)) =
+                pin_position(state, node, &view.position(node), &pin.name, output)
+                && (px - x).hypot(py - y) < 9.0
+            {
+                return Some(crate::graph::Endpoint {
+                    node: node.id.clone(),
+                    pin: pin.name,
+                });
+            }
+        }
+    }
+    None
+}
+fn pin_wire(c: &Context, from: (f64, f64), to: (f64, f64)) {
+    let bend = ((to.0 - from.0).abs() * 0.5).max(50.0);
+    c.move_to(from.0, from.1);
+    c.curve_to(from.0 + bend, from.1, to.0 - bend, to.1, to.0, to.1);
+}
+fn pin_wire_cut(from: (f64, f64), to: (f64, f64), points: &[(f64, f64)]) -> bool {
+    let bend = ((to.0 - from.0).abs() * 0.5).max(50.0);
+    let curve = |t: f64| {
+        let u = 1.0 - t;
+        (
+            u * u * u * from.0
+                + 3.0 * u * u * t * (from.0 + bend)
+                + 3.0 * u * t * t * (to.0 - bend)
+                + t * t * t * to.0,
+            u * u * u * from.1
+                + 3.0 * u * u * t * from.1
+                + 3.0 * u * t * t * to.1
+                + t * t * t * to.1,
+        )
+    };
+    (0..32).any(|i| {
+        points.windows(2).any(|line| {
+            crossing(
+                curve(i as f64 / 32.0),
+                curve((i + 1) as f64 / 32.0),
+                line[0],
+                line[1],
+            )
+        })
+    })
 }
 fn sparkline(c: &Context, samples: &[Sample], rect: (f64, f64, f64, f64), rgb: (f64, f64, f64)) {
     let (x, y, w, h) = rect;

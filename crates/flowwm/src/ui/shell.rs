@@ -2503,6 +2503,7 @@ impl Shell {
         );
         node.title = m.name.clone();
         node.command = m.command.clone();
+        node.flow = m.flow.clone();
         if matches!(m.kind, NodeKind::Agent | NodeKind::Shell | NodeKind::Gate)
             && let Some(selected) = view.selected.as_ref()
         {
@@ -2544,6 +2545,41 @@ impl Shell {
         field(&root, "Name", &title);
         let directory = entry(&node.cwd.to_string_lossy());
         field(&root, "Working directory", &directory);
+        let properties = gtk::TextView::new();
+        properties.set_monospace(true);
+        properties
+            .buffer()
+            .set_text(&serde_json::to_string_pretty(&node.flow.properties).unwrap_or_default());
+        let property_scroll = gtk::ScrolledWindow::builder()
+            .min_content_height(85)
+            .child(&properties)
+            .build();
+        field(&root, "Properties (JSON record)", &property_scroll);
+        let ports = gtk::TextView::new();
+        ports.set_monospace(true);
+        ports.buffer().set_text(
+            &serde_json::to_string_pretty(
+                &serde_json::json!({"inputs":node.flow.inputs, "outputs":node.flow.outputs}),
+            )
+            .unwrap_or_default(),
+        );
+        let port_scroll = gtk::ScrolledWindow::builder()
+            .min_content_height(85)
+            .child(&ports)
+            .build();
+        field(
+            &root,
+            "Pins (JSON; property exposes a property as a pin)",
+            &port_scroll,
+        );
+        if node.kind.primitive() {
+            let hint = label(
+                "Data inputs evaluate on demand. Signals activate recipients. Vox returns an output record; Python assigns outputs.",
+                "hint",
+            );
+            hint.set_wrap(true);
+            root.append(&hint);
+        }
         let editor = gtk::TextView::new();
         editor.set_monospace(true);
         editor.set_wrap_mode(gtk::WrapMode::WordChar);
@@ -2560,6 +2596,10 @@ impl Shell {
                 "Prompt"
             } else if matches!(node.kind, NodeKind::Shell | NodeKind::Metric) {
                 "Shell script"
+            } else if node.kind == NodeKind::Vox {
+                "Vox expression or block"
+            } else if node.kind == NodeKind::Python {
+                "Python source"
             } else {
                 "Instructions"
             },
@@ -2644,6 +2684,99 @@ impl Shell {
                 root.append(&line);
             }
         }
+        root.append(&label("PIN CONNECTIONS", "eyebrow"));
+        for edge in state
+            .connections
+            .iter()
+            .filter(|e| e.target.node == node.id)
+        {
+            let line = row(8);
+            let source = state
+                .node(&edge.source.node)
+                .map(|n| n.title.as_str())
+                .unwrap_or("Missing node");
+            let name = label(
+                &format!("{source}.{} → {}", edge.source.pin, edge.target.pin),
+                "muted",
+            );
+            name.set_hexpand(true);
+            line.append(&name);
+            let remove = gtk::Button::with_label("Disconnect");
+            let e = self.engine.clone();
+            let edge = edge.clone();
+            let l = line.clone();
+            remove.connect_clicked(move |_| {
+                e.dispatch(Control::DisconnectPins {
+                    connection: edge.clone(),
+                });
+                l.set_visible(false);
+            });
+            line.append(&remove);
+            root.append(&line);
+        }
+        for input in crate::graph::pins(&state, &node, false) {
+            let choices = Choice::new();
+            choices.append(Some(""), "Choose an output");
+            choices.set_active_id(Some(""));
+            for source in state
+                .nodes
+                .iter()
+                .filter(|n| n.workspace == node.workspace && n.id != node.id)
+            {
+                for output in crate::graph::pins(&state, source, true)
+                    .into_iter()
+                    .filter(|p| {
+                        p.ty.is_signal() == input.ty.is_signal()
+                            && crate::graph::can_cast(&state, &p.ty, &input.ty)
+                    })
+                {
+                    let endpoint = crate::graph::Endpoint {
+                        node: source.id.clone(),
+                        pin: output.name.clone(),
+                    };
+                    choices.append(
+                        Some(&serde_json::to_string(&endpoint).unwrap()),
+                        &format!("{}.{}", source.title, output.name),
+                    );
+                }
+            }
+            let line = row(8);
+            choices.widget.set_hexpand(true);
+            line.append(&choices.widget);
+            let connect = gtk::Button::with_label("Connect");
+            let e = self.engine.clone();
+            let target = crate::graph::Endpoint {
+                node: node.id.clone(),
+                pin: input.name.clone(),
+            };
+            connect.connect_clicked(move |_| {
+                if let Some(source) = choices
+                    .active_id()
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                {
+                    e.dispatch(Control::ConnectPins {
+                        connection: crate::graph::Connection {
+                            source,
+                            target: target.clone(),
+                        },
+                    });
+                }
+            });
+            line.append(&connect);
+            field(
+                &root,
+                &format!(
+                    "{} ({})",
+                    input.name,
+                    if input.ty.is_signal() {
+                        "signal"
+                    } else {
+                        "data"
+                    }
+                ),
+                &line,
+            );
+        }
         let actions = row(10);
         actions.set_halign(gtk::Align::End);
         let cancel = gtk::Button::with_label("Cancel");
@@ -2662,6 +2795,27 @@ impl Shell {
                 return;
             };
             let mut node = original.clone();
+            let buffer = properties.buffer();
+            let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+            match serde_json::from_str(&text) {
+                Ok(value) => node.flow.properties = value,
+                Err(error) => {
+                    s.show_error(&format!("Invalid properties: {error}"));
+                    return;
+                }
+            }
+            let buffer = ports.buffer();
+            let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+            match serde_json::from_str::<crate::graph::Flow>(&text) {
+                Ok(value) => {
+                    node.flow.inputs = value.inputs;
+                    node.flow.outputs = value.outputs;
+                }
+                Err(error) => {
+                    s.show_error(&format!("Invalid pins: {error}"));
+                    return;
+                }
+            }
             node.title = title.text().to_string();
             node.cwd = PathBuf::from(directory.text().as_str());
             let b = editor.buffer();

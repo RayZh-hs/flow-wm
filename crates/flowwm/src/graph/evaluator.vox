@@ -1,0 +1,84 @@
+script flowwm.evaluator;
+import flowwm.host;
+
+// JSON values are opaque at this boundary. The host implements record access,
+// casts, and language bindings; traversal and activation belong to Vox.
+evil fun evaluate(node: String, args: String, active: Bool): String {
+    val cached = host.call("cached", node, "", "");
+    if (!active && cached != "") { return cached; }
+    host.call("enter", node, "", "");
+    val kind = host.call("kind", node, "", "");
+    if (!active && (kind == "break_signal" || kind == "workflow")) {
+        val result = host.call("snapshot", node, "", "");
+        host.call("store", node, result, "");
+        return result;
+    }
+    var inputs = "{}";
+    for (var i = 0; i < host.count(node, "inputs")) {
+        val pin = host.at(node, "inputs", i);
+        val source = host.call("source_node", node, pin, "");
+        var value = "null";
+        if (source != "") {
+            val output = host.call("source_pin", node, pin, "");
+            val published = host.call("property_output", source, output, "");
+            if (published != "") { value = published; }
+            else {
+                val result = evaluate(source, args, false);
+                if (result == "!error") { host.call("store", node, "!error", ""); return "!error"; }
+                value = host.call("get", result, output, "");
+            }
+        } else {
+            value = host.call("local", node, pin, "");
+        }
+        if (value == "!error") { host.call("store", node, "!error", ""); return "!error"; }
+        value = host.call("cast_input", node, pin, value);
+        if (value == "!error") { host.call("store", node, "!error", ""); return "!error"; }
+        inputs = host.call("put", inputs, pin, value);
+        i += 1;
+    }
+    var result = "{}";
+    if (kind == "constant") {
+        result = host.call("put", "{}", "value", host.call("constant", node, inputs, ""));
+    } else if (kind == "display") {
+        result = host.call("put", "{}", "value", host.call("get", inputs, "value", ""));
+    } else if (kind == "break_signal") {
+        result = host.call("break", node, args, "");
+    } else if (kind == "merge_signal") {
+        val merged = host.call("merge_inputs", node, inputs, args);
+        if (merged == "!error") { host.call("store", node, "!error", ""); return "!error"; }
+        result = host.call("put", "{}", "__args", merged);
+    } else if (kind == "conditional") {
+        result = host.call("put", "{}", "__condition", host.call("get", inputs, "condition", ""));
+    } else if (kind == "workflow") {
+        result = host.call("defer", node, inputs, args);
+    } else {
+        result = host.call("invoke", node, inputs, args);
+    }
+    result = host.call("publish", node, result, "");
+    host.call("store", node, result, "");
+    return result;
+}
+
+{
+if (host.call("mode", "", "", "") == "data") {
+    host.call("answer", evaluate(host.call("root", "", "", ""), "{}", false), "", "");
+} else {
+    for (host.count("", "events") > 0) {
+        val node = host.call("next", "", "", "");
+        val args = host.call("event_args", "", "", "");
+        val result = evaluate(node, args, true);
+        if (result != "!error") {
+            val kind = host.call("kind", node, "", "");
+            if (kind == "break_signal") { host.call("emit", node, "out", "{}"); }
+            else if (kind == "merge_signal") { host.call("emit", node, "out", host.call("get", result, "__args", "")); }
+            else if (kind == "conditional") {
+                val branch = if (host.call("get", result, "__condition", "") == "true") { "true" } else { "false" };
+                host.call("emit", node, branch, args);
+            } else if (kind != "workflow") {
+                host.call("emit_results", node, result, args);
+            }
+        }
+    }
+}
+0
+}

@@ -33,7 +33,9 @@ fn main() -> Result<()> {
     if cli.example && state.nodes.is_empty() {
         ui::example(&mut state);
     }
-    let macros = extensions::load(&config.config_dir().join("extensions"))?;
+    let extensions = extensions::load_bundle(&config.config_dir().join("extensions"))?;
+    extensions.apply(&mut state)?;
+    let macros = extensions.macros;
     let (engine, events) = Engine::new(state, store);
     ipc::serve(listener, engine.clone(), macros.clone());
     let result = ui::run(

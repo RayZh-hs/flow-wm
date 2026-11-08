@@ -18,6 +18,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 signal-hook = "0.3"
 uuid = { version = "1", features = ["v4", "serde"] }
+vox-core = { git = "https://github.com/RayZh-hs/Vox.git", rev = "16bfa675d8d3ca45877c91261d633adeb34f574c" }
+vox-runtime = { git = "https://github.com/RayZh-hs/Vox.git", rev = "16bfa675d8d3ca45877c91261d633adeb34f574c" }
 
 [dev-dependencies]
 tempfile = "3"

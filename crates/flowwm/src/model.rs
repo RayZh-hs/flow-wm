@@ -26,6 +26,14 @@ pub enum NodeKind {
     Gate,
     Human,
     Window,
+    Constant,
+    Display,
+    BreakSignal,
+    MergeSignal,
+    Conditional,
+    Vox,
+    Python,
+    Extension,
 }
 impl NodeKind {
     pub fn label(self) -> &'static str {
@@ -36,6 +44,14 @@ impl NodeKind {
             Self::Gate => "Decision",
             Self::Human => "You",
             Self::Window => "Window",
+            Self::Constant => "Constant",
+            Self::Display => "Display",
+            Self::BreakSignal => "Break signal",
+            Self::MergeSignal => "Merge signal",
+            Self::Conditional => "Conditional",
+            Self::Vox => "Vox",
+            Self::Python => "Python",
+            Self::Extension => "Extension",
         }
     }
     pub fn symbol(self) -> &'static str {
@@ -46,7 +62,28 @@ impl NodeKind {
             Self::Gate => "◇",
             Self::Human => "◉",
             Self::Window => "▤",
+            Self::Constant => "=",
+            Self::Display => "▣",
+            Self::BreakSignal => "↙",
+            Self::MergeSignal => "↗",
+            Self::Conditional => "?",
+            Self::Vox => "V",
+            Self::Python => "Py",
+            Self::Extension => "+",
         }
+    }
+    pub fn primitive(self) -> bool {
+        matches!(
+            self,
+            Self::Constant
+                | Self::Display
+                | Self::BreakSignal
+                | Self::MergeSignal
+                | Self::Conditional
+                | Self::Vox
+                | Self::Python
+                | Self::Extension
+        )
     }
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -139,6 +176,8 @@ impl Default for Metric {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Node {
+    #[serde(default)]
+    pub flow: crate::graph::Flow,
     pub id: String,
     pub workspace: String,
     pub title: String,
@@ -193,8 +232,17 @@ impl Node {
             ),
             NodeKind::Human => ("My work", "A place for your work, alongside the agents."),
             NodeKind::Window => ("Application window", ""),
+            NodeKind::Constant => ("Constant", ""),
+            NodeKind::Display => ("Display", ""),
+            NodeKind::BreakSignal => ("Break signal", ""),
+            NodeKind::MergeSignal => ("Merge signal", ""),
+            NodeKind::Conditional => ("Conditional", ""),
+            NodeKind::Vox => ("Vox", "{ value = 42, }"),
+            NodeKind::Python => ("Python", "outputs = {'value': 42}"),
+            NodeKind::Extension => ("Extension", ""),
         };
         Self {
+            flow: crate::graph::Flow::default(),
             id: id(),
             workspace: workspace.into(),
             title: title.into(),
@@ -272,9 +320,25 @@ pub struct Recipe {
     pub nodes: Vec<Node>,
     #[serde(default)]
     pub watchers: Vec<Watcher>,
+    #[serde(default)]
+    pub connections: Vec<crate::graph::Connection>,
+    #[serde(default)]
+    pub types: Vec<crate::graph::TypeDefinition>,
+    #[serde(default)]
+    pub casts: Vec<crate::graph::CastDefinition>,
+    #[serde(default)]
+    pub node_types: Vec<crate::graph::NodeDefinition>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct State {
+    #[serde(default)]
+    pub connections: Vec<crate::graph::Connection>,
+    #[serde(default)]
+    pub types: Vec<crate::graph::TypeDefinition>,
+    #[serde(default)]
+    pub casts: Vec<crate::graph::CastDefinition>,
+    #[serde(default)]
+    pub node_types: Vec<crate::graph::NodeDefinition>,
     pub version: u32,
     pub workspaces: Vec<Workspace>,
     pub nodes: Vec<Node>,
@@ -294,6 +358,10 @@ impl State {
             view: RowView::default(),
         };
         Self {
+            connections: vec![],
+            types: vec![],
+            casts: vec![],
+            node_types: vec![],
             version: 1,
             selected_workspace: workspace.id.clone(),
             workspaces: vec![workspace],
@@ -440,6 +508,7 @@ impl State {
             );
             ensure!(watcher.threshold.is_finite(), "Invalid watcher threshold");
         }
+        crate::graph::validate(self)?;
         Ok(())
     }
     pub fn recipe(&self, name: String, selected: &[String]) -> Result<Recipe> {
@@ -465,9 +534,19 @@ impl State {
             n.column_mode = ColumnMode::Node;
             n.chat.clear();
             n.agent_session = None;
+            n.flow.values.clear();
             n.cwd = PathBuf::from(".");
         }
         Ok(Recipe {
+            connections: self
+                .connections
+                .iter()
+                .filter(|e| selected.contains(&e.source.node) && selected.contains(&e.target.node))
+                .cloned()
+                .collect(),
+            types: self.types.clone(),
+            casts: self.casts.clone(),
+            node_types: self.node_types.clone(),
             id: id(),
             name,
             nodes,
@@ -512,6 +591,8 @@ impl State {
             n.id = mapping[&template.id].clone();
             n.title = template.title.clone();
             n.command = template.command.clone();
+            n.flow = template.flow.clone();
+            n.flow.values.clear();
             n.dependencies = template
                 .dependencies
                 .iter()
@@ -531,6 +612,37 @@ impl State {
         }
         let ids = nodes.iter().map(|n| n.id.clone()).collect();
         let mut candidate = self.clone();
+        for ty in &recipe.types {
+            if let Some(existing) = candidate.types.iter().find(|t| t.name == ty.name) {
+                ensure!(existing == ty, "Conflicting recipe type: {}", ty.name);
+            } else {
+                candidate.types.push(ty.clone());
+            }
+        }
+        for def in &recipe.node_types {
+            if let Some(existing) = candidate.node_types.iter().find(|d| d.id == def.id) {
+                ensure!(existing == def, "Conflicting recipe node: {}", def.id);
+            } else {
+                candidate.node_types.push(def.clone());
+            }
+        }
+        for cast in &recipe.casts {
+            if !candidate.casts.contains(cast) {
+                candidate.casts.push(cast.clone());
+            }
+        }
+        for edge in &recipe.connections {
+            let mut edge = edge.clone();
+            edge.source.node = mapping
+                .get(&edge.source.node)
+                .context("Missing recipe source")?
+                .clone();
+            edge.target.node = mapping
+                .get(&edge.target.node)
+                .context("Missing recipe target")?
+                .clone();
+            candidate.connections.push(edge);
+        }
         candidate.nodes.extend(nodes);
         for watcher in &recipe.watchers {
             let mut watcher = watcher.clone();
@@ -570,6 +682,8 @@ impl State {
             "An active node depends on this node"
         );
         self.nodes.retain(|n| n.id != id);
+        self.connections
+            .retain(|e| e.source.node != id && e.target.node != id);
         for n in &mut self.nodes {
             n.dependencies.retain(|d| d != id);
         }

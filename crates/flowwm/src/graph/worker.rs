@@ -1,0 +1,145 @@
+//! Run evaluations in an owned process group so Stop also interrupts Vox loops.
+use super::*;
+use std::{
+    fs::File,
+    io::{Read, Write},
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::{net::UnixStream, process::CommandExt},
+    },
+    process::{Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
+};
+
+#[derive(Serialize, Deserialize)]
+struct Request {
+    state: State,
+    root: String,
+    signal: Option<(String, Value)>,
+}
+
+/// Internal CLI entrypoint; the result travels on fd 3, separate from user code.
+pub fn run_worker() -> Result<()> {
+    let mut bytes = vec![];
+    std::io::stdin()
+        .take(32 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() <= 32 * 1024 * 1024,
+        "Graph snapshot is too large"
+    );
+    let request: Request = serde_json::from_slice(&bytes)?;
+    let result = evaluate(
+        request.state,
+        &request.root,
+        request
+            .signal
+            .as_ref()
+            .map(|(p, a)| (p.as_str(), a.clone())),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .map_err(|e| format!("{e:#}"));
+    let output = unsafe { File::from_raw_fd(3) };
+    serde_json::to_writer(output, &result)?;
+    Ok(())
+}
+
+pub fn evaluate_isolated(
+    mut state: State,
+    root: &str,
+    signal: Option<(String, Value)>,
+    cancel: Arc<AtomicBool>,
+) -> Result<Evaluation> {
+    for node in &mut state.nodes {
+        node.logs.clear();
+        node.chat.clear();
+    }
+    state.recipes.clear();
+    let bytes = serde_json::to_vec(&Request {
+        state,
+        root: root.into(),
+        signal,
+    })?;
+    ensure!(
+        bytes.len() <= 32 * 1024 * 1024,
+        "Graph snapshot is too large"
+    );
+    let executable = std::env::current_exe()?;
+    let parent = executable.parent().context("Executable has no parent")?;
+    let executable = if parent.file_name().is_some_and(|n| n == "deps") {
+        parent
+            .parent()
+            .context("Missing build directory")?
+            .join("flowwm")
+    } else {
+        parent.join("flowwm")
+    };
+    let (reader, writer) = UnixStream::pair()?;
+    let fd = writer.as_raw_fd();
+    let mut command = Command::new(executable);
+    command
+        .arg("evaluate-worker")
+        .env("FLOWWM_GRAPH_WORKER", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    unsafe {
+        command.pre_exec(move || {
+            if libc::dup2(fd, 3) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            libc::fcntl(3, libc::F_SETFD, 0);
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().context("Start Vox graph evaluator")?;
+    drop(writer);
+    let mut input = child.stdin.take().unwrap();
+    let input = thread::spawn(move || input.write_all(&bytes));
+    let mut stderr = child.stderr.take().unwrap();
+    let err = thread::spawn(move || {
+        let mut bytes = vec![];
+        let _ = (&mut stderr).take(64_001).read_to_end(&mut bytes);
+        bytes
+    });
+    let out = thread::spawn(move || {
+        let mut bytes = vec![];
+        let _ = reader.take(4 * 1024 * 1024 + 1).read_to_end(&mut bytes);
+        bytes
+    });
+    let start = Instant::now();
+    let mut interrupted = false;
+    let status = loop {
+        if cancel.load(Ordering::Relaxed) || start.elapsed() > Duration::from_secs(60) {
+            interrupted = true;
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
+        }
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    let _ = input.join();
+    let stderr = err.join().unwrap_or_default();
+    let bytes = out.join().unwrap_or_default();
+    ensure!(!interrupted, "Graph evaluation stopped or timed out");
+    ensure!(
+        status.success(),
+        "Graph evaluator failed: {}",
+        String::from_utf8_lossy(&stderr)
+    );
+    ensure!(bytes.len() <= 4 * 1024 * 1024, "Graph result is too large");
+    serde_json::from_slice::<std::result::Result<Evaluation, String>>(&bytes)?
+        .map_err(anyhow::Error::msg)
+}

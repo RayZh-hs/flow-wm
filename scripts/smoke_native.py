@@ -77,8 +77,8 @@ def run(root, runtime, process, application, environment):
             return same
         wait(settled, process)
 
-    def create(title):
-        result = subprocess.check_output([str(application), "add", "human", title, "--cwd", str(root)], env=environment, text=True)
+    def create(title, kind="human"):
+        result = subprocess.check_output([str(application), "add", kind, title, "--cwd", str(root)], env=environment, text=True)
         return json.loads(result)["id"]
 
     activate(first)
@@ -146,4 +146,20 @@ def run(root, runtime, process, application, environment):
     compositor_capture("native-overview.png")
     request(niri_socket, {"Action": {"CloseOverview": {}}})
     assert rows() == [first["row"]["id"]], "overview must preserve mixed Nodes/Windows rows"
-    print("Native workspace smoke passed: row content, saved camera/selection, row-local unmapping, live previews, expanded-client focus, mixed overview rows, and no capture worker or screencasts.", flush=True)
+    activate(first)
+    constant = create("Constant 42", "constant")
+    display = create("Displayed input", "display")
+    state = request(flow_socket, {"op": "status"})
+    constant_node = next(n for n in state["nodes"] if n["id"] == constant)
+    constant_node["flow"]["properties"] = {"value": 42}
+    constant_node["position"] = {"x": 100, "y": 500}
+    request(flow_socket, {"op": "update", "node": constant_node})
+    request(flow_socket, {"op": "move", "id": display, "position": {"x": 600, "y": 500}})
+    request(flow_socket, {"op": "connect_pins", "connection": {"source": {"node": constant, "pin": "value"}, "target": {"node": display, "pin": "value"}}})
+    request(flow_socket, {"op": "evaluate", "id": display})
+    wait(lambda: any(n["id"] == display and n["flow"]["values"].get("value") == 42 for n in request(flow_socket, {"op": "status"})["nodes"]), process)
+    ui("select", id=display)
+    ui("fit")
+    capture_still(directory / "typed-data-canvas.png")
+    compositor_capture("typed-data-graph.png")
+    print("Native workspace smoke passed: row content, saved camera/selection, row-local unmapping, live previews, expanded-client focus, mixed overview rows, typed data evaluation/display, and no capture worker or screencasts.", flush=True)

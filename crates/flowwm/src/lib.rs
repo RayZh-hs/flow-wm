@@ -2,6 +2,7 @@ pub mod agent;
 pub mod catalog;
 pub mod engine;
 pub mod extensions;
+pub mod graph;
 pub mod groups;
 pub mod ipc;
 pub mod model;
