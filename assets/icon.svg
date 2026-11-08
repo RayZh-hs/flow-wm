@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1254" height="1254" viewBox="0 0 1254 1254" role="img" aria-labelledby="title description">
+  <title id="title">FlowWM icon</title>
+  <desc id="description">Four blue window panels divided by a flowing blue-to-cyan ribbon on a dark rounded tile, with a transparent background.</desc>
+  <defs>
+    <linearGradient id="tile" x1="180" y1="44" x2="1050" y2="1214" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#233043"/>
+      <stop offset=".36" stop-color="#17212f"/>
+      <stop offset=".7" stop-color="#0e1521"/>
+      <stop offset="1" stop-color="#172131"/>
+    </linearGradient>
+    <radialGradient id="tile-light" cx="175" cy="170" r="960" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#39495f" stop-opacity=".16"/>
+      <stop offset="1" stop-color="#39495f" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="160" y1="44" x2="980" y2="1214" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7792ab" stop-opacity=".48"/>
+      <stop offset=".45" stop-color="#40516b" stop-opacity=".08"/>
+      <stop offset="1" stop-color="#40516b" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="upper-left" x1="285" y1="262" x2="563" y2="669" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#bddcf7"/>
+      <stop offset=".48" stop-color="#a6c8ec"/>
+      <stop offset="1" stop-color="#8aafd9"/>
+    </linearGradient>
+    <linearGradient id="upper-right" x1="717" y1="262" x2="1007" y2="526" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#536b89"/>
+      <stop offset="1" stop-color="#3d536e"/>
+    </linearGradient>
+    <linearGradient id="ribbon" x1="231" y1="756" x2="1023" y2="560" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#487bb9"/>
+      <stop offset=".33" stop-color="#5aa2f6"/>
+      <stop offset=".62" stop-color="#7dd3fb"/>
+      <stop offset="1" stop-color="#a5fafd"/>
+    </linearGradient>
+    <linearGradient id="lower-left" x1="248" y1="807" x2="541" y2="1004" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#455c78"/>
+      <stop offset="1" stop-color="#324963"/>
+    </linearGradient>
+    <linearGradient id="lower-right" x1="715" y1="669" x2="932" y2="1004" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#688eb2"/>
+      <stop offset="1" stop-color="#4c739d"/>
+    </linearGradient>
+    <path id="tile-outline" d="M331 44H920C1079.6 44 1209 173.4 1209 333V925C1209 1084.6 1079.6 1214 920 1214H332C172.4 1214 43 1084.6 43 925V332C43 172.9 171.9 44 331 44Z"/>
+  </defs>
+  <use href="#tile-outline" fill="url(#tile)"/>
+  <use href="#tile-outline" fill="url(#tile-light)"/>
+  <use href="#tile-outline" fill="none" stroke="url(#rim)" stroke-width="1.5"/>
+  <path fill="url(#upper-left)" d="M311 262H614C637.7 262 657 281.3 657 305V539C657 555 651 567 638 578C603 607 528 669 479 669H274C250.3 669 231 649.7 231 626V342C231 297.8 266.8 262 311 262Z"/>
+  <path fill="url(#upper-right)" d="M739 262H942C986.7 262 1023 298.3 1023 343V508C924 467 824 479 726 525C710 533 695 528 695 508V306C695 281.7 714.7 262 739 262Z"/>
+  <path fill="url(#ribbon)" d="M231 697C341 756 467 732 570 676C633 642 687 589 757 552C847 505 935 507 1023 545V615C932 572 851 600 775 641C715 673 671 715 612 749C493 821 352 825 231 768Z"/>
+  <path fill="url(#lower-left)" d="M231 806C320 849 421 849 518 831C541 824 563 843 563 866V962C563 985.2 544.2 1004 521 1004H312C267.3 1004 231 967.7 231 923Z"/>
+  <path fill="url(#lower-right)" d="M621 789C718 726 811 634 932 634H978C1002.9 634 1023 654.1 1023 679V923C1023 967.7 986.7 1004 942 1004H640C617.4 1004 599 985.6 599 963V826C599 810 606 799 621 789Z"/>
+</svg>
