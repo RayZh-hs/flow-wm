@@ -1855,10 +1855,10 @@ impl Shell {
                     self.show_nodes();
                 }
             }
-            UiCommand::CreateApplication { id, name } => {
+            UiCommand::CreateApplication { id, name, app_id } => {
                 if let Some(index) = self.macros.iter().position(|m| m.id == "window") {
                     self.show_nodes();
-                    self.create_macro_with_application(index, Some((id, name)));
+                    self.create_macro_with_application(index, Some((id, name, app_id)));
                 }
             }
             UiCommand::CreateMacro { id } => {
@@ -2833,7 +2833,11 @@ impl Shell {
     fn create_macro(&self, index: usize) {
         self.create_macro_with_application(index, None);
     }
-    fn create_macro_with_application(&self, index: usize, application: Option<(String, String)>) {
+    fn create_macro_with_application(
+        &self,
+        index: usize,
+        application: Option<(String, String, String)>,
+    ) {
         let Some(m) = self.macros.get(index) else {
             return;
         };
@@ -2871,8 +2875,13 @@ impl Shell {
         node.title = m.name.clone();
         node.command = m.command.clone();
         node.flow = m.flow.clone();
-        if let Some((id, name)) = application {
+        if let Some((id, name, app_id)) = application {
             node.title = name;
+            if !app_id.is_empty() {
+                node.flow
+                    .properties
+                    .insert("application_id".into(), serde_json::json!(app_id));
+            }
             node.flow
                 .properties
                 .insert("application".into(), serde_json::json!(id));

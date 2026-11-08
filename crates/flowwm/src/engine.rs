@@ -70,6 +70,8 @@ pub enum UiCommand {
     CreateApplication {
         id: String,
         name: String,
+        #[serde(default)]
+        app_id: String,
     },
     CreateMacro {
         id: String,
@@ -1616,6 +1618,21 @@ impl Runtime {
         {
             let mut command = Command::new("gtk-launch");
             command.arg(application);
+            for key in [
+                "XDG_CONFIG_HOME",
+                "XDG_STATE_HOME",
+                "XDG_CACHE_HOME",
+                "QT_PLUGIN_PATH",
+                "NIXPKGS_QT6_QML_IMPORT_PATH",
+            ] {
+                if let Some(original) = std::env::var_os(format!("DMS_ORIG_{key}")) {
+                    if original.is_empty() {
+                        command.env_remove(key);
+                    } else {
+                        command.env(key, original);
+                    }
+                }
+            }
             command
         } else if context.is_some() {
             crate::agent::Config::load()?.process(node)

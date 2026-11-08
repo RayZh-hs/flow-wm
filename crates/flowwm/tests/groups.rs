@@ -570,8 +570,11 @@ fn application_selection_binds_the_launched_window_to_the_configured_node() {
     );
     app.flow.properties.insert(
         "application".into(),
-        serde_json::json!("test.editor.desktop"),
+        serde_json::json!("org.test.Editor.desktop"),
     );
+    app.flow
+        .properties
+        .insert("application_id".into(), serde_json::json!("TEST.EDITOR"));
     let id = app.id.clone();
     state.nodes.push(app);
     desktop.windows.push(window(7, 10, "A document"));

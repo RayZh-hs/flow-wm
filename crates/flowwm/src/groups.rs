@@ -178,11 +178,15 @@ pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
                             || (n.workspace == group_id
                                 && n.flow
                                     .properties
-                                    .get("application")
+                                    .get("application_id")
+                                    .or_else(|| n.flow.properties.get("application"))
                                     .and_then(serde_json::Value::as_str)
                                     .is_some_and(|id| {
-                                        window.app_id.as_deref()
-                                            == Some(id.trim_end_matches(".desktop"))
+                                        window.app_id.as_deref().is_some_and(|app| {
+                                            app.eq_ignore_ascii_case(
+                                                id.trim_end_matches(".desktop"),
+                                            )
+                                        })
                                     })))
                 })
             })

@@ -53,7 +53,7 @@ Scope {
         if (item?.flowwmArgs?.[0] === "create" && item.flowwmArgs[1] === "window") {
             return { keepOpen: true, query: "", selectApplication: app => {
                 bridge?.completeSelection();
-                const request = { op: "ui", command: { action: "create_application", id: app.id, name: app.name } };
+                const request = { op: "ui", command: { action: "create_application", id: app.id, name: app.name, app_id: app.startupClass || app.id.replace(/\.desktop$/, "") } };
                 Qt.callLater(() => bridge?.command(["send", JSON.stringify(request)]));
             } };
         }
