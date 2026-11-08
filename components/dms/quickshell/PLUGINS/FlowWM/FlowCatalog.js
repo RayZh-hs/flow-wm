@@ -5,7 +5,7 @@ function matches(text, query) {
     return query.toLowerCase().split(/\s+/).every(function (token) {
         if (!token || text.indexOf(token) >= 0)
             return true;
-        return text.split(/[^\p{L}\p{N}_]+/u).some(function (word) {
+        return text.split(/[\s./\\:;,()\[\]{}!?"'|<>–—·-]+/).some(function (word) {
             var position = 0;
             for (var i = 0; i < word.length && position < token.length; i++) {
                 if (word[i] === token[position]) position++;
