@@ -19,6 +19,10 @@ fn clipboard_copies_internal_edges_as_idle_nodes_with_fresh_ids() {
     );
     constant.flow.properties.insert("value".into(), json!(7));
     constant.flow.values.insert("value".into(), json!(999));
+    constant
+        .flow
+        .properties
+        .insert("_alert".into(), json!({"message":"Pending review"}));
     let mut display = Node::new(
         &state.selected_workspace,
         NodeKind::Display,
@@ -60,6 +64,7 @@ fn clipboard_copies_internal_edges_as_idle_nodes_with_fresh_ids() {
     assert_eq!((copy.position.x, copy.position.y), (80., 120.));
     assert_eq!(copy.status, Status::Idle);
     assert!(copy.flow.values.is_empty());
+    assert!(!copy.flow.properties.contains_key("_alert"));
     assert_eq!(state.connections.len(), 2);
     assert_eq!(state.connections[1].source.node, ids[0]);
     assert_eq!(state.connections[1].target.node, ids[1]);

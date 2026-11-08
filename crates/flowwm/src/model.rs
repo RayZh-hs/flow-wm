@@ -543,6 +543,7 @@ impl State {
             n.chat.clear();
             n.agent_session = None;
             n.flow.values.clear();
+            n.flow.properties.remove("_alert");
             n.cwd = PathBuf::from(".");
         }
         Ok(Recipe {
@@ -601,6 +602,7 @@ impl State {
             n.command = template.command.clone();
             n.flow = template.flow.clone();
             n.flow.values.clear();
+            n.flow.properties.remove("_alert");
             n.dependencies = template
                 .dependencies
                 .iter()
