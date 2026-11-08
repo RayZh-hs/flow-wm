@@ -42,27 +42,61 @@ pub enum UiCommand {
     Toggle,
     Nodes,
     Windows,
-    Navigate { direction: String },
-    Open { id: String },
-    Select { id: String },
-    Focus { id: String, expand: bool },
-    CreateMacro { id: String },
-    Recipe { id: String },
-    Workspace { id: String },
-    Search { mode: String },
+    Navigate {
+        direction: String,
+    },
+    MoveSelection {
+        direction: String,
+    },
+    Arrange,
+    ConnectSearch,
+    CreateConnected {
+        id: String,
+        source: crate::graph::Endpoint,
+        input: String,
+    },
+    Open {
+        id: String,
+    },
+    Select {
+        id: String,
+    },
+    Focus {
+        id: String,
+        expand: bool,
+    },
+    CreateMacro {
+        id: String,
+    },
+    Recipe {
+        id: String,
+    },
+    Workspace {
+        id: String,
+    },
+    Search {
+        mode: String,
+    },
     Launcher,
     ResumeLookup,
-    Edit { id: String },
+    Edit {
+        id: String,
+    },
     Palette,
     Fit,
     Dismiss,
-    Capture { path: PathBuf },
+    Capture {
+        path: PathBuf,
+    },
     Quit,
     Notes,
     Recipes,
     RunGroup,
     Help,
-    BarGeometry { output: String, insets: [i32; 4] },
+    BarGeometry {
+        output: String,
+        insets: [i32; 4],
+    },
     RefreshImages,
     AgentChat,
 }
@@ -71,6 +105,13 @@ pub enum UiCommand {
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Control {
     Status,
+    Paste {
+        recipe: Recipe,
+        offset: Position,
+    },
+    Arrange {
+        positions: Vec<(String, Position)>,
+    },
     Pins {
         id: String,
     },
@@ -250,6 +291,8 @@ pub struct Engine {
 pub struct Presentation {
     pub graph_visible: bool,
     pub lookup_return: bool,
+    #[serde(default)]
+    pub lookup_node: Option<String>,
 }
 struct Notifier {
     generation: Mutex<u64>,
@@ -609,6 +652,7 @@ impl Runtime {
                         | Control::RegisterCast { .. }
                         | Control::RegisterNode { .. }
                         | Control::Instantiate { .. }
+                        | Control::Paste { .. }
                         | Control::PublishProperties { .. }
                         | Control::ClearHistory
                 ),
@@ -616,6 +660,45 @@ impl Runtime {
             );
         }
         match control {
+            Control::Arrange { positions } => {
+                for (id, p) in &positions {
+                    let node = self.state.node(id).context("Node not found")?;
+                    ensure!(
+                        node.workspace == self.state.selected_workspace
+                            && p.x.is_finite()
+                            && p.y.is_finite(),
+                        "Invalid arrangement"
+                    );
+                }
+                for (id, p) in positions {
+                    self.state.node_mut(&id).unwrap().position = p;
+                }
+                let workspace = self.state.selected_workspace.clone();
+                self.state
+                    .workspaces
+                    .iter_mut()
+                    .find(|w| w.id == workspace)
+                    .unwrap()
+                    .graph_arranged = true;
+            }
+            Control::Paste { mut recipe, offset } => {
+                ensure!(
+                    self.state.nodes.len() + recipe.nodes.len() <= 2000,
+                    "Node limit reached"
+                );
+                ensure!(
+                    offset.x.is_finite() && offset.y.is_finite(),
+                    "Invalid paste offset"
+                );
+                for node in &mut recipe.nodes {
+                    node.position.x += offset.x;
+                    node.position.y += offset.y;
+                }
+                let workspace = self.state.selected_workspace.clone();
+                let cwd = self.state.workspace().cwd.clone();
+                let ids = self.state.instantiate(&recipe, &workspace, cwd)?;
+                return Ok(json!({"ids": ids}));
+            }
             Control::Pins { id } => {
                 let node = self.state.node(&id).context("Node not found")?;
                 return Ok(
@@ -1045,6 +1128,7 @@ impl Runtime {
                     notes: String::new(),
                     row: None,
                     window_array: false,
+                    graph_arranged: false,
                     view: RowView::default(),
                 };
                 self.state.selected_workspace = workspace.id.clone();

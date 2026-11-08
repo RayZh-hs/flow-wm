@@ -29,8 +29,8 @@ class ProfileIsolation(unittest.TestCase):
             arguments = [profile / 'config', profile / 'state', profile / 'cache', root / 'installed/v1', original, root / 'state', root / 'cache', root / 'bin/flowwm-session']
             installer.prepare_profile(*arguments)
             config = profile / 'config'
-            self.assertIn('"navigate" "left"', (config / 'niri/dms-overwrite.kdl').read_text())
-            self.assertIn('"launcher"', (config / 'niri/dms-overwrite.kdl').read_text())
+            self.assertIn('"navigate" "left"', (config / 'keybindings.kdl').read_text())
+            self.assertIn('"new"', (config / 'keybindings.kdl').read_text())
             settings = json.loads((config / 'dms/settings.json').read_text())
             self.assertEqual(settings['barConfigs'][0]['leftWidgets'], ['workspaceSwitcher', 'flowwm', 'focusedWindow'])
             self.assertEqual(settings['custom'], 42)
@@ -39,12 +39,22 @@ class ProfileIsolation(unittest.TestCase):
             arguments[3] = root / 'installed/v2'
             installer.prepare_profile(*arguments)
             self.assertEqual(json.loads((config / 'dms/settings.json').read_text())['custom'], 99)
-            self.assertNotIn('installed/v1', (config / 'niri/dms-overwrite.kdl').read_text())
+            self.assertNotIn('installed/v1', (config / 'keybindings.kdl').read_text())
             # An explicit install cannot repoint an active session's loaded plugin.
             self.assertEqual(os.readlink(config / 'dms/plugins/flowwm'), str(root / 'installed/v1/shell/PLUGINS/FlowWM'))
             self.assertEqual(initial, {p.relative_to(original): p.read_bytes() for p in original.rglob('*') if p.is_file()})
             (config / 'dms/settings.json').write_text('{}')
             self.assertNotEqual((original / 'dms/settings.json').read_text(), '{}')
+
+    def test_fresh_home_needs_no_niri_or_dms_configuration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = root / 'config/flow-wm'
+            installer.prepare_profile(config, root / 'state', root / 'cache', root / 'bundle', root / 'missing-config', root / 'missing-state', root / 'missing-cache', root / 'bin/flowwm-session')
+            self.assertTrue((config / 'config.kdl').is_file())
+            self.assertTrue((config / 'keybindings.kdl').is_file())
+            self.assertFalse((config / 'niri/config.kdl').exists())
+            self.assertEqual(json.loads((config / 'dms/plugin_settings.json').read_text())['flowwm']['enabled'], True)
 
 
 class LoginIsolation(unittest.TestCase):

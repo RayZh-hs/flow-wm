@@ -82,6 +82,7 @@ pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
                     notes: String::new(),
                     row: None,
                     window_array: false,
+                    graph_arranged: false,
                     view: RowView::default(),
                 });
                 changed = true;
@@ -199,6 +200,33 @@ pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
                 changed |= assign(&mut node.command, window.app_id.clone().unwrap_or_default());
             }
         }
+    }
+    let removed: HashSet<_> = state
+        .nodes
+        .iter()
+        .filter(|n| {
+            n.desktop_window
+                && n.window_id.is_some()
+                && !seen.contains(&n.id)
+                && state
+                    .workspaces
+                    .iter()
+                    .any(|w| w.id == n.workspace && w.view == RowView::Windows)
+        })
+        .map(|n| n.id.clone())
+        .collect();
+    if !removed.is_empty() {
+        state.nodes.retain(|n| !removed.contains(&n.id));
+        for node in &mut state.nodes {
+            node.dependencies.retain(|id| !removed.contains(id));
+        }
+        state
+            .connections
+            .retain(|e| !removed.contains(&e.source.node) && !removed.contains(&e.target.node));
+        state
+            .watchers
+            .retain(|w| !removed.contains(&w.source) && !removed.contains(&w.target));
+        changed = true;
     }
     for node in &mut state.nodes {
         if node.window_id.is_some() && !seen.contains(&node.id) {

@@ -124,6 +124,36 @@ pub fn builtins() -> Vec<Macro> {
             flow: node.flow,
         });
     }
+    for (name, ty, value) in [
+        ("Int", crate::graph::Type::Int, serde_json::json!(0)),
+        ("Float", crate::graph::Type::Float, serde_json::json!(0.0)),
+        ("String", crate::graph::Type::String, serde_json::json!("")),
+        ("Bool", crate::graph::Type::Bool, serde_json::json!(false)),
+        (
+            "List",
+            crate::graph::Type::List {
+                item: Box::new(crate::graph::Type::Any),
+            },
+            serde_json::json!([]),
+        ),
+        (
+            "Record",
+            crate::graph::Type::record(),
+            serde_json::json!({}),
+        ),
+    ] {
+        let mut flow = crate::graph::Flow::default();
+        flow.properties.insert("value".into(), value);
+        flow.outputs.push(crate::graph::Pin::new("value", ty));
+        macros.push(Macro {
+            id: format!("constant_{}", name.to_lowercase()),
+            name: format!("Constant: {name}"),
+            description: format!("A {name} value, editable in the graph"),
+            kind: NodeKind::Constant,
+            command: String::new(),
+            flow,
+        });
+    }
     macros
 }
 #[derive(Default)]

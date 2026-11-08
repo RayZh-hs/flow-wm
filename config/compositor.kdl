@@ -1,0 +1,24 @@
+// FlowWM compositor preferences. The shortcut registry generates keybindings.kdl.
+input {
+    keyboard { xkb {} }
+    touchpad { tap; natural-scroll; }
+}
+layout {
+    gaps 16
+    center-focused-column "never"
+    default-column-width { proportion 0.5; }
+    focus-ring { width 2; }
+}
+hotkey-overlay { skip-at-startup; }
+prefer-no-csd
+include "keybindings.kdl"
+
+// Dux writes these files inside the FlowWM profile.
+include "niri/dms/colors.kdl"
+include "niri/dms/layout.kdl"
+include "niri/dms/outputs.kdl"
+include "niri/dms/cursor.kdl"
+include "niri/dms/windowrules.kdl"
+include "niri/dms/alttab.kdl"
+include "niri/dms/input.kdl"
+include "niri/dms/wpblur.kdl"

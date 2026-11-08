@@ -339,7 +339,7 @@ FocusScope {
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
-        height: root._searchAreaH
+        height: root._searchAreaH + (searchHint.visible ? searchHint.height + Theme.spacingS : 0)
         visible: !root.editMode
 
         LauncherSearchField {
@@ -348,7 +348,10 @@ FocusScope {
             pluginName: _isDmenu ? root.controller.dmenuPrompt : root.controller.activePluginName
             pluginIcon: _isDmenu ? root.controller.dmenuIcon : (root.controller.activePluginId ? root.controller.getPluginMetadata(root.controller.activePluginId).icon : "")
             pluginIconVisible: _isDmenu ? !!root.controller.dmenuIcon : true
-            anchors.fill: parent
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: root._searchAreaH
             mode: root.controller.searchMode
             showModes: SettingsData.spotlightBarShowModeChips || root._hasQuery
             flat: true
@@ -375,6 +378,18 @@ FocusScope {
                 id: searchKeyHandler
                 Keys.onPressed: event => root._handleKey(event)
             }
+        }
+        Text {
+            id: searchHint
+            anchors.top: searchInput.bottom
+            anchors.left: parent.left
+            anchors.leftMargin: Theme.spacingL
+            text: root.controller.pluginSearchHint
+            visible: text.length > 0
+            font.pixelSize: Theme.fontSizeSmall
+            color: Theme.onSurfaceVariant
+            elide: Text.ElideRight
+            width: parent.width - Theme.spacingL * 2
         }
     }
 

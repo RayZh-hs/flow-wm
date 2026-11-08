@@ -91,6 +91,12 @@ pub enum CanvasAction {
     Delete(String),
     Run(String),
     Chat,
+    ConnectSearch,
+    Arrange,
+    Copy(bool),
+    Paste,
+    Duplicate,
+    EditValue(String),
     Search,
     Help,
     ClearHistory,
@@ -291,6 +297,48 @@ pub fn navigate(
     animate_camera(area, view, &target);
     id
 }
+pub fn pan_keyboard(
+    area: &super::surface::Surface,
+    view: &Rc<RefCell<View>>,
+    direction: &str,
+    fast: bool,
+) {
+    let mut target = view.borrow().clone();
+    if let Some((z, x, y)) = target.camera_target {
+        target.zoom = z;
+        target.pan_x = x;
+        target.pan_y = y;
+    }
+    let step = if fast { 240. } else { 70. };
+    match direction {
+        "left" => target.pan_x += step,
+        "right" => target.pan_x -= step,
+        "up" => target.pan_y += step,
+        _ => target.pan_y -= step,
+    }
+    animate_camera(area, view, &target);
+}
+pub fn move_selection(engine: &Engine, view: &Rc<RefCell<View>>, direction: &str) {
+    let state = engine.snapshot().state;
+    let view = view.borrow();
+    for node in state.nodes.iter().filter(|n| {
+        n.workspace == state.selected_workspace
+            && (view.selection.contains(&n.id) || view.selected.as_ref() == Some(&n.id))
+    }) {
+        let mut position = node.position.clone();
+        match direction {
+            "up" => position.y -= GRID,
+            "down" => position.y += GRID,
+            "left" => position.x -= GRID,
+            _ => position.x += GRID,
+        }
+        engine.dispatch(Control::Move {
+            id: node.id.clone(),
+            position,
+        });
+    }
+}
+
 pub fn focus_node(
     area: &super::surface::Surface,
     view: &Rc<RefCell<View>>,
@@ -642,7 +690,7 @@ fn make_scoped(
         });
         let additive = gesture
             .current_event_state()
-            .contains(gdk::ModifierType::SHIFT_MASK);
+            .intersects(gdk::ModifierType::SHIFT_MASK | gdk::ModifierType::CONTROL_MASK);
         if !additive && hit.is_none_or(|n| !view.selection.contains(&n.id)) {
             view.selection.clear();
         }
@@ -658,8 +706,25 @@ fn make_scoped(
             .map(|n| n.id.clone())
             .or_else(|| view.selection.iter().next().cloned());
         let selected = view.selected.clone();
+        let inline = hit
+            .filter(|n| {
+                n.kind == NodeKind::Constant
+                    && n.flow.editable_in_graph
+                    && y > view.position(n).y + 70.
+                    && y < view.position(n).y + 112.
+            })
+            .map(|n| n.id.clone());
+        let background = hit.is_none();
         drop(view);
+        if background {
+            cb(CanvasAction::Camera);
+        }
         cb(CanvasAction::Select(selected));
+        if let Some(id) = inline {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            cb(CanvasAction::EditValue(id));
+            return;
+        }
         if count == 2
             && let Some(node) = hit
         {
@@ -765,6 +830,12 @@ fn make_scoped(
         } else if let Some(node) = state.nodes.iter().rev().find(|n| {
             n.workspace == state.selected_workspace && contains(n, &view.position(n), wx, wy)
         }) {
+            if g.current_event_state()
+                .intersects(gdk::ModifierType::SHIFT_MASK | gdk::ModifierType::CONTROL_MASK)
+            {
+                g.set_state(gtk::EventSequenceState::Denied);
+                return;
+            }
             if !view.selection.contains(&node.id) {
                 view.selection.clear();
                 view.selection.insert(node.id.clone());
@@ -780,7 +851,7 @@ fn make_scoped(
         } else {
             let additive = g
                 .current_event_state()
-                .contains(gdk::ModifierType::SHIFT_MASK);
+                .intersects(gdk::ModifierType::SHIFT_MASK | gdk::ModifierType::CONTROL_MASK);
             if !additive {
                 view.selection.clear();
                 view.selected = None;
@@ -1052,6 +1123,15 @@ fn make_scoped(
     let v = view.clone();
     let cb = callback;
     let a = area.clone();
+    let shortcuts: Vec<_> = crate::config::shortcuts()
+        .into_iter()
+        .filter(|s| s.scope == "graph")
+        .flat_map(|s| {
+            s.keys.into_iter().filter_map(move |key| {
+                gtk::accelerator_parse(&key).map(|(key, mods)| (s.action.clone(), key, mods))
+            })
+        })
+        .collect();
     key.connect_key_pressed(move |_, key, _, modifiers| {
         let selected = v.borrow().selected.clone();
         let state = e.snapshot().state;
@@ -1107,52 +1187,78 @@ fn make_scoped(
             a.queue_draw();
             return glib::Propagation::Stop;
         }
-        match key {
-            gdk::Key::space
-                if modifiers
-                    .intersects(gdk::ModifierType::SUPER_MASK | gdk::ModifierType::META_MASK) =>
-            {
-                cb(CanvasAction::Add)
-            }
-            gdk::Key::space => {
-                v.borrow_mut().space_down = true;
-                v.borrow_mut().numbers = true;
+        if key == gdk::Key::space
+            && !modifiers.intersects(
+                gdk::ModifierType::CONTROL_MASK
+                    | gdk::ModifierType::SUPER_MASK
+                    | gdk::ModifierType::META_MASK
+                    | gdk::ModifierType::ALT_MASK,
+            )
+        {
+            v.borrow_mut().space_down = true;
+            v.borrow_mut().numbers = true;
+            a.queue_draw();
+            return glib::Propagation::Stop;
+        }
+        let mask = gdk::ModifierType::SHIFT_MASK
+            | gdk::ModifierType::CONTROL_MASK
+            | gdk::ModifierType::ALT_MASK
+            | gdk::ModifierType::SUPER_MASK
+            | gdk::ModifierType::META_MASK;
+        let action = shortcuts
+            .iter()
+            .find(|(_, k, mods)| {
+                k.to_lower() == key.to_lower()
+                    && (*mods == (modifiers & mask)
+                        || (*k == gdk::Key::question
+                            && (modifiers & mask) == gdk::ModifierType::SHIFT_MASK))
+            })
+            .map(|(action, _, _)| action.as_str());
+        match action {
+            Some("connect") => cb(CanvasAction::ConnectSearch),
+            Some("search") => cb(CanvasAction::Search),
+            Some("help") => cb(CanvasAction::Help),
+            Some("arrange") => cb(CanvasAction::Arrange),
+            Some("copy") => cb(CanvasAction::Copy(false)),
+            Some("cut") => cb(CanvasAction::Copy(true)),
+            Some("paste") => cb(CanvasAction::Paste),
+            Some("duplicate") => cb(CanvasAction::Duplicate),
+            Some("select_all") => {
+                v.borrow_mut().selection = state
+                    .nodes
+                    .iter()
+                    .filter(|n| n.workspace == state.selected_workspace)
+                    .map(|n| n.id.clone())
+                    .collect();
+                let id = ordered_nodes(&state).first().map(|n| n.id.clone());
+                cb(CanvasAction::Select(id));
                 a.queue_draw();
             }
-            gdk::Key::Tab | gdk::Key::ISO_Left_Tab => cb(CanvasAction::Chat),
-            gdk::Key::slash => cb(CanvasAction::Search),
-            gdk::Key::question => cb(CanvasAction::Help),
-            gdk::Key::Return | gdk::Key::KP_Enter => {
+            Some("open") => {
                 if let Some(id) = selected {
-                    if modifiers.contains(gdk::ModifierType::SHIFT_MASK) {
-                        cb(CanvasAction::Edit(id));
-                    } else {
-                        cb(CanvasAction::Open(id));
-                    }
+                    cb(CanvasAction::Open(id));
                 }
             }
-            gdk::Key::BackSpace if alt => cb(CanvasAction::ClearHistory),
-            gdk::Key::Delete | gdk::Key::BackSpace => {
-                let mut ids = v.borrow().selection.clone();
-                if let Some(id) = selected {
-                    ids.insert(id);
-                }
-                for id in ids {
-                    cb(CanvasAction::Delete(id));
-                }
-            }
-            gdk::Key::e => {
+            Some("edit") => {
                 if let Some(id) = selected {
                     cb(CanvasAction::Edit(id));
                 }
             }
-            gdk::Key::r => {
+            Some("run") => {
                 if let Some(id) = selected {
                     cb(CanvasAction::Run(id));
                 }
             }
-            gdk::Key::Escape => cb(CanvasAction::Escape),
-            gdk::Key::f => {
+            Some("clear_history") => cb(CanvasAction::ClearHistory),
+            Some("delete") => {
+                let mut ids = v.borrow().selection.clone();
+                ids.extend(selected);
+                for id in ids {
+                    cb(CanvasAction::Delete(id));
+                }
+            }
+            Some("escape") => cb(CanvasAction::Escape),
+            Some("focus") => {
                 cb(CanvasAction::Camera);
                 if let Some(id) = selected {
                     focus_node(&a, &v, &state, &id);
@@ -1160,61 +1266,30 @@ fn make_scoped(
                     fit_animated(&a, &v, &state);
                 }
             }
-            gdk::Key::Home => {
+            Some("fit") => {
                 cb(CanvasAction::Camera);
                 fit_animated(&a, &v, &state);
             }
-            gdk::Key::w | gdk::Key::a | gdk::Key::s | gdk::Key::d => {
-                let mut ids = v.borrow().selection.clone();
-                if let Some(id) = selected {
-                    ids.insert(id);
-                }
-                for id in ids {
-                    if let Some(node) = state.node(&id) {
-                        let mut p = node.position.clone();
-                        match key {
-                            gdk::Key::w => p.y -= GRID,
-                            gdk::Key::s => p.y += GRID,
-                            gdk::Key::a => p.x -= GRID,
-                            _ => p.x += GRID,
-                        }
-                        e.dispatch(Control::Move { id, position: p });
-                    }
-                }
+            Some(action) if action.starts_with("pan_") || action.starts_with("fast_pan_") => {
+                cb(CanvasAction::Camera);
+                pan_keyboard(
+                    &a,
+                    &v,
+                    action
+                        .trim_start_matches("fast_")
+                        .trim_start_matches("pan_"),
+                    action.starts_with("fast_"),
+                );
             }
-            gdk::Key::h
-            | gdk::Key::j
-            | gdk::Key::k
-            | gdk::Key::l
-            | gdk::Key::Up
-            | gdk::Key::Down
-            | gdk::Key::Left
-            | gdk::Key::Right => {
-                let direction = match key {
-                    gdk::Key::k | gdk::Key::Up => "up",
-                    gdk::Key::j | gdk::Key::Down => "down",
-                    gdk::Key::h | gdk::Key::Left => "left",
-                    _ => "right",
-                };
-                if modifiers.contains(gdk::ModifierType::SHIFT_MASK)
-                    && let Some(id) = selected
-                    && let Some(node) = state.node(&id)
-                {
-                    let mut p = node.position.clone();
-                    match direction {
-                        "up" => p.y -= GRID,
-                        "down" => p.y += GRID,
-                        "left" => p.x -= GRID,
-                        _ => p.x += GRID,
-                    }
-                    e.dispatch(Control::Move { id, position: p });
-                } else {
-                    cb(CanvasAction::Camera);
-                    let id = navigate(&a, &v, &state, direction);
-                    v.borrow_mut().selection = id.clone().into_iter().collect();
-                    cb(CanvasAction::Select(id));
-                }
+            Some(action) if action.starts_with("navigate_") => {
+                cb(CanvasAction::Camera);
+                let id = navigate(&a, &v, &state, action.trim_start_matches("navigate_"));
+                v.borrow_mut().selection = id.clone().into_iter().collect();
+                cb(CanvasAction::Select(id));
                 a.queue_draw();
+            }
+            Some(action) if action.starts_with("move_") => {
+                move_selection(&e, &v, action.trim_start_matches("move_"))
             }
             _ => return glib::Propagation::Proceed,
         }
@@ -1386,11 +1461,13 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
             let signal = crate::graph::pins(state, source, true)
                 .iter()
                 .any(|p| p.name == edge.source.pin && p.ty.is_signal());
-            if signal {
-                theme.primary.source(c);
-            } else {
-                theme.muted.source(c);
-            }
+            let ty = crate::graph::pins(state, source, true)
+                .into_iter()
+                .find(|p| p.name == edge.source.pin)
+                .map(|p| p.ty)
+                .unwrap_or(crate::graph::Type::Any);
+            let color = type_color(&ty, theme);
+            c.set_source_rgb(color.0, color.1, color.2);
             c.set_line_width(1.6);
             if !signal {
                 c.set_dash(&[4.0, 3.0], 0.0);
@@ -1496,7 +1573,8 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
             for output in [false, true] {
                 for pin in crate::graph::pins(state, node, output) {
                     if let Some((x, y)) = pin_position(state, node, &p, &pin.name, output) {
-                        theme.primary.source(c);
+                        let color = type_color(&pin.ty, theme);
+                        c.set_source_rgb(color.0, color.1, color.2);
                         if pin.ty.is_signal() {
                             c.arc(x, y, 4.0, 0.0, std::f64::consts::TAU);
                             let _ = c.stroke();
@@ -1783,33 +1861,17 @@ fn wire_cut(parent: &Node, node: &Node, points: &[(f64, f64)], view: &View) -> b
     let to = view.position(node);
     let a = (from.x + WIDTH / 2.0, from.y + node_height(parent));
     let b = (to.x + WIDTH / 2.0, to.y);
-    let bend = ((b.1 - a.1).abs() * 0.5).max(50.0);
-    let curve = |t: f64| {
-        let u = 1.0 - t;
-        (
-            u * u * u * a.0 + 3.0 * u * u * t * a.0 + 3.0 * u * t * t * b.0 + t * t * t * b.0,
-            u * u * u * a.1
-                + 3.0 * u * u * t * (a.1 + bend)
-                + 3.0 * u * t * t * (b.1 - bend)
-                + t * t * t * b.1,
-        )
-    };
-    (0..32).any(|i| {
-        points.windows(2).any(|line| {
-            crossing(
-                curve(i as f64 / 32.0),
-                curve((i + 1) as f64 / 32.0),
-                line[0],
-                line[1],
-            )
-        })
-    })
+    route_cut(a, b, points, false)
 }
 
 pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, theme: &Theme) {
     let (x, y) = (p.x, p.y);
     let height = node_height(n);
-    let accent = theme.primary.rgb();
+    let accent = if n.kind == NodeKind::Constant {
+        type_color(&crate::graph::constant_type(n), theme)
+    } else {
+        theme.primary.rgb()
+    };
     if selected {
         rounded(c, x - 4.0, y - 4.0, WIDTH + 8.0, height + 8.0, 13.0);
         c.set_source_rgba(accent.0, accent.1, accent.2, 0.09);
@@ -1964,7 +2026,17 @@ pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, the
     theme.outline.alpha(c, 0.3);
     c.set_line_width(1.0);
     let _ = c.stroke();
-    let footer = if n.desktop_window {
+    let footer = if n.kind == NodeKind::Constant {
+        format!(
+            "{} · {}",
+            crate::graph::constant_type(n),
+            if n.flow.editable_in_graph {
+                "Click value to edit"
+            } else {
+                "Read only in graph"
+            }
+        )
+    } else if n.desktop_window {
         if n.window_id.is_some() {
             "Window open on this row"
         } else {
@@ -2002,6 +2074,20 @@ pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, the
     );
     draw_ports(c, x, y, height, theme);
 }
+fn type_color(ty: &crate::graph::Type, theme: &Theme) -> (f64, f64, f64) {
+    use crate::graph::Type;
+    match ty {
+        Type::Bool => (0.92, 0.66, 0.42),
+        Type::Int => (0.49, 0.78, 0.64),
+        Type::Float => (0.40, 0.76, 0.84),
+        Type::String => (0.76, 0.64, 0.91),
+        Type::List { .. } => (0.83, 0.68, 0.81),
+        Type::Record { .. } => (0.65, 0.72, 0.90),
+        Type::Named { name } if name == "Error" => theme.error.rgb(),
+        _ => theme.primary.rgb(),
+    }
+}
+
 fn draw_ports(c: &Context, x: f64, y: f64, height: f64, theme: &Theme) {
     let accent = theme.primary.rgb();
     for py in [y, y + height] {
@@ -2015,9 +2101,7 @@ fn draw_ports(c: &Context, x: f64, y: f64, height: f64, theme: &Theme) {
     }
 }
 fn wire(c: &Context, x1: f64, y1: f64, x2: f64, y2: f64) {
-    let bend = ((y2 - y1).abs() * 0.5).max(50.0);
-    c.move_to(x1, y1);
-    c.curve_to(x1, y1 + bend, x2, y2 - bend, x2, y2);
+    draw_route(c, (x1, y1), (x2, y2), false);
 }
 fn pin_position(
     state: &State,
@@ -2061,36 +2145,28 @@ fn hit_pin(
     None
 }
 fn pin_wire(c: &Context, from: (f64, f64), to: (f64, f64)) {
-    let bend = ((to.0 - from.0).abs() * 0.5).max(50.0);
+    draw_route(c, from, to, true);
+}
+fn draw_route(c: &Context, from: (f64, f64), to: (f64, f64), horizontal: bool) {
+    let points = super::wires::route(from, to, horizontal);
     c.move_to(from.0, from.1);
-    c.curve_to(from.0 + bend, from.1, to.0 - bend, to.1, to.0, to.1);
+    for p in points.iter().skip(1) {
+        c.line_to(p.0, p.1);
+    }
+}
+fn route_cut(from: (f64, f64), to: (f64, f64), points: &[(f64, f64)], horizontal: bool) -> bool {
+    super::wires::route(from, to, horizontal)
+        .windows(2)
+        .any(|segment| {
+            points
+                .windows(2)
+                .any(|cut| crossing(segment[0], segment[1], cut[0], cut[1]))
+        })
 }
 fn pin_wire_cut(from: (f64, f64), to: (f64, f64), points: &[(f64, f64)]) -> bool {
-    let bend = ((to.0 - from.0).abs() * 0.5).max(50.0);
-    let curve = |t: f64| {
-        let u = 1.0 - t;
-        (
-            u * u * u * from.0
-                + 3.0 * u * u * t * (from.0 + bend)
-                + 3.0 * u * t * t * (to.0 - bend)
-                + t * t * t * to.0,
-            u * u * u * from.1
-                + 3.0 * u * u * t * from.1
-                + 3.0 * u * t * t * to.1
-                + t * t * t * to.1,
-        )
-    };
-    (0..32).any(|i| {
-        points.windows(2).any(|line| {
-            crossing(
-                curve(i as f64 / 32.0),
-                curve((i + 1) as f64 / 32.0),
-                line[0],
-                line[1],
-            )
-        })
-    })
+    route_cut(from, to, points, true)
 }
+
 fn sparkline(c: &Context, samples: &[Sample], rect: (f64, f64, f64, f64), rgb: (f64, f64, f64)) {
     let (x, y, w, h) = rect;
     let min = samples

@@ -11,24 +11,50 @@ Scope {
     readonly property var bridge: pluginService?.pluginDaemonInstances?.flowwm ?? null
     readonly property var catalog: bridge?.catalog ?? ({})
     signal itemsChanged()
-    onCatalogChanged: itemsChanged()
+    property string outputName: ""
+    property string targetKey: ""
+    property string lookupNode: ""
+    readonly property bool launcherOpen: bridge?.launcherOpen ?? false
+    onLauncherOpenChanged: { if (!launcherOpen) { outputName = ""; targetKey = ""; } }
+    onCatalogChanged: {
+        if (lookupNode !== (catalog.lookup?.node ?? "")) { outputName = ""; targetKey = ""; lookupNode = catalog.lookup?.node ?? ""; }
+        itemsChanged();
+    }
+    function getSearchHint() {
+        const lookup = catalog.lookup;
+        if (!lookup) return "";
+        const output = lookup.outputs.find(p => p.name === outputName) ?? (lookup.outputs.length === 1 ? lookup.outputs[0] : null);
+        return output ? I18n.tr("Compatible inputs") + " · " + output.ty + " · " + lookup.title + "." + output.name : I18n.tr("Choose an output") + " · " + lookup.title;
+    }
 
     function getItems(query) {
+        if (catalog.lookup) return Catalog.connectionItems(catalog, query, outputName, targetKey);
         return Catalog.items(catalog, query, {
             kind: { agent: I18n.tr("Agent"), shell: I18n.tr("Shell"), metric: I18n.tr("Metric"), gate: I18n.tr("Decision"), human: I18n.tr("You"), window: I18n.tr("Window") },
             status: { idle: I18n.tr("Ready"), queued: I18n.tr("Waiting"), running: I18n.tr("Running"), review: I18n.tr("Needs you"), done: I18n.tr("Complete"), failed: I18n.tr("Failed"), stopped: I18n.tr("Stopped") },
             expand: I18n.tr("Open window"), reveal: I18n.tr("Reveal node"), create: I18n.tr("Create"), open: I18n.tr("Open"),
             workspace: I18n.tr("Workspace"), nodes: I18n.tr("nodes"), idleRecipe: I18n.tr("Creates an idle workflow"),
             graph: I18n.tr("Open workflow graph"), graphHint: I18n.tr("Super+Tab · Orchestrate work in parallel"),
-            newNode: I18n.tr("Create a node"), createHint: I18n.tr("Tab in the graph · Agents, shell, metrics, and you")
+            newNode: I18n.tr("Create a node"), createHint: I18n.tr("Win+Space · Choose a node type")
         });
     }
 
     function executeItem(item) {
-        if (!item?.flowwmArgs)
-            return;
+        if (item?.flowwmLayer) {
+            if (item.flowwmLayer.back) {
+                if (targetKey) targetKey = "";
+                else outputName = "";
+            } else if (item.flowwmLayer.output) outputName = item.flowwmLayer.output;
+            else targetKey = item.flowwmLayer.target;
+            itemsChanged();
+            return { keepOpen: true, query: "@ " + (!outputName && catalog.lookup.outputs.length > 1 ? catalog.lookup.title + ": " : "") };
+        }
+        if (!item?.flowwmArgs) return;
         bridge?.completeSelection();
         const args = item.flowwmArgs.slice();
-        Qt.callLater(() => Quickshell.execDetached(["flowwm"].concat(args)));
+        Qt.callLater(() => {
+            Quickshell.execDetached(["flowwm"].concat(args));
+            if (catalog.lookup && args[0] === "send") bridge?.action("resume_lookup");
+        });
     }
 }

@@ -86,6 +86,7 @@ fn catalog_subscription_does_not_block_commands_and_updates_on_graph_changes() {
     engine.set_presentation(Presentation {
         graph_visible: true,
         lookup_return: false,
+        lookup_node: None,
     });
     line.clear();
     reader.read_line(&mut line).unwrap();

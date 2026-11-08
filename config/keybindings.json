@@ -1,0 +1,503 @@
+[
+  {
+    "keys": [
+      "Mod+Tab"
+    ],
+    "action": "toggle",
+    "description": "Nodes / Windows (leave window peek first)",
+    "scope": "global",
+    "command": [
+      "toggle"
+    ]
+  },
+  {
+    "keys": [
+      "Mod+Shift+Tab"
+    ],
+    "action": "windows",
+    "description": "Return to windows",
+    "scope": "global",
+    "command": [
+      "windows"
+    ]
+  },
+  {
+    "keys": [
+      "Mod+Space"
+    ],
+    "action": "create",
+    "description": "Create a node in Dux",
+    "scope": "global",
+    "command": [
+      "new"
+    ]
+  },
+  {
+    "keys": [
+      "Mod+Shift+Space"
+    ],
+    "action": "search",
+    "description": "Find a node in Dux",
+    "scope": "global",
+    "command": [
+      "search"
+    ]
+  },
+  {
+    "keys": [
+      "Mod+Shift+slash"
+    ],
+    "action": "help",
+    "description": "Show FlowWM shortcuts",
+    "scope": "global",
+    "command": [
+      "send",
+      "{\"op\": \"ui\", \"command\": {\"action\": \"help\"}}"
+    ]
+  },
+  {
+    "keys": [
+      "Mod+Left"
+    ],
+    "action": "navigate_left",
+    "description": "Select left",
+    "scope": "global",
+    "command": [
+      "navigate",
+      "left"
+    ]
+  },
+  {
+    "keys": [
+      "Mod+Shift+Left"
+    ],
+    "action": "move_left",
+    "description": "Move selection / window left",
+    "scope": "global",
+    "command": [
+      "send",
+      "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"left\"}}"
+    ]
+  },
+  {
+    "keys": [
+      "Mod+Down"
+    ],
+    "action": "navigate_down",
+    "description": "Select down",
+    "scope": "global",
+    "command": [
+      "navigate",
+      "down"
+    ]
+  },
+  {
+    "keys": [
+      "Mod+Shift+Down"
+    ],
+    "action": "move_down",
+    "description": "Move selection / window down",
+    "scope": "global",
+    "command": [
+      "send",
+      "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"down\"}}"
+    ]
+  },
+  {
+    "keys": [
+      "Mod+Up"
+    ],
+    "action": "navigate_up",
+    "description": "Select up",
+    "scope": "global",
+    "command": [
+      "navigate",
+      "up"
+    ]
+  },
+  {
+    "keys": [
+      "Mod+Shift+Up"
+    ],
+    "action": "move_up",
+    "description": "Move selection / window up",
+    "scope": "global",
+    "command": [
+      "send",
+      "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"up\"}}"
+    ]
+  },
+  {
+    "keys": [
+      "Mod+Right"
+    ],
+    "action": "navigate_right",
+    "description": "Select right",
+    "scope": "global",
+    "command": [
+      "navigate",
+      "right"
+    ]
+  },
+  {
+    "keys": [
+      "Mod+Shift+Right"
+    ],
+    "action": "move_right",
+    "description": "Move selection / window right",
+    "scope": "global",
+    "command": [
+      "send",
+      "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"right\"}}"
+    ]
+  },
+  {
+    "keys": [
+      "Tab"
+    ],
+    "action": "connect",
+    "description": "Choose an output, then a compatible node",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "<Control>f",
+      "slash"
+    ],
+    "action": "search",
+    "description": "Find nodes; frame all",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "question"
+    ],
+    "action": "help",
+    "description": "Show shortcuts",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "<Control>p"
+    ],
+    "action": "arrange",
+    "description": "Arrange and frame the graph",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "<Control>a"
+    ],
+    "action": "select_all",
+    "description": "Select every node on this row",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "<Control>c"
+    ],
+    "action": "copy",
+    "description": "Copy selected nodes and their connections",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "<Control>x"
+    ],
+    "action": "cut",
+    "description": "Cut selected nodes",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "<Control>v"
+    ],
+    "action": "paste",
+    "description": "Paste an idle copy",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "<Control>d"
+    ],
+    "action": "duplicate",
+    "description": "Duplicate selection",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "Return",
+      "KP_Enter"
+    ],
+    "action": "open",
+    "description": "Peek at the selected window / open output",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "<Shift>Return",
+      "e"
+    ],
+    "action": "edit",
+    "description": "Edit selected node",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "r"
+    ],
+    "action": "run",
+    "description": "Run selected node",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "Delete",
+      "BackSpace"
+    ],
+    "action": "delete",
+    "description": "Delete selection",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "<Alt>BackSpace"
+    ],
+    "action": "clear_history",
+    "description": "Clear closed window history",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "Escape"
+    ],
+    "action": "escape",
+    "description": "Leave peek, dismiss, clear search, deselect",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "f"
+    ],
+    "action": "focus",
+    "description": "Center the selection",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "Home"
+    ],
+    "action": "fit",
+    "description": "Frame all nodes",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "h"
+    ],
+    "action": "pan_left",
+    "description": "Pan viewport left",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "<Shift>h"
+    ],
+    "action": "fast_pan_left",
+    "description": "Pan viewport left faster",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "j"
+    ],
+    "action": "pan_down",
+    "description": "Pan viewport down",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "<Shift>j"
+    ],
+    "action": "fast_pan_down",
+    "description": "Pan viewport down faster",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "k"
+    ],
+    "action": "pan_up",
+    "description": "Pan viewport up",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "<Shift>k"
+    ],
+    "action": "fast_pan_up",
+    "description": "Pan viewport up faster",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "l"
+    ],
+    "action": "pan_right",
+    "description": "Pan viewport right",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "<Shift>l"
+    ],
+    "action": "fast_pan_right",
+    "description": "Pan viewport right faster",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "a"
+    ],
+    "action": "navigate_left",
+    "description": "Select left",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "<Shift>a"
+    ],
+    "action": "move_left",
+    "description": "Move selection left",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "s"
+    ],
+    "action": "navigate_down",
+    "description": "Select down",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "<Shift>s"
+    ],
+    "action": "move_down",
+    "description": "Move selection down",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "w"
+    ],
+    "action": "navigate_up",
+    "description": "Select up",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "<Shift>w"
+    ],
+    "action": "move_up",
+    "description": "Move selection up",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "d"
+    ],
+    "action": "navigate_right",
+    "description": "Select right",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "<Shift>d"
+    ],
+    "action": "move_right",
+    "description": "Move selection right",
+    "scope": "graph"
+  },
+  {
+    "keys": [
+      "Mod+Return"
+    ],
+    "action": "compositor",
+    "description": "Open terminal (customize your preferred terminal)",
+    "scope": "global",
+    "niri": "spawn \"foot\""
+  },
+  {
+    "keys": [
+      "Mod+Q"
+    ],
+    "action": "compositor",
+    "description": "Close window",
+    "scope": "global",
+    "niri": "close-window"
+  },
+  {
+    "keys": [
+      "Mod+Shift+E"
+    ],
+    "action": "compositor",
+    "description": "Log out",
+    "scope": "global",
+    "niri": "quit"
+  },
+  {
+    "keys": [
+      "Mod+Page_Up"
+    ],
+    "action": "compositor",
+    "description": "Previous workspace",
+    "scope": "global",
+    "niri": "focus-workspace-up"
+  },
+  {
+    "keys": [
+      "Mod+Page_Down"
+    ],
+    "action": "compositor",
+    "description": "Next workspace",
+    "scope": "global",
+    "niri": "focus-workspace-down"
+  },
+  {
+    "keys": [
+      "Mod+Shift+Page_Up"
+    ],
+    "action": "compositor",
+    "description": "Move window to previous workspace",
+    "scope": "global",
+    "niri": "move-window-to-workspace-up"
+  },
+  {
+    "keys": [
+      "Mod+Shift+Page_Down"
+    ],
+    "action": "compositor",
+    "description": "Move window to next workspace",
+    "scope": "global",
+    "niri": "move-window-to-workspace-down"
+  },
+  {
+    "keys": [
+      "Mod+F"
+    ],
+    "action": "compositor",
+    "description": "Maximize column",
+    "scope": "global",
+    "niri": "maximize-column"
+  },
+  {
+    "keys": [
+      "Mod+Shift+F"
+    ],
+    "action": "compositor",
+    "description": "Fullscreen window",
+    "scope": "global",
+    "niri": "fullscreen-window"
+  }
+]

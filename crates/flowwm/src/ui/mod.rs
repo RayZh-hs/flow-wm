@@ -4,9 +4,11 @@ mod empty;
 mod gpu;
 mod layout;
 mod native;
+mod parameters;
 mod shell;
 mod surface;
 pub mod theme;
+mod wires;
 pub use shell::run;
 #[derive(Clone, Copy, Default)]
 pub struct Options {

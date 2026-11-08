@@ -46,42 +46,55 @@ def widget_id(widget):
 
 def prepare_profile(config, state, cache, bundle, user_config, user_state, user_cache, launcher):
     config.mkdir(parents=True, exist_ok=True)
-    for original in user_config.iterdir():
-        if original.name in ("dms", "DankMaterialShell", "niri") or (config / original.name).exists():
-            continue
-        (config / original.name).symlink_to(original, target_is_directory=original.is_dir())
-    for name in ("dms", "niri"):
-        if not (config / name).exists():
-            shutil.copytree(user_config / name, config / name, symlinks=True)
-    for destination, original in [(state, user_state), (cache, user_cache)]:
-        destination.mkdir(parents=True, exist_ok=True)
-        if not (destination / "dms").exists() and (original / "dms").exists():
-            shutil.copytree(original / "dms", destination / "dms", symlinks=True)
-        (destination / "dms").mkdir(exist_ok=True)
-        if not (destination / "DankMaterialShell").is_symlink():
+    (config / "dms").mkdir(exist_ok=True)
+    for name in ("settings.json", "plugin_settings.json"):
+        path = config / "dms" / name
+        if not path.exists():
+            original = user_config / "dms" / name
+            atomic_text(path, original.read_text() if original.is_file() else "{}\n")
+    for destination in (state, cache):
+        (destination / "dms").mkdir(parents=True, exist_ok=True)
+        if not (destination / "DankMaterialShell").exists():
             (destination / "DankMaterialShell").symlink_to("dms", target_is_directory=True)
-    if not (config / "DankMaterialShell").is_symlink():
+    if not (config / "DankMaterialShell").exists():
         (config / "DankMaterialShell").symlink_to("dms", target_is_directory=True)
-    # Old installs included absolute references to the user's Niri tree.
-    for path in (config / "niri").rglob("*.kdl"):
-        text = path.read_text()
-        text = text.replace(str(user_config / "niri"), str(config / "niri"))
-        atomic_text(path, text)
-    niri_config = config / "niri/config.kdl"
-    text = niri_config.read_text()
-    if 'include "flowwm.kdl"' not in text:
-        text += '\n// FlowWM workflow bindings belong only to this profile.\ninclude "flowwm.kdl"\n'
-    atomic_text(niri_config, text)
+    generated = config / "niri/dms"
+    generated.mkdir(parents=True, exist_ok=True)
+    for name in ("colors", "layout", "outputs", "cursor", "windowrules", "alttab", "input", "wpblur"):
+        if not (generated / f"{name}.kdl").exists():
+            atomic_text(generated / f"{name}.kdl", "// Managed by Dux.\n")
+    niri_config = config / "config.kdl"
+    if not niri_config.exists():
+        atomic_text(niri_config, (ROOT / "config/compositor.kdl").read_text())
+    registry = config / "keybindings.json"
+    if not registry.exists():
+        atomic_text(registry, (ROOT / "config/keybindings.json").read_text())
+    bindings = json.loads(registry.read_text())
+    lines = ["// Generated from keybindings.json by the FlowWM installer.", "binds {"]
+    used = set()
     flowwm = str(launcher.with_name("flowwm"))
-    atomic_text(config / "niri/flowwm.kdl", (ROOT / "config/dms-niri.kdl").read_text().replace('"flowwm"', json.dumps(flowwm)))
-    overwrite = config / "niri/dms-overwrite.kdl"
-    text = overwrite.read_text()
-    for key, action, direction in [("Left", "focus-column-left", "left"), ("Right", "focus-column-right", "right"), ("Up", "focus-window-up", "up"), ("Down", "focus-window-down", "down")]:
-        text = re.sub(rf'(?m)^(\s*Mod\+{key}\s*)\{{\s*{action};\s*\}}',
-                      lambda m: m[1] + '{ spawn ' + json.dumps(flowwm) + ' "navigate" "' + direction + '"; }', text)
-    text = re.sub(r'(?m)^(\s*(?:Mod\+Space|Alt\+Space)[^\n{]*)\{\s*spawn "dms" "ipc" "call" "spotlight" "toggle";\s*\}',
-                  lambda m: m[1] + '{ spawn ' + json.dumps(flowwm) + ' "launcher"; }', text)
-    atomic_text(overwrite, text)
+    for binding in bindings:
+        if binding.get("scope") != "global":
+            continue
+        command = binding.get("niri")
+        if command == 'spawn "foot"':
+            terminal = next((name for name in (os.environ.get("TERMINAL", ""), "foot", "alacritty", "kitty", "konsole", "gnome-terminal", "xterm") if name and shutil.which(name)), "foot")
+            command = "spawn " + json.dumps(terminal)
+        if not command:
+            command = "spawn " + " ".join(json.dumps(arg) for arg in [flowwm, *binding["command"]])
+        for key in binding["keys"]:
+            if key in used:
+                raise ValueError(f"Duplicate global shortcut: {key}")
+            used.add(key)
+            title = json.dumps(binding["description"])
+            lines.append(f"    {key} hotkey-overlay-title={title} {{ {command}; }}")
+    lines.append("}")
+    atomic_text(config / "keybindings.kdl", "\n".join(lines) + "\n")
+    extensions = config / "extensions"
+    extensions.mkdir(exist_ok=True)
+    for original in (ROOT / "config/extensions").glob("*.json"):
+        if not (extensions / original.name).exists():
+            shutil.copy2(original, extensions / original.name)
     preferences = config / "dms/settings.json"
     settings = json.loads(preferences.read_text())
     for bar in settings.get("barConfigs", []):
@@ -275,8 +288,10 @@ def main():
         shutil.copytree(ROOT / "components/dms/quickshell", bundle / "shell", symlinks=False,
                         ignore=shutil.ignore_patterns(".git", ".github", "tests", "__pycache__"))
         shutil.copy2(ROOT / "scripts/session.py", bundle / "session.py")
-        profile = user_state / "flowwm/desktop"
-        config, state, cache = (profile / name for name in ("config", "state", "cache"))
+        profile = user_config / "flow-wm"
+        config = profile
+        state = user_state / "flow-wm"
+        cache = user_cache / "flow-wm"
         metadata = {"commit": commit, "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)), "installed_at": version, "config": str(config), "state": str(state),
                     "cache": str(cache), "workflow_data": str(user_data / "flowwm"),
                     "sha256": {name: hashlib.sha256((bundle / "bin" / name).read_bytes()).hexdigest() for name in sources}}
@@ -285,7 +300,7 @@ def main():
         prepare_profile(config, state, cache, bundle, user_config, user_state, user_cache, launcher)
         wrapper = '#!/usr/bin/env python3\nimport os, sys\nfrom pathlib import Path\np=Path(__file__).resolve().parents[1]/"session.py"\nos.execv(sys.executable,[sys.executable,str(p),"dms-cli",*sys.argv[1:]])\n'
         atomic_text(bundle / "bin/dms", wrapper, 0o755)
-        run(bundle / "bin/niri", "validate", "--config", config / "niri/config.kdl")
+        run(bundle / "bin/niri", "validate", "--config", config / "config.kdl")
         run(bundle / "bin/dms.real", "version")
         current = installed / "current"
         loader = f'''#!/usr/bin/env python3

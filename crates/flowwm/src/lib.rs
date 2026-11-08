@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod catalog;
+pub mod config;
 pub mod engine;
 pub mod extensions;
 pub mod graph;

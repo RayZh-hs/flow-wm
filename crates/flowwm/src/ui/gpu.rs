@@ -369,6 +369,7 @@ fn render_inner(
             if let Some(texture) = &view.wallpaper_texture {
                 let (ow, oh) = view.output_size;
                 let scale = (ow / texture.width() as f64).max(oh / texture.height() as f64);
+                snapshot.push_blur(18.0);
                 snapshot.append_texture(
                     texture,
                     &bounds(Rect {
@@ -378,6 +379,7 @@ fn render_inner(
                         height: texture.height() as f64 * scale,
                     }),
                 );
+                snapshot.pop();
             } else {
                 snapshot.append_color(&color(view.theme.surface), &bounds(rect));
             }

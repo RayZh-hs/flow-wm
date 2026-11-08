@@ -54,6 +54,9 @@ impl Arrangement {
         }
         self.key = Some(Self::key(state, width, height));
         self.offsets.clear();
+        if state.workspace().graph_arranged {
+            return;
+        }
         let nodes: Vec<_> = state
             .nodes
             .iter()
@@ -141,6 +144,77 @@ impl Arrangement {
             },
         );
     }
+}
+
+/// Layer a directed graph with deterministic cycle breaking and stable ordering.
+pub fn arrange(state: &State) -> Vec<(String, Position)> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let nodes: BTreeMap<_, _> = state
+        .nodes
+        .iter()
+        .filter(|n| n.workspace == state.selected_workspace)
+        .map(|n| (n.id.clone(), n))
+        .collect();
+    let mut edges = BTreeSet::new();
+    for node in nodes.values() {
+        for source in &node.dependencies {
+            edges.insert((source.clone(), node.id.clone()));
+        }
+    }
+    for e in &state.connections {
+        edges.insert((e.source.node.clone(), e.target.node.clone()));
+    }
+    for w in &state.watchers {
+        edges.insert((w.source.clone(), w.target.clone()));
+    }
+    edges.retain(|(a, b)| nodes.contains_key(a) && nodes.contains_key(b) && a != b);
+    let mut pending: BTreeSet<_> = nodes.keys().cloned().collect();
+    let mut ranks = BTreeMap::<String, usize>::new();
+    while !pending.is_empty() {
+        let ready = pending
+            .iter()
+            .find(|id| !edges.iter().any(|(a, b)| b == *id && pending.contains(a)))
+            .cloned()
+            .unwrap_or_else(|| pending.first().unwrap().clone());
+        let rank = edges
+            .iter()
+            .filter(|(_, b)| b == &ready)
+            .filter_map(|(a, _)| ranks.get(a).map(|r| r + 1))
+            .max()
+            .unwrap_or(0);
+        pending.remove(&ready);
+        ranks.insert(ready, rank);
+    }
+    let mut result = vec![];
+    let mut y = 80.0;
+    for rank in 0..=ranks.values().copied().max().unwrap_or(0) {
+        let mut layer: Vec<_> = nodes
+            .values()
+            .copied()
+            .filter(|n| ranks[&n.id] == rank)
+            .collect();
+        layer.sort_by(|a, b| {
+            a.position
+                .x
+                .total_cmp(&b.position.x)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let height = layer
+            .iter()
+            .map(|n| super::canvas::node_height(n))
+            .fold(0., f64::max);
+        for (index, node) in layer.iter().enumerate() {
+            result.push((
+                node.id.clone(),
+                Position {
+                    x: 100. + index as f64 * (WIDTH + 100.),
+                    y,
+                },
+            ));
+        }
+        y += height + 110.;
+    }
+    result
 }
 
 fn span(count: usize, step: f64) -> f64 {

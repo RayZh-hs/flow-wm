@@ -662,12 +662,120 @@ impl Shell {
                 downstream: false,
             }),
             CanvasAction::Chat => self.agent_chat(),
+            CanvasAction::ConnectSearch => self.connect_search(),
+            CanvasAction::Arrange => self.arrange(),
+            CanvasAction::Copy(cut) => self.copy_selection(cut),
+            CanvasAction::Paste => self.paste_selection(),
+            CanvasAction::Duplicate => {
+                self.copy_selection(false);
+                self.paste_selection();
+            }
+            CanvasAction::EditValue(id) => self.edit_value(&id),
             CanvasAction::Search => self.search_nodes(),
             CanvasAction::Help => self.help(),
             CanvasAction::ClearHistory => self.engine.dispatch(Control::ClearHistory),
             CanvasAction::Camera => self.prepare_camera(),
             CanvasAction::Escape => self.escape(),
         }
+    }
+    fn arrange(&self) {
+        self.prepare_camera();
+        let state = self.engine.snapshot().state;
+        let positions = super::layout::arrange(&state);
+        let previous: HashMap<_, _> = state
+            .nodes
+            .iter()
+            .filter(|n| n.workspace == state.selected_workspace)
+            .map(|n| (n.id.clone(), self.view.borrow().position(n)))
+            .collect();
+        match self.engine.request(Control::Arrange { positions }) {
+            Ok(_) => {
+                let state = self.engine.snapshot().state;
+                let mut view = self.view.borrow_mut();
+                view.arrangement
+                    .update(&state, self.canvas().width(), self.canvas().height());
+                for node in &state.nodes {
+                    if let Some(old) = previous.get(&node.id) {
+                        view.presented_positions.insert(
+                            node.id.clone(),
+                            Position {
+                                x: old.x - node.position.x,
+                                y: old.y - node.position.y,
+                            },
+                        );
+                    }
+                }
+                drop(view);
+                self.transition(true, None);
+                self.fit();
+            }
+            Err(error) => self.show_error(&error.to_string()),
+        }
+    }
+    fn copy_selection(&self, cut: bool) {
+        let state = self.engine.snapshot().state;
+        let view = self.view.borrow();
+        let selected: Vec<_> = state
+            .nodes
+            .iter()
+            .filter(|n| {
+                n.workspace == state.selected_workspace
+                    && (view.selection.contains(&n.id) || view.selected.as_ref() == Some(&n.id))
+            })
+            .map(|n| n.id.clone())
+            .collect();
+        let Ok(mut recipe) = state.recipe("Clipboard".into(), &selected) else {
+            return;
+        };
+        for node in &mut recipe.nodes {
+            if let Some(original) = state.node(&node.id) {
+                node.position = view.position(original);
+            }
+        }
+        drop(view);
+        let text = serde_json::json!({"flowwm_clipboard":1,"recipe":recipe}).to_string();
+        self.canvas().clipboard().set_text(&text);
+        if cut {
+            for id in selected {
+                self.engine.dispatch(Control::Delete { id });
+            }
+        }
+    }
+    fn paste_selection(&self) {
+        let weak = self.weak.clone();
+        let clipboard = self.canvas().clipboard();
+        glib::MainContext::default().spawn_local(async move {
+            let Ok(Some(text)) = clipboard.read_text_future().await else {
+                return;
+            };
+            let Some(shell) = weak.upgrade() else { return };
+            if text.len() > 8 * 1024 * 1024 {
+                shell.show_error("The copied graph is too large");
+                return;
+            }
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+                return;
+            };
+            if value["flowwm_clipboard"] != 1 {
+                return;
+            }
+            let Ok(recipe) = serde_json::from_value::<Recipe>(value["recipe"].clone()) else {
+                return;
+            };
+            match shell.engine.request(Control::Paste {
+                recipe,
+                offset: Position { x: 40., y: 40. },
+            }) {
+                Ok(result) => {
+                    let ids: Vec<String> =
+                        serde_json::from_value(result["ids"].clone()).unwrap_or_default();
+                    shell.view.borrow_mut().selection = ids.iter().cloned().collect();
+                    shell.select(ids.first().cloned());
+                    shell.canvas().grab_focus();
+                }
+                Err(error) => shell.show_error(&error.to_string()),
+            }
+        });
     }
     fn select(&self, id: Option<String>) {
         let mut view = self.view.borrow_mut();
@@ -700,7 +808,21 @@ impl Shell {
         }
         self.canvas().queue_draw();
     }
+    fn peeking(&self) -> bool {
+        let state = self.engine.snapshot().state;
+        state.workspace().view == RowView::Nodes
+            && state.nodes.iter().any(|n| {
+                n.workspace == state.selected_workspace
+                    && n.column_mode == ColumnMode::Window
+                    && n.window_id.is_some()
+            })
+    }
     fn escape(&self) {
+        if self.peeking() {
+            self.prepare_camera();
+            self.canvas().grab_focus();
+            return;
+        }
         let chat = self.chat.borrow_mut().take();
         if let Some(chat) = chat {
             chat.window.close();
@@ -901,6 +1023,7 @@ impl Shell {
         self.engine.set_presentation(Presentation {
             graph_visible: visible,
             lookup_return: presentation.lookup_return,
+            lookup_node: None,
         });
         if !visible && !was_mapped {
             if let Some(after) = after {
@@ -1224,6 +1347,7 @@ impl Shell {
         self.engine.set_presentation(Presentation {
             graph_visible: true,
             lookup_return: false,
+            lookup_node: None,
         });
         self.refresh();
         if self.native_nodes
@@ -1237,6 +1361,9 @@ impl Shell {
         if self.native_nodes && !was_visible {
             self.graph_visible.set(false);
             self.view.borrow_mut().chrome = 0.0;
+        }
+        if !was_visible {
+            self.fit_immediate();
         }
         self.transition(true, None);
         self.engine
@@ -1384,6 +1511,7 @@ impl Shell {
         self.engine.set_presentation(Presentation {
             graph_visible: false,
             lookup_return: false,
+            lookup_node: None,
         });
         if restore_focus
             && was_visible
@@ -1412,6 +1540,83 @@ impl Shell {
             })),
         );
     }
+    fn connect_search(&self) {
+        let Some(id) = self.view.borrow().selected.clone() else {
+            self.palette();
+            return;
+        };
+        if !self.integrated {
+            self.show_error("Connection search requires the FlowWM Dux desktop. Drag a pin or use node settings in standalone mode.");
+            return;
+        }
+        self.dms_launcher(Some("connect"));
+        let mut presentation = self.engine.presentation();
+        presentation.lookup_node = Some(id);
+        self.engine.set_presentation(presentation);
+    }
+    fn create_connected(&self, macro_id: &str, source: crate::graph::Endpoint, input: &str) {
+        let Some(m) = self.macros.iter().find(|m| m.id == macro_id) else {
+            return;
+        };
+        let state = self.engine.snapshot().state;
+        let Some(parent) = state.node(&source.node) else {
+            return;
+        };
+        let mut position = self.view.borrow().position(parent);
+        position.y += canvas::node_height(parent) + 110.;
+        while state.nodes.iter().any(|n| {
+            n.workspace == parent.workspace
+                && (self.view.borrow().position(n).x - position.x).abs() < canvas::WIDTH + 20.
+                && (self.view.borrow().position(n).y - position.y).abs()
+                    < canvas::node_height(n) + 20.
+        }) {
+            position.x += canvas::WIDTH + 100.;
+        }
+        let mut node = Node::new(&parent.workspace, m.kind, parent.cwd.clone(), position);
+        node.title = m.name.clone();
+        node.command = m.command.clone();
+        node.flow = m.flow.clone();
+        let id = node.id.clone();
+        let edge = crate::graph::Connection {
+            source,
+            target: crate::graph::Endpoint {
+                node: id.clone(),
+                pin: input.into(),
+            },
+        };
+        let mut candidate = (*state).clone();
+        candidate.nodes.push(node.clone());
+        candidate.connections.push(edge.clone());
+        if let Err(error) = candidate.validate() {
+            self.show_error(&error.to_string());
+            return;
+        }
+        match self
+            .engine
+            .request(Control::Create {
+                node: Box::new(node),
+            })
+            .and_then(|_| {
+                self.engine
+                    .request(Control::ConnectPins { connection: edge })
+            }) {
+            Ok(_) => {
+                self.show_nodes();
+                self.select(Some(id.clone()));
+                canvas::focus_node(
+                    &self.canvas(),
+                    &self.view,
+                    &self.engine.snapshot().state,
+                    &id,
+                );
+                self.edit(&id);
+            }
+            Err(error) => {
+                self.engine.dispatch(Control::Delete { id });
+                self.show_error(&error.to_string());
+            }
+        }
+    }
     fn dms_launcher(&self, mode: Option<&str>) {
         let query = mode.map(|mode| match mode {
             "create" => "@ + ",
@@ -1420,10 +1625,16 @@ impl Shell {
         });
         let restore = self.graph_visible.get() || self.engine.presentation().lookup_return;
         self.engine.set_presentation(Presentation {
-            graph_visible: false,
+            graph_visible: self.native_nodes && self.graph_visible.get(),
             lookup_return: restore,
+            lookup_node: None,
         });
-        self.transition(false, None);
+        if self.graph_visible.get() {
+            self.fit();
+        }
+        if !self.native_nodes {
+            self.transition(false, None);
+        }
         self.bar.set_visible(false);
         std::thread::spawn(move || {
             let mut command = std::process::Command::new("dms");
@@ -1462,6 +1673,7 @@ impl Shell {
         self.engine.set_presentation(Presentation {
             graph_visible: !expand,
             lookup_return: false,
+            lookup_node: None,
         });
         self.select(Some(id.into()));
         if self.first_frame.get() {
@@ -1491,10 +1703,25 @@ impl Shell {
         match command {
             UiCommand::RefreshImages => self.collect_images(),
             UiCommand::AgentChat => self.agent_chat(),
+            UiCommand::Arrange => self.arrange(),
+            UiCommand::ConnectSearch => self.connect_search(),
+            UiCommand::CreateConnected { id, source, input } => {
+                self.create_connected(&id, source, &input)
+            }
+            UiCommand::MoveSelection { direction } => {
+                if self.graph_visible.get() {
+                    canvas::move_selection(&self.engine, &self.view, &direction);
+                } else if let Err(error) = niri::move_window(&direction) {
+                    self.show_error(&error.to_string());
+                }
+            }
             UiCommand::Toggle => {
                 self.synchronize_row();
                 self.refresh();
-                if self.engine.snapshot().state.workspace().view == RowView::Nodes {
+                if self.peeking() {
+                    self.prepare_camera();
+                    self.canvas().grab_focus();
+                } else if self.engine.snapshot().state.workspace().view == RowView::Nodes {
                     self.show_windows();
                 } else {
                     self.show_nodes();
@@ -1512,10 +1739,7 @@ impl Shell {
                 self.recipes();
             }
             UiCommand::RunGroup => self.engine.dispatch(Control::RunWorkspace),
-            UiCommand::Help => {
-                self.show_nodes();
-                self.help();
-            }
+            UiCommand::Help => self.help(),
             UiCommand::BarGeometry { output, insets } => {
                 self.bar_geometry
                     .borrow_mut()
@@ -1526,7 +1750,15 @@ impl Shell {
             UiCommand::Open { id } => self.open(&id),
             UiCommand::Select { id } => self.select(Some(id)),
             UiCommand::Focus { id, expand } => self.focus_node(&id, expand),
-            UiCommand::Search { mode } => self.dms_launcher(Some(&mode)),
+            UiCommand::Search { mode } => {
+                if self.integrated {
+                    self.dms_launcher(Some(&mode));
+                } else if mode == "create" {
+                    self.palette();
+                } else {
+                    self.search_nodes();
+                }
+            }
             UiCommand::Launcher => {
                 if self.graph_visible.get() {
                     self.palette();
@@ -1764,6 +1996,7 @@ impl Shell {
         self.engine.set_presentation(Presentation {
             graph_visible: visible,
             lookup_return: false,
+            lookup_node: None,
         });
         self.canvas().slide(None);
         self.update_scene_geometry();
@@ -1796,6 +2029,7 @@ impl Shell {
                 self.engine.set_presentation(Presentation {
                     graph_visible: false,
                     lookup_return: false,
+                    lookup_node: None,
                 });
                 self.fallback_window.set_visible(false);
             } else {
@@ -1922,6 +2156,10 @@ impl Shell {
         let Some(node) = state.node(id) else {
             return;
         };
+        if node.kind == NodeKind::Constant && node.flow.editable_in_graph {
+            self.edit_value(id);
+            return;
+        }
         if node.kind == NodeKind::Window || node.window_id.is_some() {
             let desktop = self.desktop.lock().unwrap().clone();
             if let Some(window) = desktop.windows.iter().find(|w| {
@@ -2034,6 +2272,11 @@ impl Shell {
         });
     }
     fn search_nodes(&self) {
+        self.fit();
+        if self.integrated {
+            self.dms_launcher(Some("nodes"));
+            return;
+        }
         if let Some(popup) = self.search_popup.borrow().as_ref() {
             popup.present();
             return;
@@ -2098,6 +2341,61 @@ impl Shell {
         *self.search_popup.borrow_mut() = Some(popup.clone());
         popup.present();
         search.grab_focus();
+    }
+    fn edit_value(&self, id: &str) {
+        let state = self.engine.snapshot().state;
+        let Some(node) = state
+            .node(id)
+            .filter(|n| n.kind == NodeKind::Constant && n.flow.editable_in_graph)
+            .cloned()
+        else {
+            return;
+        };
+        let popover = gtk::Popover::new();
+        popover.set_parent(&self.canvas());
+        popover.set_autohide(true);
+        let view = self.view.borrow();
+        let p = view.position(&node);
+        popover.set_pointing_to(Some(&gdk::Rectangle::new(
+            (view.pan_x + p.x * view.zoom) as i32,
+            (view.pan_y + (p.y + 75.) * view.zoom) as i32,
+            (canvas::WIDTH * view.zoom) as i32,
+            30,
+        )));
+        drop(view);
+        let body = column(8);
+        body.add_css_class("chat-body");
+        let ty = crate::graph::constant_type(&node);
+        let value = node
+            .flow
+            .properties
+            .get("value")
+            .cloned()
+            .unwrap_or_else(|| super::parameters::default_value(&ty));
+        let (widget, read) = super::parameters::value_editor(&state, &ty, &value);
+        body.append(&widget);
+        let save = gtk::Button::with_label("Save value");
+        body.append(&save);
+        popover.set_child(Some(&body));
+        let weak = self.weak.clone();
+        let p = popover.clone();
+        save.connect_clicked(move |_| {
+            let Some(shell) = weak.upgrade() else { return };
+            match read() {
+                Ok(value) => {
+                    let mut n = node.clone();
+                    n.flow.properties.insert("value".into(), value);
+                    match shell.engine.request(Control::Update { node: Box::new(n) }) {
+                        Ok(_) => p.popdown(),
+                        Err(e) => shell.show_error(&e.to_string()),
+                    }
+                }
+                Err(e) => shell.show_error(&e.to_string()),
+            }
+        });
+        popover.connect_closed(|p| p.unparent());
+        popover.popup();
+        widget.grab_focus();
     }
     fn window_settings(&self, node: &Node) {
         let popup = self.dialog("Window column", 430, 240);
@@ -2389,6 +2687,10 @@ impl Shell {
         popup.present();
     }
     fn palette(&self) {
+        if self.integrated {
+            self.dms_launcher(Some("create"));
+            return;
+        }
         let dialog = self.dialog("Create a node", 480, 560);
         let root = column(14);
         root.add_css_class("dialog-body");
@@ -2544,42 +2846,11 @@ impl Shell {
         let title = entry(&node.title);
         field(&root, "Name", &title);
         let directory = entry(&node.cwd.to_string_lossy());
-        field(&root, "Working directory", &directory);
-        let properties = gtk::TextView::new();
-        properties.set_monospace(true);
-        properties
-            .buffer()
-            .set_text(&serde_json::to_string_pretty(&node.flow.properties).unwrap_or_default());
-        let property_scroll = gtk::ScrolledWindow::builder()
-            .min_content_height(85)
-            .child(&properties)
-            .build();
-        field(&root, "Properties (JSON record)", &property_scroll);
-        let ports = gtk::TextView::new();
-        ports.set_monospace(true);
-        ports.buffer().set_text(
-            &serde_json::to_string_pretty(
-                &serde_json::json!({"inputs":node.flow.inputs, "outputs":node.flow.outputs}),
-            )
-            .unwrap_or_default(),
-        );
-        let port_scroll = gtk::ScrolledWindow::builder()
-            .min_content_height(85)
-            .child(&ports)
-            .build();
-        field(
-            &root,
-            "Pins (JSON; property exposes a property as a pin)",
-            &port_scroll,
-        );
-        if node.kind.primitive() {
-            let hint = label(
-                "Data inputs evaluate on demand. Signals activate recipients. Vox returns an output record; Python assigns outputs.",
-                "hint",
-            );
-            hint.set_wrap(true);
-            root.append(&hint);
+        if !node.kind.primitive() || matches!(node.kind, NodeKind::Vox | NodeKind::Python) {
+            field(&root, "Working directory", &directory);
         }
+        let fields = super::parameters::Fields::new(&state, &node);
+        root.append(&fields.widget);
         let editor = gtk::TextView::new();
         editor.set_monospace(true);
         editor.set_wrap_mode(gtk::WrapMode::WordChar);
@@ -2590,21 +2861,29 @@ impl Shell {
             .vexpand(true)
             .child(&editor)
             .build();
-        field(
-            &root,
-            if node.kind == NodeKind::Agent {
-                "Prompt"
-            } else if matches!(node.kind, NodeKind::Shell | NodeKind::Metric) {
-                "Shell script"
-            } else if node.kind == NodeKind::Vox {
-                "Vox expression or block"
-            } else if node.kind == NodeKind::Python {
-                "Python source"
-            } else {
-                "Instructions"
-            },
-            &editor_scroll,
+        let has_source = matches!(
+            node.kind,
+            NodeKind::Agent
+                | NodeKind::Shell
+                | NodeKind::Metric
+                | NodeKind::Gate
+                | NodeKind::Human
+                | NodeKind::Vox
+                | NodeKind::Python
         );
+        if has_source {
+            field(
+                &root,
+                match node.kind {
+                    NodeKind::Agent => "Prompt",
+                    NodeKind::Shell | NodeKind::Metric => "Shell script",
+                    NodeKind::Vox => "Vox source",
+                    NodeKind::Python => "Python source",
+                    _ => "Instructions",
+                },
+                &editor_scroll,
+            );
+        }
         if matches!(node.kind, NodeKind::Shell | NodeKind::Metric) {
             let info = label(
                 "Runs as your user. Upstream results are JSON in $FLOWWM_INPUTS.",
@@ -2631,7 +2910,9 @@ impl Shell {
         } else {
             "failure"
         }));
-        field(&root, "Run when", &condition.widget);
+        if !node.kind.primitive() {
+            field(&root, "Run when", &condition.widget);
+        }
         let interval = gtk::SpinButton::with_range(1.0, 86400.0, 1.0);
         interval.set_value(node.metric.interval_secs as f64);
         let unit = entry(&node.metric.unit);
@@ -2795,26 +3076,9 @@ impl Shell {
                 return;
             };
             let mut node = original.clone();
-            let buffer = properties.buffer();
-            let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
-            match serde_json::from_str(&text) {
-                Ok(value) => node.flow.properties = value,
-                Err(error) => {
-                    s.show_error(&format!("Invalid properties: {error}"));
-                    return;
-                }
-            }
-            let buffer = ports.buffer();
-            let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
-            match serde_json::from_str::<crate::graph::Flow>(&text) {
-                Ok(value) => {
-                    node.flow.inputs = value.inputs;
-                    node.flow.outputs = value.outputs;
-                }
-                Err(error) => {
-                    s.show_error(&format!("Invalid pins: {error}"));
-                    return;
-                }
+            if let Err(error) = fields.apply(&mut node) {
+                s.show_error(&error.to_string());
+                return;
             }
             node.title = title.text().to_string();
             node.cwd = PathBuf::from(directory.text().as_str());
@@ -3106,29 +3370,25 @@ impl Shell {
         let root = column(18);
         root.add_css_class("dialog-body");
         root.append(&label("Stay in your flow.", "dialog-title"));
-        for (key, action) in [
-            ("F / Home", "Focus selection / frame all nodes"),
-            ("Win+Space", "Create a node"),
-            ("/", "Search and highlight matching nodes"),
-            ("H J K L / arrows", "Select left / down / up / right"),
-            ("W A S D", "Move selection by one grid block"),
-            ("Alt+1…9, 0", "Quick select; hold Alt to show numbers"),
-            ("Alt+Backspace", "Remove closed window history on this row"),
-            ("Backspace", "Delete selection (close live window nodes)"),
-            ("Enter / double click", "Expand and center a window column"),
-            ("Shift+Enter", "Node and column settings"),
-            ("Space+1…9, 0", "Toggle a connection to that node"),
-            ("Esc", "Dismiss popup, clear search, then deselect"),
-            ("Tab", "Ask a FlowGraph agent; Tab again detaches its node"),
-            ("?", "Show shortcuts"),
-            (
-                "Left drag on background",
-                "Box select; Shift adds to selection",
-            ),
-            ("Right drag", "Cut workflow connections"),
-            ("Middle drag / scroll", "Pan / zoom at the pointer"),
-            ("Super+Tab", "Collapse windows to nodes / return to windows"),
-        ] {
+        for shortcut in crate::config::shortcuts() {
+            let keys = shortcut
+                .keys
+                .join(" / ")
+                .replace("<Control>", "Ctrl+")
+                .replace("<Shift>", "Shift+")
+                .replace("<Alt>", "Alt+")
+                .replace("Mod+", "Win+");
+            let key = keys.as_str();
+            let description = format!(
+                "{}{}",
+                shortcut.description,
+                if shortcut.scope == "global" {
+                    " · both views"
+                } else {
+                    ""
+                }
+            );
+            let action = description.as_str();
             let line = row(24);
             let k = label(key, "shortcut");
             k.set_width_chars(24);

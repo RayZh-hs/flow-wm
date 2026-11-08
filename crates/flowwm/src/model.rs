@@ -292,6 +292,8 @@ pub struct Workspace {
     #[serde(default)]
     pub window_array: bool,
     #[serde(default)]
+    pub graph_arranged: bool,
+    #[serde(default)]
     pub view: RowView,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -355,6 +357,7 @@ impl State {
             notes: String::new(),
             row: None,
             window_array: false,
+            graph_arranged: false,
             view: RowView::default(),
         };
         Self {

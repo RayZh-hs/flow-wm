@@ -23,6 +23,7 @@ def environment(profile=False):
     data = settings()
     result = os.environ.copy()
     result["FLOWWM_SESSION"] = "1"
+    result["FLOWWM_CONFIG_DIR"] = data["config"]
     result["FLOWWM_INSTALL_ROOT"] = str(ROOT)
     result["PATH"] = str(ROOT / "bin") + os.pathsep + result.get("PATH", "")
     if profile:
@@ -34,7 +35,7 @@ def environment(profile=False):
 def command(kind, arguments=()):
     data = settings()
     if kind == "compositor":
-        return [str(ROOT / "bin/niri"), "--config", str(Path(data["config"]) / "niri/config.kdl"), "--session"]
+        return [str(ROOT / "bin/niri"), "--config", str(Path(data["config"]) / "config.kdl"), "--session"]
     if kind == "shell":
         return [str(ROOT / "bin/flowwm"), "--data-dir", data["workflow_data"], "start", "--dms", "--background"]
     if kind == "dms":

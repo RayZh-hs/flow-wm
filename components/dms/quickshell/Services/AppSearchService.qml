@@ -1021,8 +1021,8 @@ Singleton {
 
         try {
             if (typeof instance.executeItem === "function") {
-                instance.executeItem(item);
-                return true;
+                const result = instance.executeItem(item);
+                return result ?? true;
             }
         } catch (e) {
             log.warn("Error executing item from plugin", pluginId, ":", e);

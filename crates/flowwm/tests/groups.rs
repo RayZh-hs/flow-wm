@@ -118,8 +118,7 @@ fn row_reordering_and_title_changes_keep_node_ids_positions_and_group_identity()
     assert_eq!(state.workspace().row.as_ref().unwrap().index, 2);
     desktop.windows.remove(0);
     groups::synchronize(&mut state, &desktop);
-    assert_eq!(state.node(&id).unwrap().window_id, None);
-    assert_eq!(state.node(&id).unwrap().status, Status::Stopped);
+    assert!(state.node(&id).is_none());
 }
 
 #[test]

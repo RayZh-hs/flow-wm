@@ -34,6 +34,7 @@ pub struct CatalogRecipe {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Catalog {
+    pub lookup: Option<Lookup>,
     pub version: u32,
     pub selected_workspace: String,
     pub presentation: Presentation,
@@ -45,10 +46,100 @@ pub struct Catalog {
     pub attention: usize,
     pub open_windows: usize,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LookupTarget {
+    pub id: String,
+    pub input: String,
+    pub create: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LookupOutput {
+    pub name: String,
+    pub ty: String,
+    pub targets: Vec<LookupTarget>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Lookup {
+    pub node: String,
+    pub title: String,
+    pub outputs: Vec<LookupOutput>,
+}
+impl Lookup {
+    fn new(state: &crate::model::State, id: &str, macros: &[Macro]) -> Option<Self> {
+        let source = state.node(id)?;
+        let outputs = crate::graph::pins(state, source, true)
+            .into_iter()
+            .map(|output| {
+                let mut targets = vec![];
+                let accepts = |input: &crate::graph::Pin| {
+                    output.ty.is_signal() == input.ty.is_signal()
+                        && crate::graph::can_cast(state, &output.ty, &input.ty)
+                };
+                for node in state
+                    .nodes
+                    .iter()
+                    .filter(|n| n.workspace == source.workspace && n.id != source.id)
+                {
+                    for pin in crate::graph::pins(state, node, false)
+                        .into_iter()
+                        .filter(&accepts)
+                    {
+                        if !pin.ty.is_signal()
+                            && state
+                                .connections
+                                .iter()
+                                .any(|e| e.target.node == node.id && e.target.pin == pin.name)
+                        {
+                            continue;
+                        }
+                        targets.push(LookupTarget {
+                            id: node.id.clone(),
+                            input: pin.name,
+                            create: false,
+                        });
+                    }
+                }
+                for m in macros {
+                    let mut node = crate::model::Node::new(
+                        &source.workspace,
+                        m.kind,
+                        source.cwd.clone(),
+                        Default::default(),
+                    );
+                    node.flow = m.flow.clone();
+                    for pin in crate::graph::pins(state, &node, false)
+                        .into_iter()
+                        .filter(&accepts)
+                    {
+                        targets.push(LookupTarget {
+                            id: m.id.clone(),
+                            input: pin.name,
+                            create: true,
+                        });
+                    }
+                }
+                LookupOutput {
+                    name: output.name,
+                    ty: output.ty.to_string(),
+                    targets,
+                }
+            })
+            .collect();
+        Some(Self {
+            node: source.id.clone(),
+            title: source.title.clone(),
+            outputs,
+        })
+    }
+}
 impl Catalog {
     pub fn new(snapshot: &Snapshot, presentation: Presentation, macros: &[Macro]) -> Self {
         let state = &snapshot.state;
         Self {
+            lookup: presentation
+                .lookup_node
+                .as_deref()
+                .and_then(|id| Lookup::new(state, id, macros)),
             version: 1,
             selected_workspace: state.selected_workspace.clone(),
             presentation,

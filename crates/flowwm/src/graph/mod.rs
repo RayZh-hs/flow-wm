@@ -16,8 +16,10 @@ use std::collections::{BTreeMap, HashSet};
 
 pub type Record = BTreeMap<String, Value>;
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Flow {
+    #[serde(default = "editable_default")]
+    pub editable_in_graph: bool,
     /// Extension node definition, or a builtin ID such as `constant`.
     #[serde(default)]
     pub node_type: String,
@@ -33,6 +35,48 @@ pub struct Flow {
     pub values: Record,
 }
 
+fn editable_default() -> bool {
+    true
+}
+impl Default for Flow {
+    fn default() -> Self {
+        Self {
+            editable_in_graph: true,
+            node_type: String::new(),
+            properties: Default::default(),
+            inputs: vec![],
+            outputs: vec![],
+            values: Default::default(),
+        }
+    }
+}
+pub fn infer_type(value: &Value) -> Type {
+    match value {
+        Value::Bool(_) => Type::Bool,
+        Value::Number(n) if n.is_i64() => Type::Int,
+        Value::Number(_) => Type::Float,
+        Value::String(_) => Type::String,
+        Value::Array(_) => Type::List {
+            item: Box::new(Type::Any),
+        },
+        Value::Object(_) => Type::record(),
+        _ => Type::Any,
+    }
+}
+pub fn constant_type(node: &Node) -> Type {
+    node.flow
+        .outputs
+        .iter()
+        .find(|p| p.name == "value")
+        .map(|p| p.ty.clone())
+        .unwrap_or_else(|| {
+            node.flow
+                .properties
+                .get("value")
+                .map(infer_type)
+                .unwrap_or(Type::Any)
+        })
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Pin {
     pub name: String,
@@ -119,7 +163,7 @@ pub fn pins(state: &State, node: &Node, output: bool) -> Vec<Pin> {
     } else {
         match (type_id(node), output) {
             ("constant", false) => vec![],
-            ("constant", true) => vec![Pin::new("value", Type::Any)],
+            ("constant", true) => vec![Pin::new("value", constant_type(node))],
             ("display", false) => vec![Pin {
                 default: Some(Value::Null),
                 ..Pin::new("value", Type::Any)
@@ -185,6 +229,11 @@ pub fn property(state: &State, node: &Node, name: &str) -> Option<Value> {
 pub fn validate(state: &State) -> Result<()> {
     validate_registry(state)?;
     for node in &state.nodes {
+        if node.kind == NodeKind::Constant
+            && let Some(value) = node.flow.properties.get("value")
+        {
+            check_value(state, value, &constant_type(node))?;
+        }
         ensure!(
             node.kind != NodeKind::Extension
                 || state.node_types.iter().any(|d| d.id == type_id(node)),

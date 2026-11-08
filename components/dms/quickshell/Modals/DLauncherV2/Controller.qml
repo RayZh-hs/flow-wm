@@ -25,6 +25,7 @@ Item {
     property var selectedItem: null
     property bool isSearching: false
     property string activePluginId: ""
+    property string pluginSearchHint: ""
     property var collapsedSections: ({})
     property bool keyboardNavigationActive: false
     property bool active: false
@@ -1108,6 +1109,7 @@ Item {
     }
 
     function performSearch() {
+        pluginSearchHint = "";
         queryChanged(searchQuery);
 
         var currentVersion = _searchVersion;
@@ -1188,6 +1190,8 @@ Item {
                 loadPluginCategories(triggerMatch.pluginId);
 
             var pluginItems = getPluginItems(triggerMatch.pluginId, triggerMatch.query);
+            const hintPlugin = PluginService.ensureLauncherInstance(triggerMatch.pluginId);
+            pluginSearchHint = typeof hintPlugin?.getSearchHint === "function" ? hintPlugin.getSearchHint() : "";
             for (var k = 0; k < pluginItems.length; k++)
                 allItems.push(pluginItems[k]);
 
@@ -2704,7 +2708,11 @@ Item {
             if (item.isBuiltInLauncher) {
                 AppSearchService.executeBuiltInLauncherItem(item.data);
             } else {
-                AppSearchService.executePluginItem(item.data, item.pluginId);
+                const result = AppSearchService.executePluginItem(item.data, item.pluginId);
+                if (result?.keepOpen) {
+                    searchQueryRequested(result.query ?? searchQuery);
+                    return;
+                }
             }
             break;
         case "setting":

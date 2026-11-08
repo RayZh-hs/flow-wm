@@ -147,6 +147,17 @@ pub fn navigate(direction: &str) -> Result<()> {
     request(Request::Action(action))?;
     Ok(())
 }
+pub fn move_window(direction: &str) -> Result<()> {
+    let action = match direction {
+        "left" => Action::MoveColumnLeft {},
+        "right" => Action::MoveColumnRight {},
+        "up" => Action::MoveWindowUp {},
+        "down" => Action::MoveWindowDown {},
+        _ => bail!("Unknown direction"),
+    };
+    request(Request::Action(action))?;
+    Ok(())
+}
 /// A persistent logical workspace gets a named Niri workspace on first expansion.
 /// Only an empty workspace is named; existing user workspaces are never repurposed.
 pub fn activate_workspace(logical_id: &str, create: bool) -> Result<()> {

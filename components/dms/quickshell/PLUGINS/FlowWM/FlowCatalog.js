@@ -87,3 +87,48 @@ function items(catalog, query, labels) {
     results.forEach(function (item, index) { item._preScored = 1000 + (results.length - index) / (results.length + 1); });
     return results;
 }
+
+function connectionItems(catalog, query, outputName, targetKey) {
+    var lookup = catalog.lookup;
+    if (!lookup) return [];
+    query = String(query || "").trim();
+    var outputs = lookup.outputs || [];
+    if (!outputName && outputs.length === 1) outputName = outputs[0].name;
+    var prefix = lookup.title + ":";
+    if (query.indexOf(prefix) === 0) query = query.substring(prefix.length).trim();
+    function item(id, name, comment, layer, command) {
+        return { id: id, name: name, comment: comment, icon: "material:account_tree", flowwmLayer: layer, flowwmArgs: command,
+            _preScored: 1001, primaryAction: { name: "Choose", icon: "arrow_forward", action: "execute" } };
+    }
+    if (!outputName) return outputs.filter(function (p) { return matches(p.name + " " + p.ty, query); }).map(function (p) {
+        return item("output:" + p.name, p.name, p.ty, { output: p.name }, null);
+    });
+    var output = outputs.find(function (p) { return p.name === outputName; });
+    if (!output) return [];
+    var groups = {};
+    output.targets.forEach(function (target) {
+        var key = (target.create ? "macro:" : "node:") + target.id;
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(target);
+    });
+    var result = [];
+    if (outputs.length > 1 || targetKey) result.push(item("back", "‹ Back", "Choose another " + (targetKey ? "node" : "output"), { back: true }, null));
+    Object.keys(groups).forEach(function (key) {
+        if (targetKey && key !== targetKey) return;
+        var targets = groups[key];
+        var first = targets[0];
+        var entry = (first.create ? catalog.macros : catalog.nodes).find(function (n) { return n.id === first.id; });
+        if (!entry) return;
+        var name = first.create ? entry.name : entry.title;
+        if (!targetKey && !matches(name + " " + (entry.description || ""), query)) return;
+        if (!targetKey && targets.length > 1) {
+            result.push(item(key, name, output.ty + " · " + targets.length + " compatible inputs", { target: key }, null));
+            return;
+        }
+        targets.forEach(function (target) {
+            var command = target.create ? { op: "ui", command: { action: "create_connected", id: target.id, source: {node:lookup.node,pin:output.name}, input:target.input } } : { op:"connect_pins",connection:{source:{node:lookup.node,pin:output.name},target:{node:target.id,pin:target.input}} };
+            result.push(item(key + ":" + target.input, targetKey ? target.input : name, (target.create ? "Create" : "Connect") + " · " + target.input + " · " + output.ty, null, ["send", JSON.stringify(command)]));
+        });
+    });
+    return result;
+}

@@ -12,18 +12,12 @@ pub struct Config {
 }
 impl Config {
     pub fn load() -> Result<Self> {
-        let base = directories::BaseDirs::new().context("Home directory unavailable")?;
-        let file = base.config_dir().join("flowwm/agent.json");
+        let file = crate::config::directory().join("agent.json");
         let config = if file.exists() {
             serde_json::from_slice(&std::fs::read(&file)?).context("Read flowwm/agent.json")?
         } else {
-            let wrapper = base.home_dir().join("Apps/Hooks/utils/mycodex.py");
             Self {
-                command: vec![if wrapper.is_file() {
-                    wrapper.to_string_lossy().into_owned()
-                } else {
-                    "mycodex".into()
-                }],
+                command: vec!["codex".into()],
             }
         };
         ensure!(

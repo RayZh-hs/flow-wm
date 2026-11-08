@@ -33,7 +33,7 @@ fn main() -> Result<()> {
     if cli.example && state.nodes.is_empty() {
         ui::example(&mut state);
     }
-    let extensions = extensions::load_bundle(&config.config_dir().join("extensions"))?;
+    let extensions = extensions::load_bundle(&flowwm::config::directory().join("extensions"))?;
     extensions.apply(&mut state)?;
     let macros = extensions.macros;
     let (engine, events) = Engine::new(state, store);
