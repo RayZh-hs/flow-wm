@@ -51,6 +51,13 @@ fn canvas(
 }
 
 fn render(f: &mut Fixture) -> Vec<Rectangle<i32, Physical>> {
+    render_opacity(f)
+        .into_iter()
+        .map(|(rect, _)| rect)
+        .collect()
+}
+
+fn render_opacity(f: &mut Fixture) -> Vec<(Rectangle<i32, Physical>, f32)> {
     let output = f.niri_output(1);
     let state = f.niri_state();
     state.niri.update_render_elements(None);
@@ -67,7 +74,7 @@ fn render(f: &mut Fixture) -> Vec<Rectangle<i32, Physical>> {
                     xray: None,
                 },
                 true,
-                &mut |elem| result.push(elem.geometry(1.0.into())),
+                &mut |elem| result.push((elem.geometry(1.0.into()), elem.alpha())),
             );
             result
         })
@@ -301,6 +308,15 @@ fn egl_node_rows_replace_windows_and_follow_swipes_overview_and_lifecycle() {
         .map(|(ws, geo)| (ws.id().get(), geo))
         .collect();
     assert_eq!(geos.len(), 2);
+    let moving = render_opacity(&mut f);
+    assert!(
+        moving.iter().any(|(_, alpha)| *alpha < 0.01),
+        "canvas text fades while swiping"
+    );
+    assert!(
+        moving.iter().any(|(_, alpha)| *alpha > 0.99),
+        "native window content stays visible"
+    );
     let elements = render(&mut f);
     assert_eq!(elements.len(), 4);
     for (id, geo) in &geos {
@@ -331,6 +347,15 @@ fn egl_node_rows_replace_windows_and_follow_swipes_overview_and_lifecycle() {
     assert_eq!(render(&mut f).len(), 3);
     f.niri().layout.open_overview();
     f.niri_complete_animations();
+    let faded = render_opacity(&mut f);
+    assert!(
+        faded.iter().any(|(_, alpha)| *alpha < 0.01),
+        "canvas text is hidden in overview"
+    );
+    assert!(
+        faded.iter().any(|(_, alpha)| *alpha > 0.99),
+        "native windows remain visible in overview"
+    );
     let overview = render(&mut f);
     assert!(
         overview.len() >= 3,

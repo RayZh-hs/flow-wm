@@ -1677,26 +1677,6 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
     c.push_group();
     if nodes.is_empty() {
         super::empty::draw(c, width, height, theme, view.empty_hover);
-    } else {
-        text(c, 24.0, 30.0, "WORKFLOW", 10.0, theme.muted.rgb(), false);
-        text(
-            c,
-            24.0,
-            height - 22.0,
-            "Tab  connect   Ctrl+F /  search   Ctrl+P  arrange   HJKL  pan   WASD  select   ?  help",
-            11.0,
-            theme.muted.rgb(),
-            false,
-        );
-        text(
-            c,
-            width - 72.0,
-            height - 22.0,
-            &format!("{}%", (view.zoom * 100.0) as i32),
-            11.0,
-            theme.muted.rgb(),
-            true,
-        );
     }
     let _ = c.pop_group_to_source();
     let _ = c.paint_with_alpha(view.chrome);
