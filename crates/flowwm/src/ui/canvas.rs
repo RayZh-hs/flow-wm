@@ -1062,7 +1062,14 @@ fn make_scoped(
                         false,
                     ),
                 )
-                && pin_wire_cut(from, to, &points)
+                && route_cut(
+                    from,
+                    to,
+                    &points,
+                    !crate::graph::pins(&state, source, true)
+                        .iter()
+                        .any(|p| p.name == edge.source.pin && p.ty.is_signal()),
+                )
             {
                 e.dispatch(Control::DisconnectPins {
                     connection: edge.clone(),
@@ -1476,7 +1483,7 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
             if !signal {
                 c.set_dash(&[4.0, 3.0], 0.0);
             }
-            pin_wire(c, from, to);
+            draw_route(c, from, to, !signal);
             let _ = c.stroke();
             c.set_dash(&[], 0.0);
         }
@@ -1487,7 +1494,10 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
     {
         theme.primary.source(c);
         c.set_line_width(2.0);
-        pin_wire(c, from, view.pointer);
+        let signal = crate::graph::pins(state, node, true)
+            .iter()
+            .any(|p| p.name == source.pin && p.ty.is_signal());
+        draw_route(c, from, view.pointer, !signal);
         let _ = c.stroke();
     }
     if let Some(Drag::Wire { source }) = &view.drag
@@ -2125,11 +2135,25 @@ fn pin_position(
     output: bool,
 ) -> Option<(f64, f64)> {
     let pins = crate::graph::pins(state, node, output);
-    let index = pins.iter().position(|pin| pin.name == name)?;
-    Some((
-        p.x + if output { WIDTH } else { 0.0 },
-        p.y + node_height(node) * (index + 1) as f64 / (pins.len() + 1) as f64,
-    ))
+    let pin = pins.iter().find(|pin| pin.name == name)?;
+    let signal = pin.ty.is_signal();
+    let peers: Vec<_> = pins
+        .iter()
+        .filter(|pin| pin.ty.is_signal() == signal)
+        .collect();
+    let index = peers.iter().position(|pin| pin.name == name)?;
+    let fraction = (index + 1) as f64 / (peers.len() + 1) as f64;
+    if signal {
+        Some((
+            p.x + WIDTH * fraction,
+            p.y + if output { node_height(node) } else { 0.0 },
+        ))
+    } else {
+        Some((
+            p.x + if output { WIDTH } else { 0.0 },
+            p.y + node_height(node) * fraction,
+        ))
+    }
 }
 fn hit_pin(
     state: &State,
@@ -2158,9 +2182,6 @@ fn hit_pin(
     }
     None
 }
-fn pin_wire(c: &Context, from: (f64, f64), to: (f64, f64)) {
-    draw_route(c, from, to, true);
-}
 fn draw_route(c: &Context, from: (f64, f64), to: (f64, f64), horizontal: bool) {
     let points = super::wires::route(from, to, horizontal);
     c.move_to(from.0, from.1);
@@ -2176,9 +2197,6 @@ fn route_cut(from: (f64, f64), to: (f64, f64), points: &[(f64, f64)], horizontal
                 .windows(2)
                 .any(|cut| crossing(segment[0], segment[1], cut[0], cut[1]))
         })
-}
-fn pin_wire_cut(from: (f64, f64), to: (f64, f64), points: &[(f64, f64)]) -> bool {
-    route_cut(from, to, points, true)
 }
 
 fn sparkline(c: &Context, samples: &[Sample], rect: (f64, f64, f64, f64), rgb: (f64, f64, f64)) {
@@ -2258,6 +2276,46 @@ fn ellipsize(s: &str, length: usize) -> String {
 #[cfg(test)]
 mod rendering_tests {
     use super::*;
+    #[test]
+    fn typed_pins_use_their_flow_axis_for_layout_and_hit_testing() {
+        use crate::graph::{Pin, Type};
+        let mut state = State::empty("/tmp".into());
+        let mut node = Node::new(
+            &state.selected_workspace,
+            NodeKind::Window,
+            "/tmp".into(),
+            Position { x: 100., y: 200. },
+        );
+        node.flow.inputs.push(Pin::new("data", Type::Int));
+        node.flow.outputs.push(Pin::new("count", Type::Int));
+        state.nodes.push(node);
+        let node = &state.nodes[0];
+        let view = View::default();
+        for output in [false, true] {
+            for pin in crate::graph::pins(&state, node, output) {
+                let (x, y) = pin_position(&state, node, &node.position, &pin.name, output).unwrap();
+                if pin.ty.is_signal() {
+                    assert_eq!(
+                        y,
+                        node.position.y + if output { node_height(node) } else { 0. }
+                    );
+                    assert!(x > node.position.x && x < node.position.x + WIDTH);
+                } else {
+                    assert_eq!(x, node.position.x + if output { WIDTH } else { 0. });
+                    assert!(y > node.position.y && y < node.position.y + node_height(node));
+                }
+                assert_eq!(hit_pin(&state, &view, x, y, output).unwrap().pin, pin.name);
+            }
+        }
+        let from = pin_position(&state, node, &node.position, "out", true).unwrap();
+        let to = (from.0, from.1 + 200.);
+        assert!(route_cut(
+            from,
+            to,
+            &[(from.0 - 10., from.1 + 100.), (from.0 + 10., from.1 + 100.)],
+            false
+        ));
+    }
     fn raster(width: i32, height: i32, render: impl FnOnce(&Context)) -> Vec<u8> {
         let mut image = cairo::ImageSurface::create(cairo::Format::ARgb32, width, height).unwrap();
         {
