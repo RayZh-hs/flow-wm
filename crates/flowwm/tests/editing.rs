@@ -183,3 +183,33 @@ fn session_error_extension_routes_success_and_failure_without_core_agent_logic()
         assert!(!result.values[&id].contains_key(if code == 0 { "error" } else { "success" }));
     }
 }
+
+#[test]
+fn live_window_parameters_can_be_saved_without_stopping_or_detaching_the_window() {
+    let mut state = State::empty("/tmp".into());
+    let mut node = Node::new(
+        &state.selected_workspace,
+        NodeKind::Window,
+        "/tmp".into(),
+        Default::default(),
+    );
+    node.window_id = Some(7);
+    node.desktop_window = true;
+    node.status = Status::Running;
+    state.nodes.push(node.clone());
+    let temp = tempfile::tempdir().unwrap();
+    let (engine, _) = Engine::new(state, Store::new(temp.path().into()).unwrap());
+    node.title = "My editor".into();
+    node.window_id = None;
+    engine
+        .request(Control::Update {
+            node: Box::new(node.clone()),
+        })
+        .unwrap();
+    let snapshot = engine.snapshot();
+    let saved = snapshot.state.node(&node.id).unwrap();
+    assert_eq!(saved.window_id, Some(7));
+    assert_eq!(saved.status, Status::Running);
+    assert_eq!(saved.flow.properties["display_title"], "My editor");
+    engine.shutdown();
+}

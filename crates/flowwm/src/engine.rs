@@ -842,7 +842,8 @@ impl Runtime {
             Control::Update { mut node } => {
                 let original = self.state.node(&node.id).context("Node not found")?;
                 ensure!(
-                    !original.status.active() && !self.runs.contains_key(&node.id),
+                    (!original.status.active() || original.kind == NodeKind::Window)
+                        && !self.runs.contains_key(&node.id),
                     "Stop the node before editing it"
                 );
                 node.cwd = node
@@ -857,6 +858,22 @@ impl Runtime {
                 node.status = original.status;
                 node.output = original.output.clone();
                 node.logs = original.logs.clone();
+                node.window_id = original.window_id;
+                node.window_match = original.window_match.clone();
+                node.desktop_window = original.desktop_window;
+                node.workspace = original.workspace.clone();
+                node.column = original.column.clone();
+                node.column_mode = original.column_mode;
+                if original.desktop_window && node.title != original.title {
+                    node.flow
+                        .properties
+                        .insert("display_title".into(), json!(node.title));
+                }
+                if let Some(alert) = original.flow.properties.get("_alert") {
+                    node.flow.properties.insert("_alert".into(), alert.clone());
+                } else {
+                    node.flow.properties.remove("_alert");
+                }
                 let node_id = node.id.clone();
                 let mut candidate = self.state.clone();
                 *candidate.node_mut(&node_id).unwrap() = *node;

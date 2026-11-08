@@ -251,9 +251,12 @@ pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
             if node.desktop_window {
                 changed |= assign(
                     &mut node.title,
-                    window
-                        .title
-                        .clone()
+                    node.flow
+                        .properties
+                        .get("display_title")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                        .or_else(|| window.title.clone())
                         .or_else(|| window.app_id.clone())
                         .unwrap_or_else(|| "Application window".into()),
                 );
