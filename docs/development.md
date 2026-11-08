@@ -88,6 +88,15 @@ Canvases must be absent from both the application window list and the layer stac
 The runner exposes both compositor and GTK logs and uses the nested Wayland socket
 for every child, including control commands and compositor captures.
 
+`python3 scripts/smoke_interactions.py` adds real pointer and keyboard checks in
+its own Xvfb/niri desktop. It requires the debug builds, Xvfb, xdotool, grim,
+Python GObject bindings for GTK 4 and GTK4 Layer Shell, and Pillow. It verifies
+inline value editing and saving, dismissal, dragging from the value area,
+positions after release, deselection, and row-switch recovery. A checkerboard
+wallpaper verifies blur and dimming inside the live preview's letterbox gaps.
+Captures and logs are saved under `artifacts/interaction-fixes`; the live session
+and its graph data are untouched.
+
 Builds never update the installed desktop or a running Wayland session. Validate
 in the nested runner, then explicitly install a complete snapshot with
 `python3 scripts/install.py --skip-build`. The FlowWM login entry always uses

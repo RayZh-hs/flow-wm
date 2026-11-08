@@ -101,11 +101,13 @@ Creation and connection selection use the desktop search interface. The native g
 
 | Query | Results |
 | --- | --- |
-| `@ name` | Existing nodes across workspaces |
+| `@ name` | Workflow nodes across workspaces |
 | `@ + type` | Node types, typed constants, and registered macros |
 | `@ > name` | Open a matching node's window |
 | `@ / name` | Workspace rows |
 | `@ # name` | Saved recipes |
+
+Application window titles are kept out of ordinary search. Use `@ > title` to find and open a window explicitly. Fuzzy abbreviations match within words, so unrelated words in a long title cannot combine into a match.
 
 With a selected node, **Tab** starts a connection search:
 
@@ -120,6 +122,8 @@ The small text below the search field shows the source and accepted type. This h
 ## Nodes and typed data
 
 Constants have **Type**, **Value**, and **Editable in graph** controls. Dux provides **Constant: Int**, **Float**, **String**, **Bool**, **List**, and **Record** entries. Click the value to edit it in an editor anchored to the node. Unchecking Editable in graph makes the card read-only. Type colors appear on constants, pins, and data connections; pin shapes also distinguish data from signals.
+
+Data inputs are on the left and data outputs on the right. Signal inputs are on the top and signal outputs on the bottom. Dragging from a constant's value area moves the node; clicking and releasing without dragging opens the editor. Escape or a click outside dismisses the editor, and switching rows closes it.
 
 | Node | Purpose |
 | --- | --- |

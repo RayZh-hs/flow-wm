@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""Exercise real pointer input, inline editors, and preview backdrops in an isolated Xvfb/niri desktop."""
+import ctypes.util
+import json
+import os
+from pathlib import Path
+import statistics
+import subprocess
+import sys
+import tempfile
+import time
+
+from smoke_native import request, wait
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def wallpaper():
+    import gi
+    gi.require_version("Gtk", "4.0")
+    gi.require_version("Gtk4LayerShell", "1.0")
+    from gi.repository import Gtk, Gtk4LayerShell
+
+    app = Gtk.Application(application_id="dev.flowwm.test.background")
+
+    def activate(app):
+        window = Gtk.ApplicationWindow(application=app)
+        Gtk4LayerShell.init_for_window(window)
+        Gtk4LayerShell.set_layer(window, Gtk4LayerShell.Layer.BACKGROUND)
+        for edge in (Gtk4LayerShell.Edge.TOP, Gtk4LayerShell.Edge.RIGHT,
+                     Gtk4LayerShell.Edge.BOTTOM, Gtk4LayerShell.Edge.LEFT):
+            Gtk4LayerShell.set_anchor(window, edge, True)
+        area = Gtk.DrawingArea()
+
+        def draw(_, context, width, height):
+            for y in range(0, height, 8):
+                for x in range(0, width, 8):
+                    value = 0.2 if (x // 8 + y // 8) % 2 else 0.85
+                    context.set_source_rgb(value, value, value)
+                    context.rectangle(x, y, 8, 8)
+                    context.fill()
+
+        area.set_draw_func(draw)
+        window.set_child(area)
+        window.present()
+
+    app.connect("activate", activate)
+    app.run([])
+
+
+def run():
+    from PIL import Image, ImageChops
+
+    artifacts = ROOT / "artifacts/interaction-fixes"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    children = []
+    with tempfile.TemporaryDirectory(prefix="flowwm-input-", dir=os.environ.get("XDG_RUNTIME_DIR")) as temporary, (artifacts / "xvfb.log").open("w") as xvfb_log:
+        runtime = Path(temporary)
+        environment = os.environ.copy()
+        environment.pop("WAYLAND_DISPLAY", None)
+        environment.pop("NIRI_SOCKET", None)
+        environment["XDG_RUNTIME_DIR"] = temporary
+        environment["FLOWWM_CONFIG_DIR"] = str(runtime / "config")
+        environment["GDK_BACKEND"] = "wayland"
+        environment["GTK_A11Y"] = "none"
+        environment["PATH"] = str(ROOT / "target/debug") + os.pathsep + environment["PATH"]
+        environment["RUST_LOG"] = "niri=debug,niri::handlers::xdg_shell=trace"
+        try:
+            xvfb = subprocess.Popen(["Xvfb", "-displayfd", "1", "-screen", "0", "1600x1000x24", "-nolisten", "tcp", "-ac"], stdout=subprocess.PIPE, stderr=xvfb_log)
+            children.append(xvfb)
+            environment["DISPLAY"] = ":" + xvfb.stdout.readline().decode().strip()
+            with (artifacts / "compositor.log").open("w") as log:
+                compositor = subprocess.Popen([str(ROOT / "target/niri/debug/niri"), "--config", str(ROOT / "config/nested.kdl")], env=environment, stdout=log, stderr=log)
+                children.append(compositor)
+                niri_socket = wait(lambda: next(runtime.glob("niri.*.sock"), None), compositor)
+                environment["NIRI_SOCKET"] = str(niri_socket)
+                environment["WAYLAND_DISPLAY"] = niri_socket.name.split(".")[1]
+                background_environment = environment | {"LD_PRELOAD": ctypes.util.find_library("gtk4-layer-shell")}
+                children.append(subprocess.Popen([sys.executable, __file__, "--wallpaper"], env=background_environment, stdout=log, stderr=log))
+                wait(lambda: any(layer["layer"] == "Background" for layer in request(niri_socket, "Layers")["Layers"]), compositor)
+                children.append(subprocess.Popen([str(ROOT / "target/debug/flowwm"), "--data-dir", str(runtime / "data"), "start", "--dms", "--background"], env=environment, stdout=log, stderr=log))
+                flow_socket = runtime / "flowwm.sock"
+                catalog = lambda: request(flow_socket, {"op": "catalog"})
+                wait(lambda: len(catalog()["workspaces"]) >= 2, compositor)
+
+                def ui(action, **args):
+                    request(flow_socket, {"op": "ui", "command": {"action": action, **args}})
+
+                def state():
+                    return request(flow_socket, {"op": "status"})
+
+                def node(identifier):
+                    return next(n for n in state()["nodes"] if n["id"] == identifier)
+
+                def create(kind, title):
+                    return json.loads(subprocess.check_output([str(ROOT / "target/debug/flowwm"), "add", kind, title], env=environment))["id"]
+
+                def capture(name):
+                    path = artifacts / name
+                    subprocess.run(["grim", "-o", "winit", str(path)], env=environment, check=True)
+                    return Image.open(path).convert("RGB")
+
+                def input_command(*args):
+                    subprocess.run(["xdotool", *map(str, args)], env=environment, check=True)
+
+                def click(x, y):
+                    input_command("mousemove", "--sync", round(x), round(y), "click", "1")
+
+                xwindow = subprocess.check_output(["xdotool", "search", "--name", "^niri$"], env=environment, text=True).splitlines()[0]
+                input_command("windowfocus", "--sync", xwindow)
+                groups = catalog()["workspaces"]
+                first = next(g for g in groups if g["id"] == catalog()["selected_workspace"])
+                second = next(g for g in groups if g["id"] != first["id"])
+                ui("bar_geometry", output="winit", insets=[0, 0, 0, 0])
+                ui("nodes")
+                constant = create("constant", "Constant input probe")
+                preview = create("human", "Tall preview probe")
+                ui("open", id=preview)
+                wait(lambda: node(preview).get("window_id"), compositor)
+                ui("nodes")
+                request(flow_socket, {"op": "arrange", "positions": [(constant, {"x": 100, "y": 100}), (preview, {"x": 500, "y": 100})]})
+                ui("select", id=constant)
+                ui("fit")
+                time.sleep(0.5)
+                before = capture("preview-backdrop.png")
+                width, height = before.size
+                zoom = min((width - 160) / 692, (height - 160) / 274, 1.2)
+                pan_x = (width - 692 * zoom) / 2 - 100 * zoom
+                pan_y = (height - 274 * zoom) / 2 - 100 * zoom
+
+                def point(x, y):
+                    return pan_x + x * zoom, pan_y + y * zoom
+
+                # The preview is portrait; its left letterbox gap must treat the wallpaper.
+                left, top = point(520, 185)
+                gap = before.crop((round(left), round(top), round(left + 30 * zoom), round(top + 70 * zoom)))
+                values = gap.convert("L").tobytes()
+                assert statistics.mean(values) < 70, "the preview gap must be dimmed"
+                assert statistics.pstdev(values) < 12, "the checkerboard must be blurred inside the preview gap"
+                outside = before.crop((20, 20, 100, 100)).convert("L").tobytes()
+                assert statistics.pstdev(outside) > 50, "the wallpaper fixture must have visible detail outside the card"
+
+                click(*point(140, 185))
+                time.sleep(0.2)
+                opened = capture("constant-editor.png")
+                difference = ImageChops.difference(before, opened)
+                assert sum(value > 30 for value in difference.convert("L").tobytes()) > 1000, "the inline editor must be visible"
+                input_command("key", "Escape")
+                time.sleep(0.15)
+                closed = capture("constant-editor-dismissed.png")
+                assert ImageChops.difference(before, closed).getbbox() is None, "Escape must dismiss the editor and restore the canvas"
+
+                click(*point(140, 185))
+                time.sleep(0.15)
+                input_command("key", "ctrl+a")
+                input_command("type", "--clearmodifiers", "73")
+                input_command("key", "Tab", "Return")
+                wait(lambda: node(constant)["flow"]["properties"].get("value") == 73, compositor)
+
+                # Drag from the value field, then check the persistent position after release.
+                start_x, start_y = point(140, 185)
+                input_command("mousemove", "--sync", round(start_x), round(start_y), "mousedown", "1")
+                input_command("mousemove", "--sync", round(start_x + 60 * zoom), round(start_y + 40 * zoom))
+                time.sleep(0.1)
+                input_command("mouseup", "1")
+                wait(lambda: node(constant)["position"] == {"x": 160., "y": 140.}, compositor)
+                time.sleep(0.15)
+                assert node(constant)["position"] == {"x": 160., "y": 140.}
+                selected = capture("constant-dragged.png")
+                click(40, 40)
+                deselected = capture("constant-deselected.png")
+                assert ImageChops.difference(selected, deselected).getbbox() is not None, "clicking the background must clear selection"
+
+                # Returning to a row must not revive an abandoned modal editor.
+                click(*point(200, 225))
+                time.sleep(0.15)
+                request(niri_socket, {"Action": {"FocusWorkspace": {"reference": {"Id": second["row"]["id"]}}}})
+                wait(lambda: catalog()["selected_workspace"] == second["id"], compositor)
+                request(niri_socket, {"Action": {"FocusWorkspace": {"reference": {"Id": first["row"]["id"]}}}})
+                wait(lambda: catalog()["selected_workspace"] == first["id"], compositor)
+                time.sleep(0.4)
+                click(40, 40)
+                # A fresh drag after returning proves pointer input is no longer grabbed.
+                start_x, start_y = point(200, 165)
+                input_command("mousemove", "--sync", round(start_x), round(start_y), "mousedown", "1")
+                input_command("mousemove", "--sync", round(start_x + 20 * zoom), round(start_y))
+                time.sleep(0.1)
+                input_command("mouseup", "1")
+                wait(lambda: node(constant)["position"] == {"x": 180., "y": 140.}, compositor)
+
+                start_x, start_y = point(540, 130)
+                input_command("mousemove", "--sync", round(start_x), round(start_y), "mousedown", "1")
+                input_command("mousemove", "--sync", round(start_x + 40 * zoom), round(start_y + 20 * zoom))
+                time.sleep(0.1)
+                input_command("mouseup", "1")
+                wait(lambda: node(preview)["position"] == {"x": 540., "y": 120.}, compositor)
+                capture("window-dragged.png")
+                print("Interaction smoke passed: blurred/dimmed preview gaps, visible inline editor, keyboard editing and saving, Escape dismissal, constant and window dragging, persistent release positions, deselection, and row-switch recovery.")
+        finally:
+            for child in reversed(children):
+                if child.poll() is None:
+                    child.terminate()
+                    try:
+                        child.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        child.kill()
+                        child.wait()
+
+
+if __name__ == "__main__":
+    wallpaper() if "--wallpaper" in sys.argv else run()
