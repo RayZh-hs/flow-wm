@@ -59,6 +59,21 @@ class ProfileIsolation(unittest.TestCase):
             self.assertFalse((config / 'niri/config.kdl').exists())
             self.assertEqual(json.loads((config / 'dms/plugin_settings.json').read_text())['flowwm']['enabled'], True)
 
+    def test_units_validate_without_an_installed_niri_or_dms_service(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            launcher = root / 'bin/flowwm-session'
+            launcher.parent.mkdir()
+            launcher.write_text('#!/bin/sh\nexit 0\n')
+            launcher.chmod(0o755)
+            with patch.object(installer, 'run') as run:
+                installer.install_units(root / 'config', launcher, root)
+            verify = next(c.args for c in run.call_args_list if c.args[0] == 'systemd-analyze')
+            self.assertNotIn('dms.service', verify)
+            units = root / 'config/systemd/user'
+            environment = {**os.environ, 'SYSTEMD_UNIT_PATH': str(units) + ':/usr/lib/systemd/user'}
+            subprocess.run(['systemd-analyze', '--user', 'verify', *map(str, units.glob('flowwm*.service')), *map(str, units.glob('flowwm*.target'))], env=environment, check=True, capture_output=True)
+
 
 class LoginIsolation(unittest.TestCase):
     def test_login_starts_only_installed_flowwm_and_cleans_session_environment(self):
@@ -78,6 +93,7 @@ class LoginIsolation(unittest.TestCase):
             self.assertEqual(os.environ['XDG_SESSION_TYPE'], 'wayland')
         self.assertIn(['systemctl', '--user', '--wait', 'start', 'flowwm-compositor.service'], calls)
         self.assertNotIn(['systemctl', '--user', '--wait', 'start', 'niri.service'], calls)
+        self.assertIn(['systemctl', '--user', 'start', '--job-mode=replace-irreversibly', 'flowwm-shutdown.target'], calls)
         cleanup = next(c for c in calls if 'unset-environment' in c)
         self.assertIn('FLOWWM_INSTALL_ROOT', cleanup)
         self.assertIn('FLOWWM_SESSION', cleanup)

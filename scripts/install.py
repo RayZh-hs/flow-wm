@@ -140,6 +140,13 @@ ExecStart={command} compositor
 Environment=FLOWWM_SESSION=1
 WorkingDirectory={user_home}
 ''')
+    atomic_text(units / "flowwm-shutdown.target", '''[Unit]
+Description=Shutdown running FlowWM session
+DefaultDependencies=no
+StopWhenUnneeded=true
+Conflicts=graphical-session.target graphical-session-pre.target
+After=graphical-session.target graphical-session-pre.target
+''')
     atomic_text(units / "flowwm-session.target", '''[Unit]
 Description=FlowWM desktop session
 Requires=flowwm-compositor.service
@@ -184,7 +191,7 @@ ExecCondition=/bin/sh -c "! /usr/bin/systemctl --user --quiet is-active flowwm-c
     if link.is_symlink():
         run("systemctl", "--user", "disable", "flowwm.service")
     run("systemctl", "--user", "daemon-reload")
-    run("systemd-analyze", "--user", "verify", "flowwm-compositor.service", "flowwm.service", "flowwm-dms.service", "flowwm-session.target", "flowwm-agent-sessions.service", "dms.service")
+    run("systemd-analyze", "--user", "verify", "flowwm-compositor.service", "flowwm.service", "flowwm-dms.service", "flowwm-session.target", "flowwm-agent-sessions.service", "flowwm-shutdown.target")
 
 
 def service_pid(unit):

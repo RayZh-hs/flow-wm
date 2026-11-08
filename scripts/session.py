@@ -72,7 +72,7 @@ def login():
     try:
         subprocess.run(["systemctl", "--user", "--wait", "start", "flowwm-compositor.service"], check=True)
     finally:
-        subprocess.run(["systemctl", "--user", "start", "--job-mode=replace-irreversibly", "niri-shutdown.target"], check=True)
+        subprocess.run(["systemctl", "--user", "start", "--job-mode=replace-irreversibly", "flowwm-shutdown.target"], check=True)
         subprocess.run(["systemctl", "--user", "unset-environment", "WAYLAND_DISPLAY", "DISPLAY",
                         "NIRI_SOCKET", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP", "FLOWWM_SESSION",
                         "FLOWWM_INSTALL_ROOT"], check=True)
