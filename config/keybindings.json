@@ -27,6 +27,32 @@
   },
   {
     "keys": [
+      "Mod+equal"
+    ],
+    "action": "zoom_in",
+    "description": "Zoom in (Nodes) / increase column width (Windows)",
+    "scope": "global",
+    "command": [
+      "send",
+      "{\"op\": \"ui\", \"command\": {\"action\": \"zoom_in\"}}"
+    ],
+    "repeat": true
+  },
+  {
+    "keys": [
+      "Mod+minus"
+    ],
+    "action": "zoom_out",
+    "description": "Zoom out (Nodes) / decrease column width (Windows)",
+    "scope": "global",
+    "command": [
+      "send",
+      "{\"op\": \"ui\", \"command\": {\"action\": \"zoom_out\"}}"
+    ],
+    "repeat": true
+  },
+  {
+    "keys": [
       "Mod+Space"
     ],
     "action": "create",
@@ -580,7 +606,8 @@
   {
     "keys": [
       "Space+drag",
-      "Middle drag"
+      "Middle drag",
+      "Two-finger scroll"
     ],
     "action": "pan_drag",
     "description": "Pan the viewport",
@@ -612,10 +639,11 @@
   },
   {
     "keys": [
-      "Scroll"
+      "Ctrl+Scroll",
+      "Pinch"
     ],
     "action": "zoom",
-    "description": "Zoom at the pointer",
+    "description": "Zoom at the pointer or pinch center",
     "scope": "gesture"
   },
   {
@@ -1214,26 +1242,6 @@
     "description": "Center visible columns",
     "scope": "global",
     "niri": "center-visible-columns",
-    "repeat": true
-  },
-  {
-    "keys": [
-      "Mod+Minus"
-    ],
-    "action": "compositor",
-    "description": "Decrease column width",
-    "scope": "global",
-    "niri": "set-column-width \"-10%\"",
-    "repeat": true
-  },
-  {
-    "keys": [
-      "Mod+Equal"
-    ],
-    "action": "compositor",
-    "description": "Increase column width",
-    "scope": "global",
-    "niri": "set-column-width \"+10%\"",
     "repeat": true
   },
   {

@@ -22,7 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rect {
     pub x: f64,
     pub y: f64,
@@ -30,7 +30,28 @@ pub struct Rect {
     pub height: f64,
 }
 impl Rect {
+    pub fn overlaps(self, other: Self) -> bool {
+        self.x < other.x + other.width
+            && self.x + self.width > other.x
+            && self.y < other.y + other.height
+            && self.y + self.height > other.y
+    }
+
+    pub fn inset(self, amount: f64) -> Self {
+        Self {
+            x: self.x + amount,
+            y: self.y + amount,
+            width: (self.width - amount * 2.).max(0.),
+            height: (self.height - amount * 2.).max(0.),
+        }
+    }
     pub fn interpolate(self, other: Self, t: f64) -> Self {
+        if t <= 0. {
+            return self;
+        }
+        if t >= 1. {
+            return other;
+        }
         Self {
             x: self.x + (other.x - self.x) * t,
             y: self.y + (other.y - self.y) * t,
@@ -42,8 +63,8 @@ impl Rect {
         cairo::RectangleInt::new(
             self.x.floor() as i32,
             self.y.floor() as i32,
-            self.width.ceil().max(0.0) as i32,
-            self.height.ceil().max(0.0) as i32,
+            ((self.x + self.width).ceil() - self.x.floor()).max(0.0) as i32,
+            ((self.y + self.height).ceil() - self.y.floor()).max(0.0) as i32,
         )
     }
 }
@@ -109,35 +130,31 @@ pub fn rectangles(
         x += w + gap;
     }
     let mut result = HashMap::new();
+    let nodes: HashMap<_, _> = state
+        .nodes
+        .iter()
+        .filter(|n| n.workspace == state.selected_workspace)
+        .filter_map(|n| Some((n.window_id?, n)))
+        .collect();
+    let mut column_heights = HashMap::<usize, f64>::new();
     for w in windows {
-        let Some(node) = state
-            .nodes
-            .iter()
-            .find(|n| n.window_id == Some(w.id) && n.workspace == state.selected_workspace)
-        else {
-            continue;
-        };
-        let (c, tile) = w
+        let (c, _) = w
             .layout
             .pos_in_scrolling_layout
             .unwrap_or((focused_column, 1));
-        let above: f64 = desktop
-            .windows
-            .iter()
-            .filter(|other| {
-                other.workspace_id == Some(row.id)
-                    && other
-                        .layout
-                        .pos_in_scrolling_layout
-                        .is_some_and(|(col, t)| col == c && t < tile)
-            })
-            .map(|other| other.layout.tile_size.1 + gap)
-            .sum();
+        let above = column_heights.entry(c).or_default();
+        let fallback_y = gap + *above;
+        if w.layout.pos_in_scrolling_layout.is_some() {
+            *above += w.layout.tile_size.1 + gap;
+        }
+        let Some(node) = nodes.get(&w.id) else {
+            continue;
+        };
         let (x, y) = w
             .layout
             .tile_pos_in_workspace_view
             .map(|(x, y)| (x - insets[3] as f64, y - insets[0] as f64))
-            .unwrap_or((*starts.get(&c).unwrap_or(&gap), gap + above));
+            .unwrap_or((*starts.get(&c).unwrap_or(&gap), fallback_y));
         result.insert(
             node.id.clone(),
             Rect {

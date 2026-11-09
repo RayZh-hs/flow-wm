@@ -181,7 +181,30 @@ Export creates a local branch containing only that subtree's history and prints
 an explicit push command. It never pushes. Inspect the branch before publishing;
 subtree exports preserve niri's and DMS's original repository structure.
 
+## View performance and input checks
+
+```sh
+python3 scripts/benchmark_views.py --windows 100 --samples 5 --verify
+```
+
+This starts a private Xvfb/niri desktop with static GTK application windows,
+measures repeated view changes, and checks peek restoration, reversible zoom,
+and interrupted morphs. The report separates scene publication from GSK scene
+construction. Captures and JSON are saved in `artifacts/view-benchmark/`.
+`--flowwm` and `--compositor` can select saved builds for a comparison. Requires
+Python GTK 4 and Pillow, Xvfb, xdotool, and grim. Physical trackpad feel still needs
+a hardware check; camera math is covered by Rust regression tests.
+
 ## Native node-row contract
+
+The `flowwm_node_row_manager_v1` Wayland extension publishes bounded scene chunks
+on GTK's own Wayland connection. Pending geometry belongs to the canvas surface
+and is applied on its next commit, keeping preview buffers, borders, and input
+regions aligned without a synchronous per-frame IPC call. Payloads use the
+`NodeRowScene` schema and split at 16 windows to stay below Wayland's message
+buffer limit. Duplicate IDs and scenes exceeding 4,096 windows are rejected.
+The original `SetNodeRow` IPC remains supported for older clients/compositors.
+
 
 `python3 scripts/smoke_desktop.py` starts a private Xvfb/niri session using the
 installer's real default profile. It checks Win+Space in both views, Alt+Space,

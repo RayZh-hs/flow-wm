@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="flowwm_node_row_v1">
+  <copyright>Copyright 2026 FlowWM contributors. SPDX-License-Identifier: GPL-3.0-or-later</copyright>
+  <interface name="flowwm_node_row_manager_v1" version="1">
+    <description summary="commit node geometry with the canvas buffer">
+      Scene state is double buffered with the supplied canvas wl_surface. Updates
+      travel on the canvas connection, before the matching wl_surface.commit.
+      Geometry never requires a synchronous IPC round trip. Payloads use the
+      NodeRowScene JSON schema. Large scenes are split into bounded chunks.
+    </description>
+    <request name="destroy" type="destructor"/>
+    <request name="set_scene">
+      <arg name="surface" type="object" interface="wl_surface"/>
+      <arg name="reset" type="uint" summary="start a new scene when nonzero; otherwise append windows"/>
+      <arg name="payload" type="string" summary="NodeRowScene JSON; at most 16 windows per chunk"/>
+    </request>
+  </interface>
+</protocol>

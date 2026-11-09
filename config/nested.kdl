@@ -2,6 +2,8 @@
 workspace "FlowWM test 1"
 workspace "FlowWM test 2"
 
+input { mod-key-nested "Super"; }
+
 hotkey-overlay {
     skip-at-startup
 }
@@ -9,6 +11,8 @@ hotkey-overlay {
 binds {
     Mod+Tab repeat=false allow-inhibiting=false { spawn "flowwm" "toggle"; }
     Mod+Space repeat=false { spawn "flowwm" "new"; }
+    Mod+Minus { spawn "flowwm" "send" r#"{"op":"ui","command":{"action":"zoom_out"}}"#; }
+    Mod+Equal { spawn "flowwm" "send" r#"{"op":"ui","command":{"action":"zoom_in"}}"#; }
     Mod+Page_Down { focus-workspace-down; }
     Mod+Page_Up { focus-workspace-up; }
     Mod+Shift+E { quit skip-confirmation=true; }

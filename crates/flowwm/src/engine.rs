@@ -50,6 +50,8 @@ pub enum UiCommand {
     Toggle,
     Nodes,
     Windows,
+    ZoomIn,
+    ZoomOut,
     Navigate {
         direction: String,
     },

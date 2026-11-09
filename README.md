@@ -82,6 +82,7 @@ See the [user guide](docs/guide.md) for configuration, updates, rollback, and CL
 | Tab | Connect the selected node to another node or a new step |
 | Ctrl+P | Arrange and frame the graph |
 | R | Run the selected node |
+| Win+- / Win+= | Zoom out / in in Nodes |
 | Win+? | Show all shortcuts |
 
 Graph shortcuts apply in Nodes view. The [user guide](docs/guide.md#keyboard-and-mouse)

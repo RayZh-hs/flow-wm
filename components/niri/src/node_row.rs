@@ -41,7 +41,6 @@ niri_render_elements! {
         Canvas = smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<R>,
         Window = CropRenderElement<RelocateRenderElement<RescaleRenderElement<LayoutElementRenderElement<R>>>>,
         Popup = LayoutElementRenderElement<R>,
-        Frame = crate::layout::tile::TileRenderElement<R>,
         Blur = crate::render_helpers::xray::XrayElement,
         Dim = crate::render_helpers::solid_color::SolidColorRenderElement,
     }
@@ -109,6 +108,9 @@ impl<W: LayoutElement> Workspace<W> {
         for entry in tile.scene.windows.iter().rev().filter(|w| w.expanded) {
             let (x, y, width, height) = entry.bounds;
             let rect = Rectangle::new(origin + Point::from((x, y)), (width, height).into());
+            if !rect.contains(pos) {
+                continue;
+            }
             let Some(window) = self
                 .windows()
                 .find(|w| w.node_window_id() == Some(entry.id))
@@ -132,12 +134,14 @@ impl<W: LayoutElement> Workspace<W> {
         let Some(tile) = &self.node_tile else { return };
         let scale = Scale::from(self.scale().fractional_scale());
         let geometry = self.node_canvas_geometry();
+        // One index per render, rather than a full layout scan for every preview.
+        let windows: std::collections::HashMap<_, _> = self
+            .windows()
+            .filter_map(|w| Some((w.node_window_id()?, w)))
+            .collect();
         let canvas = tile.canvas.toplevel().unwrap().wl_surface();
         for entry in tile.scene.windows.iter().rev().filter(|w| w.expanded) {
-            if let Some(window) = self
-                .windows()
-                .find(|w| w.node_window_id() == Some(entry.id))
-            {
+            if let Some(window) = windows.get(&entry.id) {
                 let loc = geometry.loc + Point::from((entry.bounds.0, entry.bounds.1));
                 window.render_popups(ctx.r(), loc, scale, 1., xray.offset(loc), &mut |elem| {
                     push(NodeRenderElement::Popup(elem).into())
@@ -156,20 +160,8 @@ impl<W: LayoutElement> Workspace<W> {
                 &mut |elem| push(NodeRenderElement::Canvas(elem).into()),
             );
         }
-        for entry in tile.scene.windows.iter().filter(|w| w.expanded) {
-            if let Some(tile) = self
-                .tiles()
-                .find(|tile| tile.window().node_window_id() == Some(entry.id))
-            {
-                if tile.window().sizing_mode().is_normal() {
-                    let loc = geometry.loc + Point::from((entry.bounds.0, entry.bounds.1))
-                        - tile.window_loc();
-                    tile.render_frame(ctx.renderer, loc, true, &mut |elem| {
-                        push(NodeRenderElement::Frame(elem).into())
-                    });
-                }
-            }
-        }
+        // The canvas owns the shared outline throughout the morph. Rendering the
+        // underlying layout's frame here introduced a second, differently sized border.
         // Decorations and graph gestures are above the client buffers; the canvas has preview holes.
         let loc = geometry.loc - tile.canvas.geometry().loc.to_f64();
         push_elements_from_surface_tree(
@@ -181,14 +173,12 @@ impl<W: LayoutElement> Workspace<W> {
             Kind::Unspecified,
             &mut |elem| push(NodeRenderElement::Canvas(elem).into()),
         );
+        let live: std::collections::HashSet<_> = tile.scene.windows.iter().map(|w| w.id).collect();
         tile.backdrops
             .borrow_mut()
-            .retain(|id, _| tile.scene.windows.iter().any(|w| w.id == *id));
+            .retain(|id, _| live.contains(id));
         for entry in tile.scene.windows.iter().rev() {
-            let Some(window) = self
-                .windows()
-                .find(|w| w.node_window_id() == Some(entry.id))
-            else {
+            let Some(window) = windows.get(&entry.id) else {
                 continue;
             };
             let size = window.size().to_f64();
@@ -205,12 +195,15 @@ impl<W: LayoutElement> Workspace<W> {
             } else {
                 (width / size.w).min(height / size.h)
             };
-            let loc = geometry.loc
-                + Point::from((
-                    x + (width - size.w * zoom) / 2.,
-                    y + (height - size.h * zoom) / 2.,
-                ));
-            let bounds = Rectangle::new(loc, size.upscale(zoom)).to_physical_precise_round(scale);
+            let loc = if entry.expanded {
+                // Keep input, popups, decorations and the client at the same origin
+                // while a resize is being acknowledged by the application.
+                clip.loc
+            } else {
+                clip.loc
+                    + Point::from(((width - size.w * zoom) / 2., (height - size.h * zoom) / 2.))
+            };
+            let bounds = clip.to_physical_precise_round(scale);
             window.set_offscreen_data(None);
             window.render_normal(
                 ctx.r(),
@@ -427,7 +420,13 @@ impl State {
             if was_mapped && !tile.mapped {
                 tile.configured_size = Size::default();
             }
-            if let Some(scene) = ws.pending_node_scene.take() {
+            let surface_scene = with_states(root, |states| {
+                states
+                    .data_map
+                    .get::<crate::protocols::node_row::PendingScene>()
+                    .and_then(|pending| pending.0.lock().unwrap().take().map(|p| p.scene))
+            });
+            if let Some(scene) = surface_scene.or(ws.pending_node_scene.take()) {
                 tile.scene = scene;
             }
             ws.refresh_node_tile();

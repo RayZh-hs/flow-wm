@@ -6,6 +6,7 @@ pub mod output_management;
 pub mod screencopy;
 pub mod virtual_pointer;
 
+pub mod node_row;
 pub mod raw;
 
 /// Empty user-data for protocol impls.

@@ -98,6 +98,33 @@ class ProfileIsolation(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Duplicate global shortcut'):
                 installer.prepare_profile(*arguments)
 
+    def test_camera_shortcuts_upgrade_existing_profiles_and_respect_custom_keys(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = root / 'config'
+            arguments = [config, root / 'state', root / 'cache', root / 'bundle',
+                         root / 'original', root / 'original-state', root / 'original-cache', root / 'bin/flowwm-session']
+            installer.prepare_profile(*arguments)
+            registry = config / 'keybindings.json'
+            bindings = [b for b in json.loads(registry.read_text()) if b['action'] not in ('zoom_in', 'zoom_out')]
+            bindings.extend([
+                {'keys': ['Mod+Minus'], 'action': 'compositor', 'scope': 'global', 'description': 'Decrease column width', 'niri': 'set-column-width "-10%"'},
+                {'keys': ['Mod+Equal'], 'action': 'compositor', 'scope': 'global', 'description': 'Increase column width', 'niri': 'set-column-width "+10%"'},
+            ])
+            registry.write_text(json.dumps(bindings))
+            installer.prepare_profile(*arguments)
+            self.assertIn('Mod+minus', (config / 'keybindings.kdl').read_text())
+            self.assertIn('Mod+equal', (config / 'keybindings.kdl').read_text())
+            bindings = [b for b in json.loads(registry.read_text()) if b['action'] not in ('zoom_in', 'zoom_out')]
+            bindings.append({'keys': ['Super+equal'], 'action': 'custom_equal', 'scope': 'global',
+                             'description': 'Custom', 'niri': 'spawn "true"'})
+            registry.write_text(json.dumps(bindings))
+            installer.prepare_profile(*arguments)
+            actions = [b['action'] for b in json.loads(registry.read_text())]
+            self.assertIn('zoom_out', actions)
+            self.assertNotIn('zoom_in', actions)
+            self.assertIn('custom_equal', actions)
+
     def test_units_validate_without_an_installed_niri_or_dms_service(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

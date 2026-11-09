@@ -2494,6 +2494,7 @@ impl Niri {
             &display_handle,
             client_is_unrestricted,
         );
+        crate::protocols::node_row::init(&display_handle);
         let viewporter_state = ViewporterState::new::<State>(&display_handle);
         let background_effect_state = BackgroundEffectState::new::<State>(&display_handle);
         let xdg_foreign_state = XdgForeignState::new::<State>(&display_handle);

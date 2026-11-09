@@ -188,7 +188,6 @@ struct Shell {
     captures: Option<super::collapse::Captures>,
     chat: RefCell<Option<ChatUi>>,
     search_popup: RefCell<Option<gtk::Window>>,
-    centered: Cell<bool>,
     reveal: Cell<f64>,
     paint_started: Cell<Option<std::time::Instant>>,
     frame_monitors: RefCell<HashSet<usize>>,
@@ -604,7 +603,6 @@ impl Shell {
                     .then(|| super::collapse::Captures::new(engine.clone())),
                 chat: RefCell::new(None),
                 search_popup: RefCell::new(None),
-                centered: Cell::new(false),
                 reveal: Cell::new(1.0),
                 paint_started: Cell::new(None),
                 frame_monitors: RefCell::new(HashSet::new()),
@@ -974,7 +972,7 @@ impl Shell {
             &self.engine.snapshot().state,
             insets,
             (geometry.width() - insets[1] - insets[3]) as f64,
-            self.centered.get(),
+            false,
         );
     }
     fn input_region(&self) {
@@ -993,7 +991,11 @@ impl Shell {
             for node in state.nodes.iter().filter(|n| {
                 n.workspace == state.selected_workspace && n.column_mode == ColumnMode::Window
             }) {
-                if let Some(rect) = view.desktop_rects.get(&node.id) {
+                if let Some(rect) = view
+                    .presented_rects
+                    .get(&node.id)
+                    .or_else(|| view.desktop_rects.get(&node.id))
+                {
                     let _ = region.subtract_rectangle(&rect.integer());
                 }
             }
@@ -1063,8 +1065,18 @@ impl Shell {
             return;
         }
         self.collect_images();
-        self.update_scene_geometry();
         let state = self.engine.snapshot().state;
+        // Preserve exactly what was drawn, including an interrupted morph.
+        let from_rects: HashMap<_, _> = {
+            let view = self.view.borrow();
+            state
+                .nodes
+                .iter()
+                .filter(|n| n.workspace == state.selected_workspace)
+                .map(|n| (n.id.clone(), super::gpu::window_geometry(n, &view).1))
+                .collect()
+        };
+        self.update_scene_geometry();
         let from: HashMap<_, _> = state
             .nodes
             .iter()
@@ -1109,80 +1121,94 @@ impl Shell {
             .borrow_mut()
             .arrangement
             .update(&state, width, height);
-        let mut target_positions = HashMap::new();
         let view = self.view.borrow();
+        let target_zoom = view.zoom;
+        let bases: HashMap<_, _> = state
+            .nodes
+            .iter()
+            .filter(|n| n.workspace == state.selected_workspace)
+            .map(|n| (n.id.clone(), view.arrangement.position(n)))
+            .collect();
+        let mut target_rects = HashMap::new();
+        let mut expanded = Vec::new();
+        let mut cards = Vec::new();
         for node in state
             .nodes
             .iter()
             .filter(|n| n.workspace == state.selected_workspace)
         {
-            let mut position = view.arrangement.position(node);
-            if visible && node.closed_window() {
-                if let Some(bottom) = state
-                    .nodes
-                    .iter()
-                    .filter(|other| {
-                        other.workspace == node.workspace
-                            && other.window_id.is_some()
-                            && other.column_mode == ColumnMode::Window
-                    })
-                    .filter_map(|other| view.desktop_rects.get(&other.id))
-                    .map(|rect| rect.y + rect.height)
-                    .max_by(f64::total_cmp)
-                {
-                    // History stays beneath expanded native columns as well.
-                    let history_top = state
-                        .nodes
-                        .iter()
-                        .filter(|n| n.workspace == node.workspace && n.closed_window())
-                        .map(|n| view.arrangement.position(n).y)
-                        .fold(f64::INFINITY, f64::min);
-                    position.y += ((bottom + 40.0 - view.pan_y) / view.zoom - history_top).max(0.0);
+            let p = &bases[&node.id];
+            let graph = super::collapse::Rect {
+                x: view.pan_x + p.x * view.zoom,
+                y: view.pan_y + p.y * view.zoom,
+                width: canvas::WIDTH * view.zoom,
+                height: canvas::node_height(node) * view.zoom,
+            };
+            let mut rect = view.desktop_rects.get(&node.id).copied().unwrap_or(graph);
+            if target[&node.id] == 1.0 {
+                cards.push((node.id.clone(), graph));
+            } else {
+                if visible && self.native_nodes {
+                    // Peeking is a scene placement, independent of niri's scroll position.
+                    rect.x = (width as f64 - rect.width) / 2.;
+                    rect.y = (height as f64 - rect.height) / 2.;
                 }
-            } else if visible && node.column_mode == ColumnMode::Node {
-                let nearest = state
-                    .nodes
-                    .iter()
-                    .filter(|other| {
-                        other.workspace == node.workspace
-                            && other.column_mode == ColumnMode::Window
-                            && view.desktop_rects.contains_key(&other.id)
-                    })
-                    .min_by(|a, b| {
-                        (view.arrangement.position(a).x - position.x)
-                            .abs()
-                            .total_cmp(&(view.arrangement.position(b).x - position.x).abs())
-                    });
-                if let Some(anchor) = nearest
-                    && let Some(rect) = view.desktop_rects.get(&anchor.id)
-                {
-                    let anchor_x = view.arrangement.position(anchor).x;
-                    if position.x >= anchor_x {
-                        position.x += (rect.x + rect.width - view.pan_x) / view.zoom
-                            - anchor_x
-                            - canvas::WIDTH
-                            + canvas::GRID;
-                    } else {
-                        position.x += (rect.x - view.pan_x) / view.zoom - anchor_x - canvas::GRID;
-                    }
-                }
+                expanded.push(rect);
+                target_rects.insert(node.id.clone(), rect);
             }
-            target_positions.insert(node.id.clone(), position);
         }
+        if visible && self.native_nodes && expanded.len() > 1 {
+            let mut peeks: Vec<_> = target_rects.keys().cloned().collect();
+            peeks.sort_by(|a, b| bases[a].x.total_cmp(&bases[b].x).then_with(|| a.cmp(b)));
+            let total = peeks.iter().map(|id| target_rects[id].width).sum::<f64>()
+                + (peeks.len() - 1) as f64 * canvas::GRID;
+            let mut x = (width as f64 - total) / 2.;
+            expanded.clear();
+            for id in peeks {
+                let rect = target_rects.get_mut(&id).unwrap();
+                rect.x = x;
+                x += rect.width + canvas::GRID;
+                expanded.push(*rect);
+            }
+        }
+        if visible {
+            super::layout::make_room(&mut cards, &expanded);
+        }
+        let mut target_positions = bases.clone();
+        for (id, rect) in cards {
+            target_positions.insert(
+                id.clone(),
+                Position {
+                    x: (rect.x - view.pan_x) / view.zoom,
+                    y: (rect.y - view.pan_y) / view.zoom,
+                },
+            );
+            target_rects.insert(id, rect);
+        }
+        let from_rects: HashMap<_, _> = target_rects
+            .iter()
+            .map(|(id, target)| {
+                let rect = if was_mapped {
+                    from_rects.get(id).copied().unwrap_or(*target)
+                } else {
+                    view.desktop_rects.get(id).copied().unwrap_or(*target)
+                };
+                (id.clone(), rect)
+            })
+            .collect();
         drop(view);
         {
             let mut view = self.view.borrow_mut();
+            view.presented_rects = from_rects.clone();
             for (id, from) in &from_positions {
-                if let Some(node) = state.node(id) {
-                    let base = view.arrangement.position(node);
-                    view.presented_positions.insert(
-                        id.clone(),
-                        Position {
-                            x: from.x - base.x,
-                            y: from.y - base.y,
-                        },
-                    );
-                }
+                let base = &bases[id];
+                view.presented_positions.insert(
+                    id.clone(),
+                    Position {
+                        x: from.x - base.x,
+                        y: from.y - base.y,
+                    },
+                );
             }
         }
         self.view.borrow_mut().presentations = from.clone();
@@ -1228,6 +1254,7 @@ impl Shell {
         let weak = self.weak.clone();
         let after = RefCell::new(after);
         let previous = Cell::new(started);
+        let animation_started = Cell::new(None::<std::time::Instant>);
         self.window().add_tick_callback(move |_, _| {
             let Some(shell) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
@@ -1257,7 +1284,12 @@ impl Shell {
                 }
             }
             let duration = shell.view.borrow().theme.motion_ms as f64;
-            let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+            let animation_started = animation_started.get().unwrap_or_else(|| {
+                let now = std::time::Instant::now();
+                animation_started.set(Some(now));
+                now
+            });
+            let elapsed = animation_started.elapsed().as_secs_f64() * 1000.0;
             let progress = if duration == 0.0 {
                 1.0
             } else {
@@ -1279,17 +1311,37 @@ impl Shell {
                 }
                 for (id, position) in &target_positions {
                     let from = from_positions.get(id).unwrap_or(position);
-                    let base = state
-                        .node(id)
-                        .map(|n| view.arrangement.position(n))
-                        .unwrap_or_default();
+                    let base = &bases[id];
+                    let shown = if progress >= 1.0 {
+                        position.clone()
+                    } else {
+                        Position {
+                            x: from.x + (position.x - from.x) * eased,
+                            y: from.y + (position.y - from.y) * eased,
+                        }
+                    };
                     view.presented_positions.insert(
                         id.clone(),
                         Position {
-                            x: from.x + (position.x - from.x) * eased - base.x,
-                            y: from.y + (position.y - from.y) * eased - base.y,
+                            x: shown.x - base.x,
+                            y: shown.y - base.y,
                         },
                     );
+                }
+                for (id, rect) in &target_rects {
+                    let destination = if target.get(id) == Some(&1.0) {
+                        let p = &target_positions[id];
+                        super::collapse::Rect {
+                            x: view.pan_x + p.x * view.zoom,
+                            y: view.pan_y + p.y * view.zoom,
+                            width: canvas::WIDTH * view.zoom,
+                            height: rect.height * view.zoom / target_zoom,
+                        }
+                    } else {
+                        *rect
+                    };
+                    view.presented_rects
+                        .insert(id.clone(), from_rects[id].interpolate(destination, eased));
                 }
                 view.chrome =
                     chrome_from + ((if visible { 1.0 } else { 0.0 }) - chrome_from) * eased;
@@ -1304,13 +1356,20 @@ impl Shell {
             if progress >= 1.0 && (!has_windows || fade <= 0.0) {
                 let weak = shell.weak.clone();
                 let after = after.borrow_mut().take();
+                let target = target.clone();
                 // Mapping and keyboard changes must happen outside GDK's frame preparation.
                 glib::idle_add_local_once(move || {
                     let Some(shell) = weak.upgrade() else { return };
                     if shell.transition_serial.get() != serial {
                         return;
                     }
-                    shell.view.borrow_mut().morphing = false;
+                    {
+                        let mut view = shell.view.borrow_mut();
+                        view.morphing = false;
+                        // Graph cards follow the camera again; peeks keep screen coordinates.
+                        view.presented_rects
+                            .retain(|id, _| visible && target.get(id) == Some(&0.0));
+                    }
                     shell.collect_images();
                     if visible {
                         shell.request_captures(!was_visible);
@@ -1360,9 +1419,6 @@ impl Shell {
         if !was_visible {
             let desktop = self.desktop.lock().unwrap().clone();
             if let Some(window) = desktop.windows.iter().find(|w| w.is_focused) {
-                if self.return_window.get() != Some(window.id) {
-                    self.centered.set(false);
-                }
                 self.return_window.set(Some(window.id));
             }
         }
@@ -1835,6 +1891,28 @@ impl Shell {
             }
             UiCommand::Nodes => self.show_nodes(),
             UiCommand::Windows => self.show_windows(),
+            UiCommand::ZoomIn | UiCommand::ZoomOut => {
+                if self.graph_visible.get() {
+                    self.prepare_camera();
+                    canvas::zoom_keyboard(
+                        &self.canvas(),
+                        &self.view,
+                        matches!(command, UiCommand::ZoomIn),
+                    );
+                } else if let Err(error) = niri::request(niri_ipc::Request::Action(
+                    niri_ipc::Action::SetColumnWidth {
+                        change: niri_ipc::SizeChange::AdjustProportion(
+                            if matches!(command, UiCommand::ZoomIn) {
+                                10.
+                            } else {
+                                -10.
+                            },
+                        ),
+                    },
+                )) {
+                    self.show_error(&error.to_string());
+                }
+            }
             UiCommand::Quit => self.app.quit(),
             UiCommand::Notes => {
                 self.show_nodes();
@@ -2054,7 +2132,6 @@ impl Shell {
                 self.apply_insets();
             }
             *self.last_workspace.borrow_mut() = state.selected_workspace.clone();
-            self.centered.set(false);
             let selected = self.view.borrow().selected.clone();
             self.select(selected);
             if !known {
@@ -2231,22 +2308,41 @@ impl Shell {
             self.update_scene_geometry();
             self.input_region();
             let state = self.engine.snapshot().state;
-            let changed = state
-                .nodes
-                .iter()
-                .filter(|n| n.workspace == state.selected_workspace)
-                .any(|n| {
-                    let expected = if n.column_mode == ColumnMode::Window && n.window_id.is_some() {
-                        0.0
-                    } else {
-                        1.0
-                    };
-                    self.view
-                        .borrow()
-                        .presentations
-                        .get(&n.id)
-                        .is_some_and(|p| (*p - expected).abs() > 0.001)
-                });
+            let resized = {
+                let view = self.view.borrow();
+                self.native_nodes
+                    && state.nodes.iter().any(|n| {
+                        n.workspace == state.selected_workspace
+                            && n.column_mode == ColumnMode::Window
+                            && n.window_id.is_some()
+                            && view
+                                .presented_rects
+                                .get(&n.id)
+                                .zip(view.desktop_rects.get(&n.id))
+                                .is_some_and(|(shown, actual)| {
+                                    (shown.width - actual.width).abs() > 0.5
+                                        || (shown.height - actual.height).abs() > 0.5
+                                })
+                    })
+            };
+            let changed = resized
+                || state
+                    .nodes
+                    .iter()
+                    .filter(|n| n.workspace == state.selected_workspace)
+                    .any(|n| {
+                        let expected =
+                            if n.column_mode == ColumnMode::Window && n.window_id.is_some() {
+                                0.0
+                            } else {
+                                1.0
+                            };
+                        self.view
+                            .borrow()
+                            .presentations
+                            .get(&n.id)
+                            .is_some_and(|p| (*p - expected).abs() > 0.001)
+                    });
             let (width, height) = self.scene_size();
             if changed
                 || self
@@ -2282,17 +2378,12 @@ impl Shell {
                         .as_ref()
                         .is_some_and(|selector| window_selector(w) == *selector)
             }) {
-                if let Err(error) = niri::focus(window.id).and_then(|_| {
-                    niri::request(niri_ipc::Request::Action(niri_ipc::Action::CenterWindow {
-                        id: Some(window.id),
-                    }))
-                    .map(|_| ())
-                }) {
+                let native_peek = self.native_nodes && state.workspace().view == RowView::Nodes;
+                if !native_peek && let Err(error) = niri::focus(window.id) {
                     self.show_error(&error.to_string());
                     return;
                 }
                 self.return_window.set(Some(window.id));
-                self.centered.set(true);
                 {
                     let mut desktop = self.desktop.lock().unwrap();
                     for w in &mut desktop.windows {
@@ -2314,7 +2405,15 @@ impl Shell {
                     return;
                 }
                 if state.workspace().view == RowView::Nodes {
-                    self.transition(true, None);
+                    let window_id = window.id;
+                    self.transition(
+                        true,
+                        native_peek.then(|| {
+                            Box::new(move || {
+                                let _ = niri::focus(window_id);
+                            }) as Box<dyn FnOnce()>
+                        }),
+                    );
                 } else {
                     self.hide_graph(false);
                 }

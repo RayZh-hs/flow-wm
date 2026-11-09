@@ -15,6 +15,108 @@ use super::client::{ClientId, LayerConfigureProps};
 use super::Fixture;
 use crate::render_helpers::{RenderCtx, RenderTarget};
 
+mod scene_client {
+    #![allow(dead_code, non_camel_case_types, unused_unsafe, unused_variables)]
+    #![allow(non_upper_case_globals, non_snake_case, unused_imports)]
+    #![allow(missing_docs, clippy::all)]
+    use wayland_client;
+    use wayland_client::protocol::*;
+    pub mod __interfaces {
+        use wayland_client::protocol::__interfaces::*;
+        wayland_scanner::generate_interfaces!("niri-ipc/protocols/flowwm-node-row-v1.xml");
+    }
+    use self::__interfaces::*;
+    wayland_scanner::generate_client_code!("niri-ipc/protocols/flowwm-node-row-v1.xml");
+}
+use scene_client::flowwm_node_row_manager_v1::FlowwmNodeRowManagerV1;
+wayland_client::delegate_noop!(super::client::State: FlowwmNodeRowManagerV1);
+
+#[test]
+fn node_rows_wayland_scenes_latch_chunks_only_on_the_matching_canvas_commit() {
+    let mut f =
+        Fixture::with_config(Config::parse_mem("workspace \"one\"\nworkspace \"two\"").unwrap());
+    f.add_output(1, (1920, 1080));
+    let ids: Vec<_> = f
+        .niri()
+        .layout
+        .workspaces()
+        .take(2)
+        .map(|(_, _, ws)| ws.id().get())
+        .collect();
+    let client = f.add_client();
+    let (first, _) = canvas(&mut f, client, ids[0]);
+    let (second, _) = canvas(&mut f, client, ids[1]);
+    let c = f.client(client);
+    let global = c
+        .state
+        .globals
+        .iter()
+        .find(|g| g.interface == "flowwm_node_row_manager_v1")
+        .unwrap();
+    let registry = c.display.get_registry(&c.qh, ());
+    let manager: FlowwmNodeRowManagerV1 = registry.bind(global.name, 1, &c.qh, ());
+    let scene = NodeRowScene {
+        windows: (1..=300)
+            .map(|id| NodeWindow {
+                id,
+                bounds: (id as f64 + 0.25, 30.5, 200., 120.),
+                expanded: false,
+                opacity: 1.,
+            })
+            .collect(),
+        insets: [32, 0, 0, 0],
+    };
+    for (index, windows) in scene.windows.chunks(16).enumerate() {
+        let chunk = NodeRowScene {
+            windows: windows.to_vec(),
+            insets: scene.insets,
+        };
+        manager.set_scene(
+            &first,
+            u32::from(index == 0),
+            serde_json::to_string(&chunk).unwrap(),
+        );
+    }
+    f.double_roundtrip(client);
+    let current = |f: &mut Fixture, id| {
+        f.niri()
+            .layout
+            .workspaces()
+            .find(|(_, _, w)| w.id().get() == id)
+            .unwrap()
+            .2
+            .node_tile
+            .as_ref()
+            .unwrap()
+            .scene
+            .clone()
+    };
+    assert_eq!(current(&mut f, ids[0]), NodeRowScene::default());
+    f.client(client).window(&second).commit();
+    f.double_roundtrip(client);
+    assert_eq!(
+        current(&mut f, ids[0]),
+        NodeRowScene::default(),
+        "another row must not consume a pending scene"
+    );
+    f.client(client).window(&first).commit();
+    f.double_roundtrip(client);
+    assert_eq!(current(&mut f, ids[0]), scene);
+    manager.set_scene(
+        &first,
+        1,
+        serde_json::to_string(&NodeRowScene::default()).unwrap(),
+    );
+    f.client(client).window(&first).commit();
+    f.double_roundtrip(client);
+    assert_eq!(
+        current(&mut f, ids[0]),
+        NodeRowScene::default(),
+        "an empty scene clears all previews"
+    );
+    manager.destroy();
+}
+
 fn canvas(
     f: &mut Fixture,
     client: ClientId,
@@ -275,6 +377,44 @@ fn egl_node_rows_replace_windows_and_follow_swipes_overview_and_lifecycle() {
         f.niri().seat.get_keyboard().unwrap().current_focus(),
         Some(first_surface.clone())
     );
+    // A client can still have its old size while a new scene is committed.
+    // Keep its origin fixed and clip both rendering and input to the scene.
+    for (width, height) in [(1000., 700.), (400., 300.)] {
+        f.niri()
+            .stage_node_row(
+                first,
+                NodeRowScene {
+                    windows: vec![NodeWindow {
+                        id: window_id,
+                        bounds: (101.25, 102.5, width, height),
+                        expanded: true,
+                        opacity: 1.,
+                    }],
+                    insets: [0; 4],
+                },
+            )
+            .unwrap();
+        f.client(client).window(&first_client).commit();
+        f.double_roundtrip(client);
+        let elements = render(&mut f);
+        assert!(elements.iter().any(|r| r.loc.x == 101 && r.loc.y == 103
+            && r.size.w == width.min(800.) as i32 && r.size.h == height.min(600.) as i32),
+            "expanded content must stay at the scene origin with no extra layout frame: {elements:?}");
+        assert!(f
+            .niri()
+            .contents_under((120., 120.).into())
+            .window
+            .is_some());
+        if width < 800. {
+            assert!(
+                f.niri()
+                    .contents_under((700., 200.).into())
+                    .window
+                    .is_none(),
+                "clipped client pixels must not receive input outside the scene rectangle"
+            );
+        }
+    }
     f.niri()
         .stage_node_row(
             first,
@@ -478,7 +618,7 @@ fn node_rows_keep_an_empty_trailing_row_and_follow_output_removal() {
         .collect();
     assert_eq!(rows.len(), 2);
     assert!(rows.last().unwrap().node_tile.is_none());
-    f.add_output(2, (1280, 720));
+    f.add_output(2, (160, 720));
     let second = f.niri_output(2);
     f.niri().remove_output(&output);
     f.double_roundtrip(client);
@@ -491,6 +631,6 @@ fn node_rows_keep_an_empty_trailing_row_and_follow_output_removal() {
         .unwrap()
         .2;
     assert!(ws.nodes_visible());
-    assert_eq!(ws.node_canvas_geometry().size.w, 1280.);
+    assert_eq!(ws.node_canvas_geometry().size.w, 160.);
     assert_eq!(ws.node_canvas_geometry().size.h, 720.);
 }

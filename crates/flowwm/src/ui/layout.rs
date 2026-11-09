@@ -226,10 +226,122 @@ fn span(count: usize, step: f64) -> f64 {
     }
 }
 
+/// Make room in screen space without changing saved graph positions. Resolve
+/// outward in one direction at a time so pushing a row cannot oscillate.
+pub fn make_room(
+    cards: &mut [(String, super::collapse::Rect)],
+    expanded: &[super::collapse::Rect],
+) {
+    use super::collapse::Rect;
+    if expanded.is_empty() {
+        return;
+    }
+    let mut occupied: Vec<_> = expanded.iter().map(|r| r.inset(-20.)).collect();
+    cards.sort_by(|a, b| {
+        let distance = |r: Rect| {
+            expanded
+                .iter()
+                .map(|e| {
+                    (r.x + r.width / 2. - e.x - e.width / 2.)
+                        .hypot(r.y + r.height / 2. - e.y - e.height / 2.)
+                })
+                .fold(f64::INFINITY, f64::min)
+        };
+        distance(a.1)
+            .total_cmp(&distance(b.1))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    for (_, rect) in cards {
+        if occupied.iter().any(|o| rect.overlaps(*o)) {
+            let original = *rect;
+            *rect = (0..4)
+                .map(|direction| {
+                    let mut candidate = original;
+                    for _ in 0..=occupied.len() {
+                        let mut moved = false;
+                        for obstacle in &occupied {
+                            if candidate.overlaps(*obstacle) {
+                                match direction {
+                                    0 => candidate.x = obstacle.x - candidate.width,
+                                    1 => candidate.x = obstacle.x + obstacle.width,
+                                    2 => candidate.y = obstacle.y - candidate.height,
+                                    _ => candidate.y = obstacle.y + obstacle.height,
+                                }
+                                moved = true;
+                            }
+                        }
+                        if !moved {
+                            break;
+                        }
+                    }
+                    candidate
+                })
+                .min_by(|a, b| {
+                    (a.x - original.x)
+                        .hypot(a.y - original.y)
+                        .total_cmp(&(b.x - original.x).hypot(b.y - original.y))
+                })
+                .unwrap();
+        }
+        occupied.push(rect.inset(-10.));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::NodeKind;
+
+    #[test]
+    fn peeks_clear_all_card_kinds_and_restore_the_saved_layout() {
+        use super::super::collapse::Rect;
+        let state = scene(8, 8);
+        let mut layout = Arrangement::default();
+        layout.update(&state, 1200, 800);
+        let originals: Vec<_> = state
+            .nodes
+            .iter()
+            .map(|n| {
+                (
+                    n.id.clone(),
+                    Rect {
+                        x: layout.position(n).x * 0.7 - 100.,
+                        y: layout.position(n).y * 0.7,
+                        width: WIDTH * 0.7,
+                        height: super::super::canvas::node_height(n) * 0.7,
+                    },
+                )
+            })
+            .collect();
+        let expanded = Rect {
+            x: 200.,
+            y: 0.,
+            width: 800.,
+            height: 600.,
+        };
+        let mut cards = originals.clone();
+        make_room(&mut cards, &[expanded]);
+        assert!(cards.iter().any(|(id, rect)| {
+            originals
+                .iter()
+                .any(|(old_id, old)| id == old_id && rect != old)
+        }));
+        for (i, (_, card)) in cards.iter().enumerate() {
+            assert!(!card.overlaps(expanded));
+            for (_, other) in &cards[i + 1..] {
+                assert!(!card.overlaps(*other));
+            }
+        }
+        let mut restored = originals.clone();
+        make_room(&mut restored, &[]);
+        assert_eq!(restored, originals);
+        let mut again = originals.clone();
+        make_room(&mut again, &[expanded]);
+        assert_eq!(
+            again, cards,
+            "the displacement is deterministic and never accumulates"
+        );
+    }
 
     fn scene(live: usize, closed: usize) -> State {
         let mut state = State::empty("/tmp".into());

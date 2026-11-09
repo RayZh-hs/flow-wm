@@ -11,8 +11,9 @@ use std::{
 #[derive(Default)]
 pub struct Cache {
     graph: Option<(u64, gsk::RenderNode)>,
-    metadata: HashMap<String, gsk::RenderNode>,
-    revision: u64,
+    metadata: HashMap<(String, String), gsk::RenderNode>,
+    signatures: HashMap<String, Vec<u8>>,
+    revision: Option<u64>,
 }
 fn bounds(r: Rect) -> graphene::Rect {
     graphene::Rect::new(r.x as f32, r.y as f32, r.width as f32, r.height as f32)
@@ -50,52 +51,56 @@ fn metadata<'a>(
         view.theme.radius.to_bits(),
         node_height(node).to_bits(),
     );
-    cache.metadata.entry(key).or_insert_with(|| {
-        let meta = gtk::Snapshot::new();
-        let c = meta.append_cairo(&graphene::Rect::new(
-            -8.0,
-            -16.0,
-            WIDTH as f32 + 16.0,
-            node_height(node) as f32 + 32.0,
-        ));
-        c.select_font_face(
-            &view.theme.font,
-            gtk::cairo::FontSlant::Normal,
-            gtk::cairo::FontWeight::Normal,
-        );
-        if !node.closed_window() {
-            c.rectangle(-8.0, -8.0, WIDTH + 16.0, 77.0);
-            c.rectangle(-8.0, node_height(node) - 39.0, WIDTH + 16.0, 48.0);
-            c.clip();
-        }
-        canvas::draw_node(&c, node, &Position::default(), false, &view.theme);
-        drop(c);
-        if !node.closed_window() {
+    cache
+        .metadata
+        .entry((node.id.clone(), key))
+        .or_insert_with(|| {
+            let meta = gtk::Snapshot::new();
             let c = meta.append_cairo(&graphene::Rect::new(
-                -8.,
-                -8.,
-                WIDTH as f32 + 16.,
-                node_height(node) as f32 + 16.,
+                -8.0,
+                -16.0,
+                WIDTH as f32 + 16.0,
+                node_height(node) as f32 + 32.0,
             ));
-            canvas::draw_pin_markers(&c, state, node, &Position::default(), &view.theme);
-        }
-        if view.numbers && index < 10 {
-            let c = meta.append_cairo(&graphene::Rect::new(WIDTH as f32 - 34.0, -14.0, 32.0, 28.0));
-            canvas::rounded(&c, WIDTH - 32.0, -13.0, 28.0, 26.0, 8.0);
-            view.theme.primary.source(&c);
-            let _ = c.fill();
-            canvas::text(
-                &c,
-                WIDTH - 22.0,
-                5.0,
-                &((index + 1) % 10).to_string(),
-                14.0,
-                view.theme.on_primary.rgb(),
-                true,
+            c.select_font_face(
+                &view.theme.font,
+                gtk::cairo::FontSlant::Normal,
+                gtk::cairo::FontWeight::Normal,
             );
-        }
-        meta.to_node().unwrap()
-    })
+            if !node.closed_window() {
+                c.rectangle(-8.0, -8.0, WIDTH + 16.0, 77.0);
+                c.rectangle(-8.0, node_height(node) - 39.0, WIDTH + 16.0, 48.0);
+                c.clip();
+            }
+            canvas::draw_node(&c, node, &Position::default(), false, &view.theme);
+            drop(c);
+            if !node.closed_window() {
+                let c = meta.append_cairo(&graphene::Rect::new(
+                    -8.,
+                    -8.,
+                    WIDTH as f32 + 16.,
+                    node_height(node) as f32 + 16.,
+                ));
+                canvas::draw_pin_markers(&c, state, node, &Position::default(), &view.theme);
+            }
+            if view.numbers && index < 10 {
+                let c =
+                    meta.append_cairo(&graphene::Rect::new(WIDTH as f32 - 34.0, -14.0, 32.0, 28.0));
+                canvas::rounded(&c, WIDTH - 32.0, -13.0, 28.0, 26.0, 8.0);
+                view.theme.primary.source(&c);
+                let _ = c.fill();
+                canvas::text(
+                    &c,
+                    WIDTH - 22.0,
+                    5.0,
+                    &((index + 1) % 10).to_string(),
+                    14.0,
+                    view.theme.on_primary.rgb(),
+                    true,
+                );
+            }
+            meta.to_node().unwrap()
+        })
 }
 fn graph_key(width: i32, height: i32, state: &State, revision: u64, view: &View) -> u64 {
     let mut h = DefaultHasher::new();
@@ -125,11 +130,31 @@ fn graph_key(width: i32, height: i32, state: &State, revision: u64, view: &View)
         view.pan_y.to_bits(),
     )
         .hash(&mut h);
+    let mut linked = std::collections::HashSet::new();
+    for node in &state.nodes {
+        for dependency in &node.dependencies {
+            linked.insert(dependency.as_str());
+            linked.insert(node.id.as_str());
+        }
+    }
+    for edge in &state.connections {
+        linked.insert(edge.source.node.as_str());
+        linked.insert(edge.target.node.as_str());
+    }
+    for watcher in &state.watchers {
+        linked.insert(watcher.source.as_str());
+        linked.insert(watcher.target.as_str());
+    }
     for node in state
         .nodes
         .iter()
         .filter(|n| n.workspace == state.selected_workspace)
     {
+        // Live card transforms are GSK nodes, and do not invalidate the Cairo
+        // grid unless an edge actually depends on their moving position.
+        if (node.window_id.is_some() || node.desktop_window) && !linked.contains(node.id.as_str()) {
+            continue;
+        }
         let p = view.position(node);
         (
             p.x.to_bits(),
@@ -141,7 +166,7 @@ fn graph_key(width: i32, height: i32, state: &State, revision: u64, view: &View)
     view.interaction_key().hash(&mut h);
     h.finish()
 }
-fn window_geometry(node: &Node, view: &View) -> (Rect, Rect, f64) {
+pub(super) fn window_geometry(node: &Node, view: &View) -> (Rect, Rect, f64) {
     let p = view.position(node);
     let t = progress(view, node);
     let graph = Rect {
@@ -151,11 +176,16 @@ fn window_geometry(node: &Node, view: &View) -> (Rect, Rect, f64) {
         height: node_height(node) * view.zoom,
     };
     let mut rect = view
-        .desktop_rects
+        .presented_rects
         .get(&node.id)
         .copied()
-        .unwrap_or(graph)
-        .interpolate(graph, t);
+        .unwrap_or_else(|| {
+            view.desktop_rects
+                .get(&node.id)
+                .copied()
+                .unwrap_or(graph)
+                .interpolate(graph, t)
+        });
     if node.closed_window() {
         rect = graph;
         rect.y += 48. * view.zoom * (1. - view.chrome);
@@ -186,7 +216,9 @@ fn native_canvas_region(state: &State, view: &View, width: i32, height: i32) -> 
         };
         let _ = holes.subtract_rectangle(&cover.integer());
         if node.window_id.is_some() {
-            let _ = holes.union_rectangle(&window_content(rect, t, view.zoom).integer());
+            // Keep the shared outline above the native buffer even when fully expanded.
+            let content = window_content(rect, t, view.zoom).inset(2. * (1. - t));
+            let _ = holes.union_rectangle(&content.integer());
         }
     }
     let region =
@@ -230,17 +262,24 @@ pub fn render(
         render_inner(&scene, width, height, state, revision, view, cache);
         if let Some(scene) = scene.to_node() {
             let region = native_canvas_region(state, view, width, height);
+            // One mask and one scene traversal. Replaying the whole scene once per
+            // hole fragment made rendering quadratic in the number of windows.
+            snapshot.push_mask(gsk::MaskMode::Alpha);
             for i in 0..region.num_rectangles() {
                 let r = region.rectangle(i);
-                snapshot.push_clip(&graphene::Rect::new(
-                    r.x() as f32,
-                    r.y() as f32,
-                    r.width() as f32,
-                    r.height() as f32,
-                ));
-                snapshot.append_node(&scene);
-                snapshot.pop();
+                snapshot.append_color(
+                    &gdk::RGBA::WHITE,
+                    &graphene::Rect::new(
+                        r.x() as f32,
+                        r.y() as f32,
+                        r.width() as f32,
+                        r.height() as f32,
+                    ),
+                );
             }
+            snapshot.pop();
+            snapshot.append_node(&scene);
+            snapshot.pop();
         }
         if canvas::has_foreground(view) {
             let c =
@@ -264,7 +303,7 @@ fn render_inner(
     let nodes = canvas::ordered_nodes(state);
     let region =
         gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(0, 0, width, height));
-    for node in &nodes {
+    for node in nodes.iter().filter(|_| !view.native_nodes) {
         if progress(view, node) < 0.001
             && let Some(rect) = view.desktop_rects.get(&node.id)
         {
@@ -307,21 +346,51 @@ fn render_inner(
         backdrop.pop();
     }
     if let Some(backdrop) = backdrop.to_node() {
-        for i in 0..region.num_rectangles() {
-            let r = region.rectangle(i);
-            snapshot.push_clip(&graphene::Rect::new(
-                r.x() as f32,
-                r.y() as f32,
-                r.width() as f32,
-                r.height() as f32,
-            ));
+        if view.native_nodes {
             snapshot.append_node(&backdrop);
-            snapshot.pop();
+        } else {
+            for i in 0..region.num_rectangles() {
+                let r = region.rectangle(i);
+                snapshot.push_clip(&graphene::Rect::new(
+                    r.x() as f32,
+                    r.y() as f32,
+                    r.width() as f32,
+                    r.height() as f32,
+                ));
+                snapshot.append_node(&backdrop);
+                snapshot.pop();
+            }
         }
     }
-    if cache.revision != revision {
-        cache.metadata.clear();
-        cache.revision = revision;
+    if cache.revision != Some(revision) {
+        // Focus and presentation changes do not change a card's labels or ports.
+        // Retain their rasterizations across view changes and unrelated updates.
+        let signatures: HashMap<_, _> = nodes
+            .iter()
+            .map(|n| {
+                let signature = serde_json::to_vec(&(
+                    &n.title,
+                    n.kind,
+                    n.status,
+                    &n.metric,
+                    &n.command,
+                    n.window_id,
+                    n.desktop_window,
+                    &n.flow,
+                    crate::graph::pins(state, n, true),
+                    crate::graph::pins(state, n, false),
+                ))
+                .unwrap_or_default();
+                (n.id.clone(), signature)
+            })
+            .collect();
+        cache.metadata.retain(|(id, _), _| {
+            signatures
+                .get(id)
+                .is_some_and(|s| cache.signatures.get(id) == Some(s))
+        });
+        cache.signatures = signatures;
+        cache.revision = Some(revision);
     }
     for (index, node) in nodes.iter().enumerate() {
         if node.window_id.is_none() && !node.desktop_window {
@@ -345,7 +414,7 @@ fn render_inner(
                 } else {
                     1.0
                 }
-        } else if t < 0.001 {
+        } else if t < 0.001 && !view.native_nodes {
             view.live_fade
         } else if !view.query.is_empty() && !matching {
             0.25
@@ -455,6 +524,69 @@ fn render_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interrupted_morphs_and_expanded_frames_share_the_live_rectangle() {
+        let mut state = State::empty("/tmp".into());
+        let mut node = Node::new(
+            &state.selected_workspace,
+            NodeKind::Window,
+            "/tmp".into(),
+            Position::default(),
+        );
+        node.window_id = Some(42);
+        node.column_mode = ColumnMode::Window;
+        let id = node.id.clone();
+        state.nodes.push(node);
+        let mut view = View::default();
+        let actual = Rect {
+            x: 321.25,
+            y: 28.5,
+            width: 800.,
+            height: 700.,
+        };
+        view.desktop_rects.insert(
+            id.clone(),
+            Rect {
+                x: -900.,
+                y: 0.,
+                width: 800.,
+                height: 700.,
+            },
+        );
+        view.presented_rects.insert(id.clone(), actual);
+        assert_eq!(window_geometry(&state.nodes[0], &view).1, actual);
+        let native = native_windows(&state, &view);
+        assert!(native[0].expanded);
+        assert_eq!(
+            native[0].bounds,
+            (actual.x, actual.y, actual.width, actual.height)
+        );
+        let region = native_canvas_region(&state, &view, 1500, 1000);
+        assert!(
+            region.contains_point(322, 29),
+            "the shared border must survive at rest"
+        );
+        assert!(
+            !region.contains_point(400, 100),
+            "the client interior remains live"
+        );
+        view.presentations.insert(id, 0.45);
+        assert_eq!(
+            window_geometry(&state.nodes[0], &view).1,
+            actual,
+            "reversal starts at the last displayed frame"
+        );
+        let native = native_windows(&state, &view);
+        assert!(
+            !native[0].expanded,
+            "input stays with the graph during a morph"
+        );
+        assert_eq!(
+            native[0].bounds.0,
+            window_content(actual, 0.45, view.zoom).x
+        );
+    }
 
     #[test]
     #[allow(clippy::field_reassign_with_default)]

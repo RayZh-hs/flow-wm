@@ -390,28 +390,9 @@ impl<W: LayoutElement> Workspace<W> {
 
     pub fn update_render_elements(&mut self, is_active: bool, layer: RenderLayer) {
         if self.nodes_visible() {
-            // Only expanded clients need native decorations; previews bypass the tab layout.
+            // Node chrome is supplied atomically by the canvas, including during
+            // peeks. Avoid preparing every hidden layout tile on each graph frame.
             if layer.is_normal() {
-                let origin = self.node_canvas_geometry().loc;
-                let view_size = self.view_size;
-                let entries = self.node_tile.as_ref().unwrap().scene.windows.clone();
-                let graph_focus = self.node_tile.as_ref().unwrap().graph_focused;
-                let focused = self.active_window().and_then(|w| w.node_window_id());
-                for tile in self.tiles_mut() {
-                    let Some(entry) = entries
-                        .iter()
-                        .find(|w| w.expanded && Some(w.id) == tile.window().node_window_id())
-                    else {
-                        continue;
-                    };
-                    let pos =
-                        origin + Point::from((entry.bounds.0, entry.bounds.1)) - tile.window_loc();
-                    let view_rect = Rectangle::new(pos.upscale(-1.), view_size);
-                    tile.update_render_elements(
-                        is_active && !graph_focus && tile.window().node_window_id() == focused,
-                        view_rect,
-                    );
-                }
                 self.shadow.update_render_elements(
                     self.view_size,
                     true,

@@ -88,6 +88,36 @@ def prepare_profile(config, state, cache, bundle, user_config, user_state, user_
                 binding["niri"] = "spawn " + json.dumps(terminal)
         atomic_text(registry, json.dumps(defaults, indent=2) + "\n")
     bindings = json.loads(registry.read_text())
+    # Add the new camera shortcuts to existing profiles without replacing user
+    # bindings or taking keys that the user has assigned to another action.
+    defaults = json.loads((ROOT / "config/keybindings.json").read_text())
+    def normalized_key(key):
+        return "+".join(sorted(part.casefold().replace("super", "mod") for part in key.split("+")))
+    changed = False
+    for binding in bindings:
+        legacy = {('Mod+Minus', 'set-column-width "-10%"'): 'zoom_out',
+                  ('Mod+Equal', 'set-column-width "+10%"'): 'zoom_in'}
+        action = legacy.get((binding.get("keys", [""])[0], binding.get("niri"))) if len(binding.get("keys", [])) == 1 else None
+        if action and binding.get("action") == "compositor":
+            binding.clear()
+            binding.update(next(default for default in defaults if default["action"] == action))
+            changed = True
+    actions = {binding["action"] for binding in bindings}
+    occupied = {normalized_key(key) for binding in bindings if binding.get("scope") == "global" for key in binding["keys"]}
+    for binding in defaults:
+        if binding["action"] not in {"zoom_in", "zoom_out"} or binding["action"] in actions:
+            continue
+        if any(normalized_key(key) in occupied for key in binding["keys"]):
+            continue
+        bindings.append(binding)
+        occupied.update(normalized_key(key) for key in binding["keys"])
+        changed = True
+    for binding in bindings:
+        if binding.get("scope") == "gesture" and binding["action"] == "zoom" and binding["keys"] == ["Scroll"]:
+            binding.update(next(default for default in defaults if default["action"] == "zoom"))
+            changed = True
+    if changed:
+        atomic_text(registry, json.dumps(bindings, indent=2) + "\n")
     lines = ["// Generated from keybindings.json by the FlowWM installer.", "binds {"]
     used = set()
     flowwm = str(launcher.with_name("flowwm"))
@@ -98,7 +128,7 @@ def prepare_profile(config, state, cache, bundle, user_config, user_state, user_
         if not command:
             command = "spawn " + " ".join(json.dumps(arg) for arg in [flowwm, *binding["command"]])
         for key in binding["keys"]:
-            normalized = "+".join(sorted(part.casefold().replace("super", "mod") for part in key.split("+")))
+            normalized = normalized_key(key)
             if normalized in used:
                 raise ValueError(f"Duplicate global shortcut: {key}")
             used.add(normalized)

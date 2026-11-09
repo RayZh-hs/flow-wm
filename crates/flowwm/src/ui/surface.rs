@@ -1,7 +1,7 @@
 //! Retained GSK canvas: cached text/edges, GPU textures and borders during window morphs.
 use gtk::{glib, graphene, gsk, prelude::*, subclass::prelude::*};
 use std::cell::RefCell;
-type Renderer = Box<dyn Fn(&gtk::Snapshot, i32, i32)>;
+type Renderer = Box<dyn Fn(&Surface, &gtk::Snapshot, i32, i32)>;
 pub struct RowSlide {
     pub outgoing: Option<gsk::RenderNode>,
     pub incoming: bool,
@@ -65,12 +65,12 @@ mod imp {
                             0.0,
                             slide.direction * (1.0 - slide.progress) * height,
                         ));
-                        render(&scene, obj.width(), obj.height());
+                        render(&obj, &scene, obj.width(), obj.height());
                         scene.restore();
                     }
                     scene.pop();
                 } else {
-                    render(&scene, obj.width(), obj.height());
+                    render(&obj, &scene, obj.width(), obj.height());
                 }
                 let frame = scene.to_node();
                 if let Some(node) = &frame {
@@ -112,7 +112,7 @@ impl Surface {
         self.queue_draw();
     }
 
-    pub fn new(render: impl Fn(&gtk::Snapshot, i32, i32) + 'static) -> Self {
+    pub fn new(render: impl Fn(&Self, &gtk::Snapshot, i32, i32) + 'static) -> Self {
         let widget: Self = glib::Object::builder()
             .property("hexpand", true)
             .property("vexpand", true)

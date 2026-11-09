@@ -86,11 +86,15 @@ Win+Page Up/Down or Win+I/U changes workspaces; add Ctrl to move a column or Shi
 | Drag selected nodes | Move the selection together |
 | Drag background | Box select; Ctrl/Shift adds to selection |
 | Middle-drag or Space+drag | Pan |
-| Scroll | Zoom at the pointer |
+| Two-finger scroll or mouse wheel | Pan; Shift+scroll pans horizontally |
+| Pinch or Ctrl+scroll | Zoom at the pinch center or pointer |
+| Win+- / Win+= | Zoom out / in around the viewport center |
 | Drag output pin to input | Connect |
 | Right-drag | Cut connections |
 | Click a constant's value | Edit it on the graph |
 | Click outside an expanded window | Return to normal Nodes view |
+
+Two-finger panning follows trackpad movement in pixels and glides to a stop after release. A new gesture stops the glide. Peeking expands the live client in place in the node scene, temporarily moving nearby cards aside; closing the peek restores their graph positions.
 
 Entering Nodes from Windows frames the complete row. Manual node positions persist. Ctrl+P computes a fresh arrangement, including disconnected nodes and graphs containing signal loops. Connections use straight spans with rounded bends; backwards routes loop around their endpoints. Window preview backgrounds are blurred and dimmed to stay visually inside the card.
 

@@ -168,6 +168,8 @@ pub struct View {
     pub image_textures: HashMap<String, gdk::Texture>,
     pub wallpaper_texture: Option<gdk::Texture>,
     pub desktop_rects: HashMap<String, super::collapse::Rect>,
+    /// Screen rectangles owned by a morph, or the settled native peek.
+    pub presented_rects: HashMap<String, super::collapse::Rect>,
     pub presentations: HashMap<String, f64>,
     pub live_fade: f64,
     pub chrome: f64,
@@ -207,6 +209,7 @@ impl Default for View {
             image_textures: HashMap::new(),
             wallpaper_texture: None,
             desktop_rects: HashMap::new(),
+            presented_rects: HashMap::new(),
             presentations: HashMap::new(),
             live_fade: 0.0,
             chrome: 1.0,
@@ -355,6 +358,18 @@ pub fn pan_keyboard(
     }
     animate_camera(area, view, &target);
 }
+
+pub fn zoom_keyboard(area: &super::surface::Surface, view: &Rc<RefCell<View>>, inward: bool) {
+    let mut target = view.borrow().clone();
+    if let Some((z, x, y)) = target.camera_target {
+        (target.zoom, target.pan_x, target.pan_y) = (z, x, y);
+    }
+    target.zoom_at(
+        if inward { 1.2 } else { 1. / 1.2 },
+        (area.width() as f64 / 2., area.height() as f64 / 2.),
+    );
+    animate_camera(area, view, &target);
+}
 pub fn move_selection(engine: &Engine, view: &Rc<RefCell<View>>, direction: &str) {
     let state = engine.snapshot().state;
     let view = view.borrow();
@@ -394,6 +409,37 @@ pub fn focus_node(
     animate_camera(area, view, &target);
 }
 impl View {
+    fn zoom_at(&mut self, factor: f64, anchor: (f64, f64)) {
+        if !factor.is_finite() || factor <= 0. {
+            return;
+        }
+        let old = self.zoom;
+        self.zoom = (old * factor).clamp(0.000001, 2.);
+        self.pan_x = anchor.0 - (anchor.0 - self.pan_x) * self.zoom / old;
+        self.pan_y = anchor.1 - (anchor.1 - self.pan_y) * self.zoom / old;
+    }
+
+    fn scroll_camera(
+        &mut self,
+        dx: f64,
+        dy: f64,
+        pixels: bool,
+        zoom: bool,
+        shift: bool,
+        anchor: (f64, f64),
+    ) {
+        if !dx.is_finite() || !dy.is_finite() {
+            return;
+        }
+        if zoom {
+            self.zoom_at((-dy * if pixels { 0.004 } else { 0.12 }).exp(), anchor);
+        } else {
+            let unit = if pixels { 1. } else { 40. };
+            let (dx, dy) = if shift { (dy, dx) } else { (dx, dy) };
+            self.pan_x -= dx * unit;
+            self.pan_y -= dy * unit;
+        }
+    }
     pub fn for_row(&self, workspace: String) -> Self {
         Self {
             workspace,
@@ -636,7 +682,7 @@ fn make_scoped(
     let publisher = super::native::Publisher::default();
     let on_map = publisher.clone();
     let scoped = RefCell::new(None::<(u64, State)>);
-    let area = super::surface::Surface::new(move |snapshot, width, height| {
+    let area = super::surface::Surface::new(move |area, snapshot, width, height| {
         let started = std::time::Instant::now();
         let state = e.snapshot();
         let revision = state.revision;
@@ -644,14 +690,18 @@ fn make_scoped(
             if view.native_nodes
                 && let Some(row) = &state.workspace().row
             {
+                let started = std::time::Instant::now();
                 publisher.publish(
+                    area.native().and_then(|n| n.surface()).as_ref(),
                     row.id,
                     niri_ipc::node_row::NodeRowScene {
                         windows: super::gpu::native_windows(state, view),
                         insets: view.insets,
                     },
                 );
+                e.performance.record("native_publish", started.elapsed());
             }
+            let started = std::time::Instant::now();
             super::gpu::render(
                 snapshot,
                 width,
@@ -661,6 +711,7 @@ fn make_scoped(
                 view,
                 &mut cache.borrow_mut(),
             );
+            e.performance.record("canvas_render", started.elapsed());
         };
         if let Some((id, rows)) = &row {
             let mut scoped = scoped.borrow_mut();
@@ -1167,30 +1218,111 @@ fn make_scoped(
         a.queue_draw();
     });
     area.add_controller(cut);
-    let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
+    let scroll = gtk::EventControllerScroll::new(
+        gtk::EventControllerScrollFlags::BOTH_AXES | gtk::EventControllerScrollFlags::KINETIC,
+    );
     let v = view.clone();
     let a = area.clone();
     let cb = callback.clone();
     scroll.connect_scroll(move |controller, dx, dy| {
         cb(CanvasAction::Camera);
-        let mut target = v.borrow().clone();
-        if let Some((zoom, x, y)) = target.camera_target {
-            target.zoom = zoom;
-            target.pan_x = x;
-            target.pan_y = y;
-        }
-        let old = target.zoom;
-        target.zoom = (old * (-dy * 0.12).exp()).clamp(0.000001, 2.0);
-        let (cx, cy) = controller
+        let mut view = v.borrow_mut();
+        // Continuous input follows the fingers directly. Restarting an eased
+        // camera animation for each sample amplified deltas and added latency.
+        view.motion_serial += 1;
+        view.camera_target = None;
+        let anchor = controller
             .current_event()
             .and_then(|event| event.position())
             .unwrap_or((a.width() as f64 / 2.0, a.height() as f64 / 2.0));
-        target.pan_x = cx - (cx - target.pan_x) * target.zoom / old - dx * 30.0;
-        target.pan_y = cy - (cy - target.pan_y) * target.zoom / old;
-        animate_camera(&a, &v, &target);
+        let mods = controller.current_event_state();
+        view.scroll_camera(
+            dx,
+            dy,
+            controller.unit() == gdk::ScrollUnit::Surface,
+            mods.contains(gdk::ModifierType::CONTROL_MASK),
+            mods.contains(gdk::ModifierType::SHIFT_MASK),
+            anchor,
+        );
+        a.queue_draw();
         glib::Propagation::Stop
     });
+    let v = view.clone();
+    scroll.connect_scroll_begin(move |_| {
+        let mut view = v.borrow_mut();
+        view.motion_serial += 1;
+        view.camera_target = None;
+    });
+    let v = view.clone();
+    let a = area.clone();
+    scroll.connect_decelerate(move |controller, vx, vy| {
+        let mods = controller.current_event_state();
+        if mods.contains(gdk::ModifierType::CONTROL_MASK) || v.borrow().theme.motion_ms == 0 {
+            return;
+        }
+        let (vx, vy) = if mods.contains(gdk::ModifierType::SHIFT_MASK) {
+            (vy, vx)
+        } else {
+            (vx, vy)
+        };
+        if !vx.is_finite() || !vy.is_finite() {
+            return;
+        }
+        let serial = v.borrow().motion_serial;
+        let view = v.clone();
+        let last = Cell::new(None);
+        let velocity = Cell::new((vx * 1000., vy * 1000.));
+        a.add_tick_callback(move |area, clock| {
+            let mut view = view.borrow_mut();
+            if view.motion_serial != serial {
+                return glib::ControlFlow::Break;
+            }
+            let now = clock.frame_time();
+            let mut speed = velocity.get();
+            if let Some(previous) = last.replace(Some(now)) {
+                let dt = ((now - previous) as f64 / 1e6).clamp(0., 0.05);
+                let decay = (-8. * dt).exp();
+                view.pan_x -= speed.0 * (1. - decay) / 8.;
+                view.pan_y -= speed.1 * (1. - decay) / 8.;
+                speed.0 *= decay;
+                speed.1 *= decay;
+                velocity.set(speed);
+                area.queue_draw();
+            }
+            if speed.0.hypot(speed.1) < 8. {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+    });
     area.add_controller(scroll);
+    let pinch = gtk::GestureZoom::new();
+    let scale = Rc::new(Cell::new(1.0));
+    let previous = scale.clone();
+    let v = view.clone();
+    let cb = callback.clone();
+    pinch.connect_begin(move |_, _| {
+        cb(CanvasAction::Camera);
+        previous.set(1.);
+        let mut view = v.borrow_mut();
+        view.motion_serial += 1;
+        view.camera_target = None;
+    });
+    let v = view.clone();
+    let a = area.clone();
+    pinch.connect_scale_changed(move |gesture, value| {
+        if !value.is_finite() || value <= 0. {
+            return;
+        }
+        let anchor = gesture
+            .bounding_box_center()
+            .or_else(|| gesture.current_event().and_then(|e| e.position()))
+            .unwrap_or((a.width() as f64 / 2., a.height() as f64 / 2.));
+        v.borrow_mut().zoom_at(value / scale.replace(value), anchor);
+        a.queue_draw();
+    });
+    area.add_controller(pinch);
     let key = gtk::EventControllerKey::new();
     let e = engine.clone();
     let v = view.clone();
@@ -1293,6 +1425,10 @@ fn make_scoped(
             })
             .map(|(action, _, _)| action.as_str());
         match action {
+            Some("zoom_in" | "zoom_out") => {
+                cb(CanvasAction::Camera);
+                zoom_keyboard(&a, &v, action == Some("zoom_in"));
+            }
             Some("connect") => cb(CanvasAction::ConnectSearch),
             Some("search") => cb(CanvasAction::Search),
             Some("help") => cb(CanvasAction::Help),
@@ -2309,6 +2445,34 @@ fn ellipsize(s: &str, length: usize) -> String {
 #[cfg(test)]
 mod rendering_tests {
     use super::*;
+
+    #[test]
+    fn trackpad_scroll_is_pixel_precise_and_zoom_preserves_its_anchor() {
+        let mut view = View::default();
+        let before = (view.zoom, view.pan_x, view.pan_y);
+        view.scroll_camera(1.25, -2.5, true, false, false, (300., 200.));
+        assert_eq!(view.zoom, before.0);
+        assert_eq!((view.pan_x, view.pan_y), (before.1 - 1.25, before.2 + 2.5));
+        let anchor = (305.5, 212.25);
+        let world = view.world(anchor.0, anchor.1);
+        for pixels in [false, true] {
+            view.scroll_camera(0., -1., pixels, true, false, anchor);
+            let after = view.world(anchor.0, anchor.1);
+            assert!((world.0 - after.0).abs() < 1e-9);
+            assert!((world.1 - after.1).abs() < 1e-9);
+        }
+        let before = (view.zoom, view.pan_x, view.pan_y);
+        view.scroll_camera(0., 2., false, false, true, anchor);
+        assert_eq!((view.pan_x, view.pan_y), (before.1 - 80., before.2));
+        view.zoom_at(1e9, anchor);
+        assert_eq!(view.zoom, 2.);
+        view.zoom_at(1e-20, anchor);
+        assert_eq!(view.zoom, 0.000001);
+        let before = (view.zoom, view.pan_x, view.pan_y);
+        view.scroll_camera(f64::NAN, 1., true, false, false, anchor);
+        view.zoom_at(f64::INFINITY, anchor);
+        assert_eq!((view.zoom, view.pan_x, view.pan_y), before);
+    }
     #[test]
     fn typed_pins_use_their_flow_axis_for_layout_and_hit_testing() {
         use crate::graph::{Pin, Type};
