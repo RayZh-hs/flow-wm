@@ -2268,6 +2268,8 @@ pub(super) fn draw_pin_markers(
                 let color = type_color(&pin.ty, theme);
                 c.set_source_rgb(color.0, color.1, color.2);
                 if pin.ty.is_signal() {
+                    // Text leaves a current point that arc() would connect to the marker.
+                    c.new_sub_path();
                     c.arc(x, y, 4.0, 0.0, std::f64::consts::TAU);
                     let _ = c.stroke();
                 } else {
@@ -2544,6 +2546,67 @@ mod rendering_tests {
             .is_none()
         );
         assert_eq!(crate::graph::pins(&state, node, true).len(), 1);
+    }
+    #[test]
+    fn pin_markers_do_not_draw_lines_from_node_text() {
+        let theme = Theme::default();
+        for kind in [
+            NodeKind::Metric,
+            NodeKind::Agent,
+            NodeKind::Shell,
+            NodeKind::Window,
+            NodeKind::Conditional,
+            NodeKind::Constant,
+            NodeKind::Display,
+        ] {
+            let mut state = State::empty("/tmp/FlowWM".into());
+            state.nodes.push(Node::new(
+                &state.selected_workspace,
+                kind,
+                "/tmp/FlowWM".into(),
+                Position { x: 20., y: 20. },
+            ));
+            let node = &state.nodes[0];
+            let mut markers = Vec::new();
+            for output in [false, true] {
+                for pin in crate::graph::pins(&state, node, output) {
+                    markers.push(
+                        pin_position(&state, node, &node.position, &pin.name, output).unwrap(),
+                    );
+                }
+            }
+            let bare = raster(400, 400, |c| {
+                draw_node(c, node, &node.position, false, &theme);
+            });
+            let marked = raster(400, 400, |c| {
+                draw_node(c, node, &node.position, false, &theme);
+                draw_pin_markers(c, &state, node, &node.position, &theme);
+            });
+            for y in 0..400 {
+                for x in 0..400 {
+                    if markers
+                        .iter()
+                        .any(|(px, py)| (x as f64 - px).abs() <= 6. && (y as f64 - py).abs() <= 6.)
+                    {
+                        continue;
+                    }
+                    assert_eq!(
+                        pixel(&bare, 400, x, y),
+                        pixel(&marked, 400, x, y),
+                        "{kind:?}: pin markers changed the card away from a pin at ({x}, {y})"
+                    );
+                }
+            }
+            for (px, py) in markers {
+                assert!(
+                    (py as usize - 6..=py as usize + 6).any(|y| {
+                        (px as usize - 6..=px as usize + 6)
+                            .any(|x| pixel(&bare, 400, x, y) != pixel(&marked, 400, x, y))
+                    }),
+                    "{kind:?}: pin at ({px}, {py}) must remain visible"
+                );
+            }
+        }
     }
     fn raster(width: i32, height: i32, render: impl FnOnce(&Context)) -> Vec<u8> {
         let mut image = cairo::ImageSurface::create(cairo::Format::ARgb32, width, height).unwrap();
