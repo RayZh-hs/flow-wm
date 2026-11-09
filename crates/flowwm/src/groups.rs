@@ -19,6 +19,14 @@ pub fn selector(window: &niri_ipc::Window) -> String {
 }
 
 pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
+    synchronize_with_processes(state, desktop, &HashSet::new())
+}
+
+pub(crate) fn synchronize_with_processes(
+    state: &mut State,
+    desktop: &Desktop,
+    retained: &HashSet<String>,
+) -> bool {
     if !desktop.connected
         || !desktop.windows_ready
         || !desktop.workspaces_ready
@@ -174,6 +182,7 @@ pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
                 state.nodes.iter().position(|n| {
                     n.kind == NodeKind::Window
                         && n.window_id.is_none()
+                        && !retained.contains(&n.id)
                         && (n.window_match.as_ref() == Some(&key)
                             || (n.workspace == group_id
                                 && n.flow
@@ -273,6 +282,7 @@ pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
         .iter()
         .filter(|n| {
             n.desktop_window
+                && !retained.contains(&n.id)
                 && n.window_id.is_some()
                 && !seen.contains(&n.id)
                 && state
@@ -298,7 +308,7 @@ pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
     for node in &mut state.nodes {
         if node.window_id.is_some() && !seen.contains(&node.id) {
             node.window_id = None;
-            if node.kind == NodeKind::Window {
+            if node.kind == NodeKind::Window && !retained.contains(&node.id) {
                 node.status = Status::Stopped;
             }
             changed = true;

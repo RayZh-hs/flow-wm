@@ -8,7 +8,7 @@ evil fun evaluate(node: String, args: String, active: Bool): String {
     if (!active && cached != "") { return cached; }
     host.call("enter", node, "", "");
     val kind = host.call("kind", node, "", "");
-    if (!active && (kind == "break_signal" || kind == "workflow" || kind == "alert")) {
+    if (!active && (kind == "break_signal" || kind == "workflow" || kind == "window" || kind == "alert")) {
         val result = host.call("snapshot", node, "", "");
         host.call("store", node, result, "");
         return result;
@@ -51,7 +51,7 @@ evil fun evaluate(node: String, args: String, active: Bool): String {
         result = host.call("put", "{}", "__args", merged);
     } else if (kind == "conditional") {
         result = host.call("put", "{}", "__condition", host.call("get", inputs, "condition", ""));
-    } else if (kind == "workflow") {
+    } else if (kind == "workflow" || kind == "window") {
         result = host.call("defer", node, inputs, args);
     } else {
         result = host.call("invoke", node, inputs, args);
@@ -76,7 +76,7 @@ if (host.call("mode", "", "", "") == "data") {
             else if (kind == "conditional") {
                 val branch = if (host.call("get", result, "__condition", "") == "true") { "true" } else { "false" };
                 host.call("emit", node, branch, args);
-            } else if (kind != "workflow") {
+            } else if (kind != "workflow" && kind != "window") {
                 host.call("emit_results", node, result, args);
             }
         }

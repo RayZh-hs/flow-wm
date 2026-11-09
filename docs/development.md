@@ -22,8 +22,19 @@ workspace and lockfile. FlowWM uses the exact `niri-ipc` source in the niri subt
 so client and compositor changes are checked together.
 
 DMS's shared QML library remains a pinned submodule, registered in the root
-`.gitmodules`. It is the only recursive checkout needed. No sibling checkout or
-unpublished component commit is needed to reproduce this repository.
+`.gitmodules`. It is the only recursive checkout needed for the compositor and
+shell sources.
+
+FlowWM currently uses path dependencies from a sibling `../Vox` checkout for
+fixed-width integer support. The integration is validated against Vox commit
+`1d028fac2a6d30e642208a3e5bbc6db43019e0a4`, which adds `UInt8` and the other
+fixed-width primitives. That commit is not yet published on Vox's GitHub branch;
+until it is published and pinned as a Git dependency, builds require this local
+checkout. FlowWM does not modify the Vox sources or integration files.
+
+Automatic window `on_exit(exit_code: UInt8)` observation requires Linux 6.15+
+for pidfd exit information. The process-exit integration tests exercise real
+processes, including an observed non-child, without a graphical session.
 
 ## Build and test
 

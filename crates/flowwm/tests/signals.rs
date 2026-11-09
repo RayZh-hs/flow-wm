@@ -34,6 +34,214 @@ fn run(state: State, root: &str, signal: Option<(&str, Value)>) -> Evaluation {
 }
 
 #[test]
+fn windows_expose_only_exit_while_workflow_nodes_keep_their_outputs() {
+    let mut state = State::empty("/tmp".into());
+    let window = node(&mut state, NodeKind::Window);
+    let expected = vec![Pin::new(
+        "on_exit",
+        Type::Signal {
+            args: [("exit_code".into(), Type::UInt8)].into(),
+            open: false,
+        },
+    )];
+    assert_eq!(pins(&state, state.node(&window).unwrap(), true), expected);
+    let n = state.node_mut(&window).unwrap();
+    n.desktop_window = true;
+    n.window_id = Some(1);
+    n.status = Status::Running;
+    n.flow
+        .properties
+        .insert("application".into(), json!("org.example.App"));
+    assert_eq!(pins(&state, state.node(&window).unwrap(), true), expected);
+    state.validate().unwrap();
+
+    // Extensions may still explicitly add outputs to their terminal window.
+    state
+        .node_mut(&window)
+        .unwrap()
+        .flow
+        .outputs
+        .push(Pin::new("on_session_finish", Type::trigger()));
+    assert_eq!(pins(&state, state.node(&window).unwrap(), true).len(), 2);
+    for kind in [NodeKind::Shell, NodeKind::Agent, NodeKind::Human] {
+        let id = node(&mut state, kind);
+        let outputs = pins(&state, state.node(&id).unwrap(), true);
+        assert_eq!(
+            outputs.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            ["out", "failed", "output"]
+        );
+    }
+}
+
+#[test]
+fn uint_validates_its_full_range_and_round_trips_without_becoming_a_float() {
+    let mut state = State::empty("/tmp".into());
+    assert_eq!(
+        serde_json::to_value(Type::UInt).unwrap(),
+        json!({"kind":"uint"})
+    );
+    assert_eq!(
+        serde_json::from_value::<Type>(json!({"kind":"uint"})).unwrap(),
+        Type::UInt
+    );
+    for value in [json!(0), json!(255), json!(u64::MAX)] {
+        check_value(&state, &value, &Type::UInt).unwrap();
+    }
+    for value in [json!(-1), json!(1.5), json!(1.0), json!(true), Value::Null] {
+        assert!(check_value(&state, &value, &Type::UInt).is_err());
+    }
+    assert_eq!(infer_type(&json!(u64::MAX)), Type::UInt);
+    assert_eq!(infer_type(&json!(1)), Type::Int);
+    assert!(can_cast(&state, &Type::UInt, &Type::Float));
+    assert!(!can_cast(&state, &Type::Int, &Type::UInt));
+    assert!(!can_cast(&state, &Type::UInt, &Type::Int));
+    let id = node(&mut state, NodeKind::Constant);
+    let n = state.node_mut(&id).unwrap();
+    n.flow.outputs.push(Pin::new("value", Type::UInt));
+    n.flow.properties.insert("value".into(), json!(u64::MAX));
+    state.validate().unwrap();
+    let restored: State = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+    restored.validate().unwrap();
+    assert_eq!(constant_type(restored.node(&id).unwrap()), Type::UInt);
+    assert_eq!(
+        restored.node(&id).unwrap().flow.properties["value"].as_u64(),
+        Some(u64::MAX)
+    );
+    assert_eq!(run(restored, &id, None).answer["value"], json!(u64::MAX));
+}
+
+#[test]
+fn uint8_is_checked_persisted_and_widens_only_to_uint_or_float() {
+    let mut state = State::empty("/tmp".into());
+    assert_eq!(
+        serde_json::to_value(Type::UInt8).unwrap(),
+        json!({"kind":"uint8"})
+    );
+    assert_eq!(
+        serde_json::from_value::<Type>(json!({"kind":"uint8"})).unwrap(),
+        Type::UInt8
+    );
+    for value in [json!(0), json!(255)] {
+        check_value(&state, &value, &Type::UInt8).unwrap();
+    }
+    for value in [
+        json!(-1),
+        json!(256),
+        json!(u64::MAX),
+        json!(1.0),
+        json!(true),
+        Value::Null,
+    ] {
+        assert!(check_value(&state, &value, &Type::UInt8).is_err());
+    }
+    assert!(can_cast(&state, &Type::UInt8, &Type::UInt));
+    assert!(can_cast(&state, &Type::UInt8, &Type::Float));
+    assert!(!can_cast(&state, &Type::UInt, &Type::UInt8));
+    assert!(!can_cast(&state, &Type::Int, &Type::UInt8));
+    let id = node(&mut state, NodeKind::Constant);
+    state
+        .node_mut(&id)
+        .unwrap()
+        .flow
+        .outputs
+        .push(Pin::new("value", Type::UInt8));
+    state
+        .node_mut(&id)
+        .unwrap()
+        .flow
+        .properties
+        .insert("value".into(), json!(255));
+    let restored: State = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+    restored.validate().unwrap();
+    assert_eq!(constant_type(restored.node(&id).unwrap()), Type::UInt8);
+    assert_eq!(run(restored, &id, None).answer["value"], 255);
+}
+
+#[test]
+fn vox_receives_uint8_signal_and_data_bindings_as_fixed_width_integers() {
+    let mut state = State::empty("/tmp".into());
+    let window = node(&mut state, NodeKind::Window);
+    let branch = node(&mut state, NodeKind::Conditional);
+    state
+        .node_mut(&branch)
+        .unwrap()
+        .flow
+        .properties
+        .insert("condition".into(), json!(true));
+    let value = node(&mut state, NodeKind::Constant);
+    state
+        .node_mut(&value)
+        .unwrap()
+        .flow
+        .outputs
+        .push(Pin::new("value", Type::UInt8));
+    state
+        .node_mut(&value)
+        .unwrap()
+        .flow
+        .properties
+        .insert("value".into(), json!(255));
+    let sink = node(&mut state, NodeKind::Vox);
+    state
+        .node_mut(&sink)
+        .unwrap()
+        .flow
+        .inputs
+        .push(Pin::new("byte", Type::UInt8));
+    state.node_mut(&sink).unwrap().command = "{ value = args.exit_code, fixed = inputs.byte, signed = -3i8, signal_is_byte = when (args.exit_code) { is UInt8 -> true; else -> false; }, data_is_byte = when (inputs.byte) { is UInt8 -> true; else -> false; }, }".into();
+    wire(&mut state, &window, "on_exit", &branch, "in");
+    wire(&mut state, &branch, "true", &sink, "in");
+    wire(&mut state, &value, "value", &sink, "byte");
+    let result = run(state, &window, Some(("on_exit", json!({"exit_code":37}))));
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    assert_eq!(result.values[&sink]["value"], 37);
+    assert_eq!(result.values[&sink]["fixed"], 255);
+    assert_eq!(result.values[&sink]["signed"], -3);
+    assert_eq!(result.values[&sink]["signal_is_byte"], true);
+    assert_eq!(result.values[&sink]["data_is_byte"], true);
+}
+
+#[test]
+fn window_exit_delivers_unsigned_status_and_rejects_invalid_payloads() {
+    let mut state = State::empty("/tmp".into());
+    let window = node(&mut state, NodeKind::Window);
+    let sink = node(&mut state, NodeKind::Python);
+    state.node_mut(&sink).unwrap().command =
+        "import os\noutputs = {'value': [args['exit_code'], os.environ['FLOWWM_ARG_EXIT_CODE']]}"
+            .into();
+    wire(&mut state, &window, "on_exit", &sink, "in");
+    for exit_code in [0u8, 1, 255] {
+        let result = run(
+            state.clone(),
+            &window,
+            Some(("on_exit", json!({"exit_code":exit_code}))),
+        );
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(
+            result.values[&sink]["value"],
+            json!([exit_code, exit_code.to_string()])
+        );
+    }
+    for args in [
+        json!({}),
+        json!({"exit_code":-1}),
+        json!({"exit_code":256}),
+        json!({"exit_code":1.5}),
+        json!({"exit_code":0,"extra":true}),
+    ] {
+        assert!(
+            evaluate(
+                state.clone(),
+                &window,
+                Some(("on_exit", args)),
+                Arc::new(AtomicBool::new(false))
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn constants_and_displays_are_lazy() {
     let mut state = State::empty("/tmp".into());
     let a = node(&mut state, NodeKind::Constant);

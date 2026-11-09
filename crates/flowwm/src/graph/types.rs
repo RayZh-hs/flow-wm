@@ -7,6 +7,10 @@ pub enum Type {
     Any,
     Bool,
     Int,
+    #[serde(rename = "uint")]
+    UInt,
+    #[serde(rename = "uint8")]
+    UInt8,
     Float,
     String,
     List {
@@ -51,6 +55,8 @@ impl std::fmt::Display for Type {
             Self::Any => write!(f, "Any"),
             Self::Bool => write!(f, "Bool"),
             Self::Int => write!(f, "Int"),
+            Self::UInt => write!(f, "UInt"),
+            Self::UInt8 => write!(f, "UInt8"),
             Self::Float => write!(f, "Float"),
             Self::String => write!(f, "String"),
             Self::Named { name } => write!(f, "{name}"),
@@ -157,6 +163,7 @@ pub fn validate_registry(state: &State) -> Result<()> {
                 "conditional",
                 "vox",
                 "python",
+                "window",
                 "workflow"
             ]
             .contains(&node.id.as_str()),
@@ -208,6 +215,8 @@ pub fn check_value(state: &State, value: &Value, ty: &Type) -> Result<()> {
         Type::Any => true,
         Type::Bool => value.is_boolean(),
         Type::Int => value.as_i64().is_some(),
+        Type::UInt => value.as_u64().is_some(),
+        Type::UInt8 => value.as_u64().is_some_and(|v| u8::try_from(v).is_ok()),
         Type::Float => value.as_f64().is_some_and(f64::is_finite),
         Type::String => value.is_string(),
         Type::Named { name } => {
@@ -263,7 +272,7 @@ fn structural(state: &State, from: &Type, to: &Type, depth: usize) -> bool {
     }
     match (from, to) {
         (Type::Any, t) | (t, Type::Any) => !t.is_signal(),
-        (Type::Int, Type::Float) => true,
+        (Type::Int | Type::UInt | Type::UInt8, Type::Float) | (Type::UInt8, Type::UInt) => true,
         (Type::List { item: a }, Type::List { item: b }) => structural(state, a, b, depth + 1),
         (
             Type::Record {
@@ -315,6 +324,8 @@ pub(super) fn cast_value(state: &State, value: Value, from: &Type, to: &Type) ->
             value = super::bindings::vox_expression(
                 &cast.source,
                 &BTreeMap::from([("value".into(), value)]),
+                &BTreeMap::from([("value".into(), cast.from.clone())]),
+                state,
             )?;
             check_value(state, &value, &cast.to)?;
             current = &cast.to;

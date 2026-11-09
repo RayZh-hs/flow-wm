@@ -21,8 +21,8 @@ wayland-client = { version = "0.31.15", features = ["system"] }
 wayland-backend = { version = "0.3.17", features = ["client_system"] }
 wayland-scanner = "0.31.11"
 uuid = { version = "1", features = ["v4", "serde"] }
-vox-core = { git = "https://github.com/RayZh-hs/Vox.git", rev = "16bfa675d8d3ca45877c91261d633adeb34f574c" }
-vox-runtime = { git = "https://github.com/RayZh-hs/Vox.git", rev = "16bfa675d8d3ca45877c91261d633adeb34f574c" }
+vox-core = { path = "../../../Vox/crates/vox-core" }
+vox-runtime = { path = "../../../Vox/crates/vox-runtime" }
 
 [dev-dependencies]
 tempfile = "3"

@@ -63,7 +63,7 @@ def ancestors(pid):
 def bind_terminal(pid=None):
     parents = ancestors(pid or os.getpid())
     native_windows = windows()
-    native = next((w for w in native_windows if w.get("pid") in parents), None)
+    native = next((w for w in native_windows if w.get("pid") in parents and any(name in (w.get("app_id") or "").lower() for name in TERMINALS)), None)
     # Multiplexer servers can be detached from the terminal's process tree.
     if native is None and pid is None and sys.stdin.isatty() and (os.environ.get("ZELLIJ") or os.environ.get("TMUX")):
         native = next((w for w in native_windows if w.get("is_focused") and any(name in (w.get("app_id") or "").lower() for name in TERMINALS)), None)

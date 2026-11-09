@@ -131,6 +131,8 @@ pub fn builtins() -> Vec<Macro> {
     }
     for (name, ty, value) in [
         ("Int", crate::graph::Type::Int, serde_json::json!(0)),
+        ("UInt", crate::graph::Type::UInt, serde_json::json!(0)),
+        ("UInt8", crate::graph::Type::UInt8, serde_json::json!(0)),
         ("Float", crate::graph::Type::Float, serde_json::json!(0.0)),
         ("String", crate::graph::Type::String, serde_json::json!("")),
         ("Bool", crate::graph::Type::Bool, serde_json::json!(false)),

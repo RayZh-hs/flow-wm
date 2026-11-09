@@ -291,6 +291,10 @@ struct Request {
     reply: Option<mpsc::Sender<std::result::Result<Value, String>>>,
 }
 enum Message {
+    WindowProcessExited {
+        token: u64,
+        result: std::result::Result<u8, String>,
+    },
     GraphFinished {
         id: String,
         generation: u64,
@@ -315,6 +319,14 @@ struct Run {
     cancel: Arc<AtomicBool>,
     metric_due: Option<Instant>,
     writer: bool,
+}
+
+struct WindowProcess {
+    session: String,
+    window: u64,
+    pid: i32,
+    token: u64,
+    pending: bool,
 }
 
 #[derive(Clone)]
@@ -366,17 +378,27 @@ impl Engine {
         });
         let worker_notifier = notifier.clone();
         let join = thread::spawn(move || {
+            let process_sender = sender.clone();
+            let process_monitor = crate::processes::ProcessMonitor::new(move |token, result| {
+                let _ = process_sender.send(Message::WindowProcessExited { token, result });
+            })
+            .inspect_err(|e| eprintln!("Start application process monitor: {e}"))
+            .ok();
             Runtime {
                 state,
                 store,
                 runs: HashMap::new(),
                 graph_active: false,
                 graph_root: None,
+                graph_exit: None,
                 graph_pending: VecDeque::new(),
                 signal_pending: HashMap::new(),
                 signal_args: HashMap::new(),
                 suppressed_windows: HashSet::new(),
                 pending_deletions: HashSet::new(),
+                process_monitor,
+                window_processes: HashMap::new(),
+                exit_pending: HashSet::new(),
                 generation: 0,
                 revision: 0,
                 error: None,
@@ -464,11 +486,15 @@ struct Runtime {
     runs: HashMap<String, Run>,
     graph_active: bool,
     graph_root: Option<String>,
+    graph_exit: Option<String>,
     graph_pending: VecDeque<(String, Option<(String, Value)>)>,
     signal_pending: HashMap<String, VecDeque<crate::graph::Activation>>,
     signal_args: HashMap<String, crate::graph::Activation>,
     suppressed_windows: HashSet<u64>,
     pending_deletions: HashSet<String>,
+    process_monitor: Option<crate::processes::ProcessMonitor>,
+    window_processes: HashMap<String, WindowProcess>,
+    exit_pending: HashSet<String>,
     generation: u64,
     revision: u64,
     error: Option<String>,
@@ -557,7 +583,22 @@ impl Runtime {
                     desktop
                         .windows
                         .retain(|w| !self.suppressed_windows.contains(&w.id));
-                    let changed = crate::groups::synchronize(&mut self.state, &desktop);
+                    if desktop.connected && desktop.windows_ready && desktop.workspaces_ready {
+                        self.prune_window_processes(Some(&desktop.session));
+                    }
+                    let retained = self
+                        .window_processes
+                        .iter()
+                        .filter(|(_, p)| p.pending)
+                        .map(|(id, _)| id.clone())
+                        .chain(self.exit_pending.iter().cloned())
+                        .collect();
+                    let mut changed = crate::groups::synchronize_with_processes(
+                        &mut self.state,
+                        &desktop,
+                        &retained,
+                    );
+                    changed |= self.observe_window_processes(&desktop);
                     if changed {
                         self.revision += 1;
                         *shared.lock().unwrap() = Snapshot {
@@ -625,6 +666,9 @@ impl Runtime {
                     generation,
                     result,
                 }) => {
+                    if let Some(id) = self.graph_exit.take() {
+                        self.exit_pending.remove(&id);
+                    }
                     self.graph_active = false;
                     self.graph_root = None;
                     if self
@@ -644,9 +688,13 @@ impl Runtime {
                     }
                     self.dirty = true;
                 }
+                Ok(Message::WindowProcessExited { token, result }) => {
+                    self.window_process_exited(token, result);
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             }
+            self.prune_window_processes(None);
             self.schedule();
             if self.dirty {
                 self.revision += 1;
@@ -674,6 +722,120 @@ impl Runtime {
                     }
                 }
                 self.last_save = Instant::now();
+            }
+        }
+    }
+    fn prune_window_processes(&mut self, session: Option<&str>) {
+        self.window_processes.retain(|id, process| {
+            let keep = self.state.node(id).is_some_and(|n| {
+                n.kind == NodeKind::Window && crate::graph::type_id(n) == "window"
+            }) && session.is_none_or(|s| s == process.session);
+            if !keep
+                && process.pending
+                && let Some(monitor) = &mut self.process_monitor
+            {
+                monitor.unwatch(process.token);
+            }
+            keep
+        });
+        self.exit_pending.retain(|id| self.state.node(id).is_some());
+    }
+
+    fn observe_window_processes(&mut self, desktop: &crate::niri::Desktop) -> bool {
+        if !desktop.connected || !desktop.windows_ready || !desktop.workspaces_ready {
+            return false;
+        }
+        let Some(monitor) = &mut self.process_monitor else {
+            return false;
+        };
+        let mut changed = false;
+        for window in &desktop.windows {
+            let Some(pid) = window.pid else {
+                continue;
+            };
+            let Some(node) = self.state.nodes.iter_mut().find(|n| {
+                n.kind == NodeKind::Window
+                    && crate::graph::type_id(n) == "window"
+                    && n.window_id == Some(window.id)
+            }) else {
+                continue;
+            };
+            if self.window_processes.get(&node.id).is_some_and(|p| {
+                p.session == desktop.session && p.window == window.id && p.pid == pid
+            }) {
+                continue;
+            }
+            if let Some(old) = self.window_processes.remove(&node.id).filter(|p| p.pending) {
+                monitor.unwatch(old.token);
+            }
+            self.generation += 1;
+            let token = self.generation;
+            let result = monitor.watch(token, pid);
+            let pending = result.is_ok();
+            if let Err(error) = result {
+                node.log(
+                    "error",
+                    format!("Cannot observe application process {pid}: {error}"),
+                );
+            } else {
+                node.status = Status::Running;
+                node.started_at = Some(now());
+                node.finished_at = None;
+            }
+            self.window_processes.insert(
+                node.id.clone(),
+                WindowProcess {
+                    session: desktop.session.clone(),
+                    window: window.id,
+                    pid,
+                    token,
+                    pending,
+                },
+            );
+            changed = true;
+        }
+        changed
+    }
+
+    fn window_process_exited(&mut self, token: u64, result: std::result::Result<u8, String>) {
+        let Some((id, process)) = self
+            .window_processes
+            .iter_mut()
+            .find(|(_, p)| p.token == token && p.pending)
+        else {
+            return;
+        };
+        process.pending = false;
+        let id = id.clone();
+        let Some(node) = self.state.node_mut(&id) else {
+            return;
+        };
+        self.dirty = true;
+        match result {
+            Ok(exit_code) => {
+                node.finished_at = Some(now());
+                node.status = if exit_code == 0 {
+                    Status::Done
+                } else {
+                    Status::Failed
+                };
+                node.log(
+                    "system",
+                    format!("Application process exited with code {exit_code}."),
+                );
+                self.exit_pending.insert(id.clone());
+                self.graph_pending.push_back((
+                    id,
+                    Some(("on_exit".into(), json!({"exit_code": exit_code}))),
+                ));
+            }
+            Err(error) => {
+                node.finished_at = Some(now());
+                node.status = Status::Stopped;
+                node.log(
+                    "error",
+                    format!("Cannot read application exit status: {error}"),
+                );
             }
         }
     }
@@ -1478,6 +1640,10 @@ impl Runtime {
                 node.finished_at = None;
             }
             self.graph_active = true;
+            self.graph_exit = signal
+                .as_ref()
+                .filter(|(pin, _)| pin == "on_exit")
+                .map(|_| id.clone());
             self.graph_root = Some(id.clone());
             self.dirty = true;
             let state = self.state.clone();
@@ -1867,6 +2033,12 @@ impl Runtime {
         let Some(node) = self.state.node_mut(id) else {
             return;
         };
+        // gtk-launch can finish while the actual application remains alive.
+        // Once bound, the pidfd observer owns the window's completion status.
+        if node.kind == NodeKind::Window && self.window_processes.get(id).is_some_and(|p| p.pending)
+        {
+            return;
+        }
         node.finished_at = Some(now());
         if node.status != Status::Running {
             return;

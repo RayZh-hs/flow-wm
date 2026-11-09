@@ -2285,7 +2285,7 @@ fn type_color(ty: &crate::graph::Type, theme: &Theme) -> (f64, f64, f64) {
     use crate::graph::Type;
     match ty {
         Type::Bool => (0.92, 0.66, 0.42),
-        Type::Int => (0.49, 0.78, 0.64),
+        Type::Int | Type::UInt | Type::UInt8 => (0.49, 0.78, 0.64),
         Type::Float => (0.40, 0.76, 0.84),
         Type::String => (0.76, 0.64, 0.91),
         Type::List { .. } => (0.83, 0.68, 0.81),
@@ -2506,7 +2506,7 @@ mod rendering_tests {
                 assert_eq!(hit_pin(&state, &view, x, y, output).unwrap().pin, pin.name);
             }
         }
-        let from = pin_position(&state, node, &node.position, "out", true).unwrap();
+        let from = pin_position(&state, node, &node.position, "on_exit", true).unwrap();
         let to = (from.0, from.1 + 200.);
         assert!(route_cut(
             from,

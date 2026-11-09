@@ -174,7 +174,7 @@ impl Fields {
 pub fn default_value(ty: &Type) -> Value {
     match ty {
         Type::Bool => json!(false),
-        Type::Int => json!(0),
+        Type::Int | Type::UInt | Type::UInt8 => json!(0),
         Type::Float => json!(0.0),
         Type::String => json!(""),
         Type::List { .. } => json!([]),
@@ -191,6 +191,8 @@ pub fn type_choices(state: &State) -> Vec<Type> {
     let mut types = vec![
         Type::String,
         Type::Int,
+        Type::UInt,
+        Type::UInt8,
         Type::Float,
         Type::Bool,
         Type::List {
@@ -208,7 +210,13 @@ pub fn type_choices(state: &State) -> Vec<Type> {
 fn type_choice(types: &[Type], ty: &Type) -> gtk::DropDown {
     let names: Vec<_> = types.iter().map(ToString::to_string).collect();
     let choice = gtk::DropDown::from_strings(&names.iter().map(String::as_str).collect::<Vec<_>>());
-    choice.set_selected(types.iter().position(|t| t == ty).unwrap_or(6) as u32);
+    choice.set_selected(
+        types
+            .iter()
+            .position(|t| t == ty)
+            .or_else(|| types.iter().position(|t| *t == Type::Any))
+            .unwrap_or(0) as u32,
+    );
     choice
 }
 pub fn value_editor(state: &State, ty: &Type, value: &Value) -> (gtk::Widget, ReadValue) {

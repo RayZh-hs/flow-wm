@@ -514,19 +514,16 @@ fn closing_in_windows_removes_dangling_edges_but_nodes_view_keeps_history() {
         Position::default(),
     );
     next.dependencies.push(source.clone());
-    next.flow
-        .inputs
-        .push(flowwm::graph::Pin::new("text", flowwm::graph::Type::String));
     let target = next.id.clone();
     state.nodes.push(next);
     state.connections.push(flowwm::graph::Connection {
         source: flowwm::graph::Endpoint {
             node: source.clone(),
-            pin: "output".into(),
+            pin: "on_exit".into(),
         },
         target: flowwm::graph::Endpoint {
             node: target.clone(),
-            pin: "text".into(),
+            pin: "in".into(),
         },
     });
     state.validate().unwrap();

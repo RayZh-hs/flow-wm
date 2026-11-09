@@ -15,11 +15,19 @@ use vox_core::{
 };
 use vox_runtime::Runtime;
 
-pub(super) fn vox_expression(source: &str, bindings: &Record) -> Result<Value> {
+pub(super) fn vox_expression(
+    source: &str,
+    bindings: &Record,
+    types: &BTreeMap<String, Type>,
+    state: &State,
+) -> Result<Value> {
     let mut text = "script flowwm.binding;\n".to_string();
     for (name, value) in bindings {
         validate_name(name)?;
-        text.push_str(&format!("val {name} = {};\n", literal(value)?));
+        text.push_str(&format!(
+            "val {name} = {};\n",
+            literal(value, types.get(name), state)?
+        ));
     }
     text.push_str(source);
     let mut runtime = Runtime::default();
@@ -31,9 +39,26 @@ pub(super) fn vox_expression(source: &str, bindings: &Record) -> Result<Value> {
     runtime_json(&runtime, value)
 }
 
-fn literal(value: &Value) -> Result<String> {
+fn literal(value: &Value, ty: Option<&Type>, state: &State) -> Result<String> {
+    if let Some(Type::Named { name }) = ty {
+        let representation = &state
+            .types
+            .iter()
+            .find(|t| t.name == *name)
+            .context("Unknown type")?
+            .representation;
+        return literal(value, Some(representation), state);
+    }
+    if let Some(ty @ (Type::UInt | Type::UInt8)) = ty {
+        check_value(state, value, ty)?;
+        return Ok(format!(
+            "{value}{}",
+            if *ty == Type::UInt8 { "u8" } else { "u" }
+        ));
+    }
     Ok(match value {
         Value::Null => "null".into(),
+        Value::Number(n) if n.is_u64() && !n.is_i64() => format!("{n}u"),
         Value::Bool(_) | Value::Number(_) => value.to_string(),
         Value::String(s) => {
             let mut literal = String::from("\"");
@@ -56,7 +81,14 @@ fn literal(value: &Value) -> Result<String> {
             "[{}]",
             values
                 .iter()
-                .map(literal)
+                .map(|v| literal(
+                    v,
+                    match ty {
+                        Some(Type::List { item }) => Some(item.as_ref()),
+                        _ => None,
+                    },
+                    state
+                ))
                 .collect::<Result<Vec<_>>>()?
                 .join(", ")
         ),
@@ -64,7 +96,13 @@ fn literal(value: &Value) -> Result<String> {
             let mut fields = vec![];
             for (name, value) in values {
                 validate_name(name)?;
-                fields.push(format!("{name} = {}", literal(value)?));
+                let field_type = match ty {
+                    Some(Type::Record { fields, .. } | Type::Signal { args: fields, .. }) => {
+                        fields.get(name)
+                    }
+                    _ => None,
+                };
+                fields.push(format!("{name} = {}", literal(value, field_type, state)?));
             }
             if fields.is_empty() {
                 "{}".into()
@@ -85,6 +123,7 @@ fn runtime_json(runtime: &Runtime, value: RuntimeValue) -> Result<Value> {
         }
         RuntimeValue::Inline(InlineValue::Int(v)) => json!(v),
         RuntimeValue::Inline(InlineValue::UInt(v)) => json!(v),
+        RuntimeValue::Inline(InlineValue::Integer(v)) => json!(v.number()),
         RuntimeValue::Inline(InlineValue::Float(v)) => {
             ensure!(v.is_finite(), "Non-finite Vox output");
             json!(v)
@@ -109,6 +148,7 @@ fn data_json(value: HandleData) -> Result<Value> {
     Ok(match value {
         HandleData::Int(v) => json!(v),
         HandleData::UInt(v) => json!(v),
+        HandleData::Integer(v) => json!(v.number()),
         HandleData::Float(v) => {
             ensure!(v.is_finite(), "Non-finite Vox output");
             json!(v)

@@ -44,11 +44,12 @@ pub struct Alert {
 
 struct ContextData {
     state: State,
-    queue: VecDeque<(String, Value)>,
+    queue: VecDeque<(String, Value, Type)>,
     cache: HashMap<String, String>,
     visiting: HashSet<String>,
     stack: Vec<String>,
     current_args: Value,
+    current_args_type: Type,
     current_node: String,
     root: String,
     data: bool,
@@ -74,6 +75,7 @@ pub fn evaluate(
         visiting: HashSet::new(),
         stack: vec![],
         current_args: json!({}),
+        current_args_type: Type::record(),
         current_node: root.into(),
         root: root.into(),
         data: signal.is_none(),
@@ -84,7 +86,15 @@ pub fn evaluate(
     if let Some((pin, args)) = signal {
         if pin.is_empty() {
             signal_environment(&args)?;
-            context.lock().unwrap().queue.push_back((root.into(), args));
+            let mut context = context.lock().unwrap();
+            let ty = pins(&context.state, context.node(root)?, false)
+                .into_iter()
+                .find(|p| p.ty.is_signal())
+                .map(|p| p.ty)
+                .unwrap_or_else(Type::trigger);
+            context
+                .queue
+                .push_back((root.into(), args, argument_type(&Type::record(), &ty)));
         } else {
             context.lock().unwrap().emit(root, pin, args)?;
         }
@@ -221,6 +231,39 @@ fn parse(s: &str) -> Result<Value> {
     serde_json::from_str(s).context("Invalid graph value")
 }
 
+/// Open signal inputs retain the declared types of incoming fields, including
+/// fixed-width integers that JSON alone cannot distinguish from Int.
+fn argument_type(source: &Type, target: &Type) -> Type {
+    let mut fields = BTreeMap::new();
+    if let Type::Record {
+        fields: target_fields,
+        open,
+    }
+    | Type::Signal {
+        args: target_fields,
+        open,
+    } = target
+    {
+        if *open
+            && let Type::Record {
+                fields: source_fields,
+                ..
+            }
+            | Type::Signal {
+                args: source_fields,
+                ..
+            } = source
+        {
+            fields.extend(source_fields.clone());
+        }
+        fields.extend(target_fields.clone());
+    }
+    Type::Signal {
+        args: fields,
+        open: true,
+    }
+}
+
 impl ContextData {
     fn node(&self, id: &str) -> Result<&Node> {
         self.state.node(id).context("Missing node")
@@ -250,6 +293,7 @@ impl ContextData {
         ensure!(output.ty.is_signal(), "Expected a signal output");
         check_value(&self.state, &args, &output.ty)?;
         signal_environment(&args)?;
+        let source_type = argument_type(&self.current_args_type, &output.ty);
         for edge in self
             .state
             .connections
@@ -260,7 +304,7 @@ impl ContextData {
                 .into_iter()
                 .find(|p| p.name == edge.target.pin)
                 .context("Missing signal input")?;
-            let args = match cast_value(&self.state, args.clone(), &output.ty, &input.ty) {
+            let args = match cast_value(&self.state, args.clone(), &source_type, &input.ty) {
                 Ok(args) => args,
                 Err(error) => {
                     self.result.errors.insert(
@@ -271,7 +315,11 @@ impl ContextData {
                 }
             };
             ensure!(self.queue.len() < 4096, "Signal queue limit reached");
-            self.queue.push_back((edge.target.node.clone(), args));
+            self.queue.push_back((
+                edge.target.node.clone(),
+                args,
+                argument_type(&source_type, &input.ty),
+            ));
         }
         Ok(())
     }
@@ -295,8 +343,9 @@ impl ContextData {
             }
             "kind" => Ok(type_id(self.node(a)?).into()),
             "next" => {
-                let (node, args) = self.queue.pop_front().context("Empty signal queue")?;
+                let (node, args, ty) = self.queue.pop_front().context("Empty signal queue")?;
                 self.current_args = args;
+                self.current_args_type = ty;
                 self.current_node = node.clone();
                 self.cache.clear();
                 self.visiting.clear();
@@ -601,7 +650,42 @@ impl ContextData {
                 .find(|d| d.id == type_id(node))
                 .map(|d| d.source.as_str())
                 .unwrap_or(&node.command);
-            vox_expression(source, &bindings)?
+            let input_types = self
+                .data_pins(id, false)
+                .into_iter()
+                .map(|p| (p.name, p.ty))
+                .collect();
+            let mut property_types = BTreeMap::new();
+            if let Some(def) = self.state.node_types.iter().find(|d| d.id == type_id(node)) {
+                property_types.extend(
+                    def.properties
+                        .iter()
+                        .map(|(name, p)| (name.clone(), p.ty.clone())),
+                );
+            }
+            for pin in self.data_pins(id, false) {
+                if let Some(name) = pin.property {
+                    property_types.insert(name, pin.ty);
+                }
+            }
+            let types = BTreeMap::from([
+                (
+                    "inputs".into(),
+                    Type::Record {
+                        fields: input_types,
+                        open: true,
+                    },
+                ),
+                ("args".into(), self.current_args_type.clone()),
+                (
+                    "properties".into(),
+                    Type::Record {
+                        fields: property_types,
+                        open: true,
+                    },
+                ),
+            ]);
+            vox_expression(source, &bindings, &types, &self.state)?
         };
         ensure!(
             value.is_object(),

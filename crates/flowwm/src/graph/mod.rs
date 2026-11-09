@@ -54,6 +54,7 @@ pub fn infer_type(value: &Value) -> Type {
     match value {
         Value::Bool(_) => Type::Bool,
         Value::Number(n) if n.is_i64() => Type::Int,
+        Value::Number(n) if n.is_u64() => Type::UInt,
         Value::Number(_) => Type::Float,
         Value::String(_) => Type::String,
         Value::Array(_) => Type::List {
@@ -144,8 +145,34 @@ pub fn type_id(node: &Node) -> &str {
         NodeKind::Conditional => "conditional",
         NodeKind::Vox => "vox",
         NodeKind::Python => "python",
+        NodeKind::Window => "window",
         NodeKind::Extension => "extension",
         _ => "workflow",
+    }
+}
+
+/// Preserve connected ports from the former workflow schema when reading old
+/// graphs. Unconnected window outputs use only the new built-in exit signal.
+pub(crate) fn preserve_legacy_window_outputs(nodes: &mut [Node], connections: &[Connection]) {
+    for node in nodes.iter_mut().filter(|n| n.kind == NodeKind::Window) {
+        if type_id(node) != "window" {
+            continue;
+        }
+        for edge in connections.iter().filter(|e| e.source.node == node.id) {
+            let name = edge.source.pin.as_str();
+            if node.flow.outputs.iter().any(|p| p.name == name) {
+                continue;
+            }
+            let ty = match name {
+                "out" | "failed" => Type::Signal {
+                    args: BTreeMap::new(),
+                    open: true,
+                },
+                "output" => Type::String,
+                _ => continue,
+            };
+            node.flow.outputs.push(Pin::new(name, ty));
+        }
     }
 }
 
@@ -208,6 +235,13 @@ pub fn pins(state: &State, node: &Node, output: bool) -> Vec<Pin> {
             ("vox" | "python", true) => {
                 vec![Pin::new("out", event()), Pin::new("value", Type::Any)]
             }
+            ("window", true) => vec![Pin::new(
+                "on_exit",
+                Type::Signal {
+                    args: BTreeMap::from([("exit_code".into(), Type::UInt8)]),
+                    open: false,
+                },
+            )],
             (_, false) => vec![Pin::new("in", event())],
             (_, true) => vec![
                 Pin::new("out", event()),
@@ -238,6 +272,7 @@ pub fn pin_label(node: &Node, pin: &Pin, output: bool) -> String {
         ("out", true) => "Continue".into(),
         ("failed", true) => "Failed".into(),
         ("output", true) => "Output text".into(),
+        ("on_exit", true) => "On exit".into(),
         ("on_session_finish", true) => "Session finished".into(),
         _ => pin.name.replace('_', " "),
     }
@@ -248,6 +283,7 @@ pub fn pin_description(pin: &Pin, output: bool) -> &'static str {
         ("out", true) => "Emits after successful completion",
         ("failed", true) => "Emits when this step fails; connect a recovery step",
         ("output", true) => "Text produced by this step; read on demand",
+        ("on_exit", true) => "Emits when the application process exits; exit_code is UInt8",
         ("on_session_finish", true) => "Agent session ended; ERROR describes any failure",
         _ if pin.ty.is_signal() => "Event connection",
         _ => "Data value; evaluated on demand",

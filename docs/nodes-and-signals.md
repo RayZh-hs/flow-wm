@@ -34,18 +34,26 @@ Types use a tagged JSON representation:
 
 ```json
 {"kind":"int"}
+{"kind":"uint"}
+{"kind":"uint8"}
 {"kind":"list","item":{"kind":"string"}}
 {"kind":"record","fields":{"count":{"kind":"int"}},"open":false}
 {"kind":"signal","args":{"count":{"kind":"int"}},"open":false}
 {"kind":"named","name":"example.Count"}
 ```
 
-The scalar types are `Any`, `Bool`, `Int`, `Float`, and `String`. Records, lists,
-and extension-defined nominal types compose them. Values cross the persistence
+The scalar types are `Any`, `Bool`, `Int`, `UInt`, `UInt8`, `Float`, and `String`. `UInt`
+holds unsigned 64-bit integers and rejects negative or fractional values. Records,
+lists, and extension-defined nominal types compose them. Values cross the persistence
 and Python boundaries as JSON. `Any` is dynamic: connections are accepted and
-the value is checked against the receiving type during evaluation. An `Int`
+the value is checked against the receiving type during evaluation. An `Int` or `UInt`
 widening to `Float` is built in. Lists and record fields cast recursively.
 Other conversions use registered Vox cast expressions.
+
+`UInt8` accepts integers from 0 through 255. It widens to `UInt` or `Float`;
+narrowing from `UInt` or converting signed integers requires an explicit cast.
+Vox bindings preserve declared unsigned types using the corresponding literal
+suffix, including `UInt8` values in signal arguments, data inputs, and properties.
 
 Closed records require their declared fields. Casting a record to a narrower
 record keeps the receiving fields. An open record also retains extra fields.
@@ -73,6 +81,36 @@ Shell and agent nodes receive their resolved data inputs as a JSON record in
 older workflow dependencies. Successful shell/agent handoffs emit `out`; failures
 emit `failed`. Review nodes emit after approval or rejection. Signals delivered
 while a shell/agent node is busy wait in order.
+
+## Application windows
+
+Window nodes have one built-in output: `on_exit(exit_code: UInt8)`, represented as
+`Signal[{exit_code: UInt8}]`. They do not inherit the workflow outputs Completed,
+Failed, or Output text. The exit payload contains exactly one field, `exit_code`;
+recipients receive it as `args.exit_code` and `FLOWWM_ARG_EXIT_CODE`.
+
+FlowWM automatically opens a Linux pidfd for the client PID reported by Niri.
+The signal is delivered once per observed window/process association when the
+process exits and its parent reaps it. Normal exits carry their actual 0–255
+exit code; signal termination uses `128 + signal` (for example, 143 for SIGTERM).
+This requires Linux 6.15 or newer, which provides `PIDFD_GET_INFO` exit status
+even for processes FlowWM did not launch. Missing PIDs and unavailable status
+are never reported as successful exits; observation errors appear in node logs.
+
+Closing a window does not emit this signal while the process remains alive.
+Windows sharing a process each receive their own event when that process exits.
+Closed nodes and their connections remain available while awaiting the process
+exit, including in Windows view. A newly opened window does not reuse a node
+still awaiting its old process. Explicitly deleting a node cancels its observer.
+The generic `emit` API can also deliver `on_exit` with the same checked payload.
+
+Extensions can explicitly add outputs to a window. The bundled agent-sessions
+extension adds Session finished to terminals running agents; an ordinary
+application window does not get that output automatically.
+
+When loading an older graph or recipe, connected Completed, Failed, and Output
+text ports are preserved as explicit instance outputs so existing connections
+remain valid. Unconnected legacy outputs are omitted.
 
 ## Primitive nodes
 

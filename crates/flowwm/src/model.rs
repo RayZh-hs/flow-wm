@@ -654,6 +654,7 @@ impl State {
             candidate.connections.push(edge);
         }
         candidate.nodes.extend(nodes);
+        crate::graph::preserve_legacy_window_outputs(&mut candidate.nodes, &candidate.connections);
         for watcher in &recipe.watchers {
             let mut watcher = watcher.clone();
             watcher.id = id();

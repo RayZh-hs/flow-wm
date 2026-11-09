@@ -40,9 +40,15 @@ class SessionAdapters(unittest.TestCase):
             self.assertEqual(run.call_args.args[0][0],'existing')
 
     def test_terminal_binding_uses_process_ancestry_instead_of_title(self):
-        with patch.object(sessions,'ancestors',return_value={3,4,5}),patch.object(sessions,'windows',return_value=[{'id':7,'pid':4},{'id':8,'pid':9}]),patch.object(sessions,'flow',return_value={'nodes':[{'id':'right','window_id':7,'kind':'window'},{'id':'wrong','window_id':8,'kind':'window'}]}),patch.object(sessions,'expose') as expose:
+        with patch.object(sessions,'ancestors',return_value={3,4,5}),patch.object(sessions,'windows',return_value=[{'id':6,'pid':5,'app_id':'FlowWM'},{'id':7,'pid':4,'app_id':'Alacritty'},{'id':8,'pid':9,'app_id':'Alacritty'}]),patch.object(sessions,'flow',return_value={'nodes':[{'id':'right','window_id':7,'kind':'window'},{'id':'wrong','window_id':8,'kind':'window'}]}),patch.object(sessions,'expose') as expose:
             self.assertEqual(sessions.bind_terminal(3),'right')
             expose.assert_called_once_with('right')
+
+    def test_nonterminal_ancestor_does_not_get_session_outputs(self):
+        with patch.object(sessions,'ancestors',return_value={3,4,5}),patch.object(sessions,'windows',return_value=[{'id':7,'pid':4,'app_id':'FlowWM'}]),patch.object(sessions.sys.stdin,'isatty',return_value=False),patch.object(sessions,'flow') as flow,patch.object(sessions,'expose') as expose:
+            self.assertIsNone(sessions.bind_terminal(3))
+            flow.assert_not_called()
+            expose.assert_not_called()
 
     def test_exit_status_is_structured_and_zero_is_explicit_success(self):
         with patch.object(sessions,'flow') as flow:

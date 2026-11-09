@@ -13,6 +13,43 @@ use std::{
 };
 
 #[test]
+fn window_connection_search_lists_only_exit_with_an_unsigned_exit_code() {
+    let mut state = State::empty("/tmp".into());
+    let mut window = Node::new(
+        &state.selected_workspace,
+        NodeKind::Window,
+        "/tmp".into(),
+        Position::default(),
+    );
+    window.desktop_window = true;
+    window.window_id = Some(7);
+    window.status = Status::Running;
+    let id = window.id.clone();
+    state.nodes.push(window);
+    let snapshot = flowwm::engine::Snapshot {
+        state: Arc::new(state),
+        revision: 1,
+        error: None,
+    };
+    let lookup = Catalog::new(
+        &snapshot,
+        Presentation {
+            lookup_node: Some(id),
+            ..Default::default()
+        },
+        &extensions::builtins(),
+    )
+    .lookup
+    .unwrap();
+    assert_eq!(lookup.outputs.len(), 1);
+    let output = &lookup.outputs[0];
+    assert_eq!(output.name, "on_exit");
+    assert_eq!(output.label, "On exit");
+    assert_eq!(output.ty, "Signal[{exit_code: UInt8}]");
+    assert!(output.targets.iter().any(|t| t.create && t.id == "shell"));
+}
+
+#[test]
 fn launcher_catalog_contains_metadata_without_agent_output_or_logs() {
     let mut state = State::empty("/tmp".into());
     let mut node = Node::new(
