@@ -31,6 +31,7 @@ class ProfileIsolation(unittest.TestCase):
             for name in ('keybindings.json', 'keybindings.kdl', 'environment.json', 'local.kdl'):
                 self.assertFalse((config / name).exists())
             self.assertEqual((config / '.shell/niri/dms').resolve(), config / 'dms')
+            self.assertEqual((config / '.shell/niri/config.kdl').resolve(), config / 'config.kdl')
             self.assertEqual((config / '.shell/DankMaterialShell').resolve(), config / 'dms')
             text += '\nspawn-at-startup "my-session-hook"\n'
             (config / 'config.kdl').write_text(text)

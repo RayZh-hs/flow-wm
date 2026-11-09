@@ -65,8 +65,8 @@ def prepare_profile(config, state, cache, bundle, user_config, user_state, user_
     # Dux expects an XDG tree; compatibility paths stay below .shell.
     shell_home = config / ".shell"
     (shell_home / "niri").mkdir(parents=True, exist_ok=True)
-    for link, target in [(shell_home / "DankMaterialShell", "../dms"), (shell_home / "niri/dms", "../../dms")]:
-        if not link.exists():
+    for link, target in [(shell_home / "DankMaterialShell", "../dms"), (shell_home / "niri/dms", "../../dms"), (shell_home / "niri/config.kdl", "../../config.kdl")]:
+        if not link.exists() and not link.is_symlink():
             link.symlink_to(target, target_is_directory=True)
     generated = config / "dms"
     old_generated = config / "niri/dms"
