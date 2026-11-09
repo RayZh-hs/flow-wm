@@ -77,10 +77,11 @@ See the [user guide](docs/guide.md) for configuration, updates, rollback, and CL
 | Win+Space | Open Dux app search in Windows; create a node in Nodes |
 | Alt+Space | Open Dux app search in either view |
 | Win+Shift+Space | Find a node |
-| Win+T, Win+K, Win+Return | Open a terminal |
+| Win+T, Win+K | Open a terminal |
 | Win+V / Win+P | Clipboard / power menu |
 | Tab | Connect the selected node to another node or a new step |
 | Ctrl+P | Arrange and frame the graph |
+| Win+Enter / Win+Q | Run / stop selected nodes (terminal / close in Windows) |
 | R | Run the selected node |
 | Win+- / Win+= | Zoom out / in in Nodes |
 | Win+? | Show all shortcuts |

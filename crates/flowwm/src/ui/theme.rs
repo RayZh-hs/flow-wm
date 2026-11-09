@@ -53,6 +53,9 @@ pub struct Theme {
     pub radius: f64,
     pub font: String,
     pub motion_ms: u32,
+    pub removal_ms: u32,
+    pub running: Color,
+    pub running_width: f64,
 }
 impl Default for Theme {
     fn default() -> Self {
@@ -70,7 +73,17 @@ impl Default for Theme {
             error: Color::parse("#f2b8b5").unwrap(),
             radius: 12.0,
             font: "sans-serif".into(),
-            motion_ms: 120,
+            motion_ms: crate::config::flow().motion_ms.unwrap_or(220),
+            removal_ms: crate::config::flow().removal_ms.unwrap_or(180),
+            running: crate::config::flow()
+                .running_color
+                .as_deref()
+                .and_then(Color::parse)
+                .unwrap_or(Color(0.44, 0.78, 0.55)),
+            running_width: crate::config::flow()
+                .running_width
+                .unwrap_or(3.0)
+                .clamp(0., 12.),
         }
     }
 }
@@ -78,11 +91,19 @@ impl Theme {
     pub fn paths() -> Vec<PathBuf> {
         let home = directories::BaseDirs::new().expect("home directory");
         let mut paths = vec![
-            home.cache_dir().join("DankMaterialShell/dms-colors.json"),
-            home.config_dir().join("DankMaterialShell/settings.json"),
+            std::env::var_os("FLOWWM_CACHE_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.cache_dir().join("flow-wm"))
+                .join("dms/dms-colors.json"),
+            crate::config::directory().join("dms/settings.json"),
         ];
         if let Some(state) = home.state_dir() {
-            paths.push(state.join("DankMaterialShell/session.json"));
+            paths.push(
+                std::env::var_os("FLOWWM_STATE_DIR")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| state.join("flow-wm"))
+                    .join("dms/session.json"),
+            );
         }
         paths
     }
@@ -118,6 +139,7 @@ impl Theme {
             || settings["reduceMotion"].as_bool() == Some(true)
         {
             theme.motion_ms = 0;
+            theme.removal_ms = 0;
         }
         if let Some(font) = settings["fontFamily"].as_str().filter(|s| {
             !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || " -_".contains(c))

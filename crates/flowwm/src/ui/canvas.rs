@@ -120,6 +120,7 @@ pub enum CanvasAction {
     Edit(String),
     Delete(String),
     Run(String),
+    Stop(String),
     Chat,
     ConnectSearch,
     ConnectPin(crate::graph::Endpoint, bool),
@@ -171,6 +172,7 @@ pub struct View {
     /// Screen rectangles owned by a morph, or the settled native peek.
     pub presented_rects: HashMap<String, super::collapse::Rect>,
     pub presentations: HashMap<String, f64>,
+    pub window_opacities: HashMap<String, f64>,
     pub live_fade: f64,
     pub chrome: f64,
     pub insets: [i32; 4],
@@ -211,6 +213,7 @@ impl Default for View {
             desktop_rects: HashMap::new(),
             presented_rects: HashMap::new(),
             presentations: HashMap::new(),
+            window_opacities: HashMap::new(),
             live_fade: 0.0,
             chrome: 1.0,
             insets: [0; 4],
@@ -695,7 +698,7 @@ fn make_scoped(
                     area.native().and_then(|n| n.surface()).as_ref(),
                     row.id,
                     niri_ipc::node_row::NodeRowScene {
-                        windows: super::gpu::native_windows(state, view),
+                        windows: super::gpu::native_windows(state, view, width, height),
                         insets: view.insets,
                     },
                 );
@@ -711,6 +714,9 @@ fn make_scoped(
                 view,
                 &mut cache.borrow_mut(),
             );
+            if cache.borrow_mut().animate_removals(snapshot, view) {
+                area.animate();
+            }
             e.performance.record("canvas_render", started.elapsed());
         };
         if let Some((id, rows)) = &row {
@@ -1218,6 +1224,9 @@ fn make_scoped(
         a.queue_draw();
     });
     area.add_controller(cut);
+    let scroll_history = Rc::new(RefCell::new(super::motion::ScrollHistory::default()));
+    let scroll_started = std::time::Instant::now();
+    let history = scroll_history.clone();
     let scroll = gtk::EventControllerScroll::new(
         gtk::EventControllerScrollFlags::BOTH_AXES | gtk::EventControllerScrollFlags::KINETIC,
     );
@@ -1236,6 +1245,7 @@ fn make_scoped(
             .and_then(|event| event.position())
             .unwrap_or((a.width() as f64 / 2.0, a.height() as f64 / 2.0));
         let mods = controller.current_event_state();
+        let before = (view.pan_x, view.pan_y);
         view.scroll_camera(
             dx,
             dy,
@@ -1244,34 +1254,48 @@ fn make_scoped(
             mods.contains(gdk::ModifierType::SHIFT_MASK),
             anchor,
         );
+        if controller.unit() == gdk::ScrollUnit::Surface
+            && !mods.contains(gdk::ModifierType::CONTROL_MASK)
+        {
+            history.borrow_mut().push(
+                scroll_started.elapsed().as_secs_f64(),
+                view.pan_x - before.0,
+                view.pan_y - before.1,
+            );
+        } else {
+            history.borrow_mut().clear();
+        }
         a.queue_draw();
         glib::Propagation::Stop
     });
+    let history = scroll_history.clone();
     let v = view.clone();
     scroll.connect_scroll_begin(move |_| {
+        history.borrow_mut().clear();
         let mut view = v.borrow_mut();
         view.motion_serial += 1;
         view.camera_target = None;
     });
     let v = view.clone();
     let a = area.clone();
-    scroll.connect_decelerate(move |controller, vx, vy| {
-        let mods = controller.current_event_state();
-        if mods.contains(gdk::ModifierType::CONTROL_MASK) || v.borrow().theme.motion_ms == 0 {
+    scroll.connect_decelerate(move |_, _, _| {
+        if v.borrow().theme.motion_ms == 0 {
             return;
         }
-        let (vx, vy) = if mods.contains(gdk::ModifierType::SHIFT_MASK) {
-            (vy, vx)
-        } else {
-            (vx, vy)
+        let Some(speed) = scroll_history
+            .borrow()
+            .velocity(scroll_started.elapsed().as_secs_f64())
+        else {
+            return;
         };
-        if !vx.is_finite() || !vy.is_finite() {
-            return;
-        }
+        let decay = crate::config::flow()
+            .inertia_decay
+            .unwrap_or(10.)
+            .clamp(1., 50.);
         let serial = v.borrow().motion_serial;
         let view = v.clone();
         let last = Cell::new(None);
-        let velocity = Cell::new((vx * 1000., vy * 1000.));
+        let velocity = Cell::new(speed);
         a.add_tick_callback(move |area, clock| {
             let mut view = view.borrow_mut();
             if view.motion_serial != serial {
@@ -1281,11 +1305,10 @@ fn make_scoped(
             let mut speed = velocity.get();
             if let Some(previous) = last.replace(Some(now)) {
                 let dt = ((now - previous) as f64 / 1e6).clamp(0., 0.05);
-                let decay = (-8. * dt).exp();
-                view.pan_x -= speed.0 * (1. - decay) / 8.;
-                view.pan_y -= speed.1 * (1. - decay) / 8.;
-                speed.0 *= decay;
-                speed.1 *= decay;
+                let (travel, remaining) = super::motion::coast(speed, dt, decay);
+                view.pan_x += travel.0;
+                view.pan_y += travel.1;
+                speed = remaining;
                 velocity.set(speed);
                 area.queue_draw();
             }
@@ -1333,7 +1356,8 @@ fn make_scoped(
         .filter(|s| s.scope == "graph")
         .flat_map(|s| {
             s.keys.into_iter().filter_map(move |key| {
-                gtk::accelerator_parse(&key).map(|(key, mods)| (s.action.clone(), key, mods))
+                gtk::accelerator_parse(crate::config::graph_accelerator(&key))
+                    .map(|(key, mods)| (s.action.clone(), key, mods))
             })
         })
         .collect();
@@ -1461,6 +1485,13 @@ fn make_scoped(
             Some("run") => {
                 if let Some(id) = selected {
                     cb(CanvasAction::Run(id));
+                }
+            }
+            Some("stop") => {
+                if let Some(id) =
+                    selected.filter(|id| state.node(id).is_some_and(|n| n.status.active()))
+                {
+                    cb(CanvasAction::Stop(id));
                 }
             }
             Some("clear_history") => cb(CanvasAction::ClearHistory),
@@ -2036,6 +2067,19 @@ fn wire_cut(parent: &Node, node: &Node, points: &[(f64, f64)], view: &View) -> b
     route_cut(a, b, points, false)
 }
 
+pub(super) fn draw_running_line(c: &Context, x: f64, y: f64, height: f64, theme: &Theme) {
+    rounded(
+        c,
+        x + 2.,
+        y + theme.radius,
+        theme.running_width,
+        (height - 2. * theme.radius).max(0.),
+        theme.running_width / 2.,
+    );
+    theme.running.source(c);
+    let _ = c.fill();
+}
+
 pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, theme: &Theme) {
     let (x, y) = (p.x, p.y);
     let height = node_height(n);
@@ -2062,6 +2106,9 @@ pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, the
     }
     c.set_line_width(if selected { 2.0 } else { 1.0 });
     let _ = c.stroke();
+    if n.status == Status::Running && theme.running_width > 0. {
+        draw_running_line(c, x, y, height, theme);
+    }
     rounded(c, x + 14.0, y + 16.0, 25.0, 23.0, 5.0);
     c.set_source_rgba(accent.0, accent.1, accent.2, 0.13);
     let _ = c.fill();

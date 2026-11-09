@@ -155,12 +155,25 @@ def run(state_file=None):
             wait(lambda: catalog()["selected_workspace"] == second["id"], compositor)
             time.sleep(2)
             seed = json.loads(subprocess.check_output([str(ROOT / "target/debug/flowwm"), "add", "human", "First toggle must show this node"], env=environment, text=True))["id"]
+            opened = request(flow_socket, {"op":"performance"}).get("transition_open", {}).get("count", 0)
             key("super+Tab")
-            wait(lambda: catalog()["presentation"]["graph_visible"], compositor)
-            time.sleep(0.25)
+            wait(lambda: request(flow_socket, {"op":"performance"}).get("transition_open", {}).get("count", 0) > opened, compositor)
             first_toggle = capture("first-toggle-existing-node.png")
             assert card_pixels(first_toggle) > 5000, "the first toggle must fit the graph before rendering existing nodes"
+            request(flow_socket, {"op":"ui", "command":{"action":"select", "id":seed}})
+            key("super+Return")
+            status = lambda: next(n['status'] for n in request(flow_socket, {"op":"status"})['nodes'] if n['id'] == seed)
+            wait(lambda: status() == 'running', compositor)
+            running = settled_capture("running-node.png")
+            green = sum(g > 150 and g > r * 1.3 and g > b * 1.15 for r,g,b in running.get_flattened_data())
+            assert green > 80, "running nodes must have a visible green sideline"
+            key("super+q")
+            wait(lambda: status() == 'stopped', compositor)
             request(flow_socket, {"op":"delete", "id":seed})
+            deleting = capture("node-deleting.png")
+            deleted = settled_capture("node-deleted.png")
+            assert ImageChops.difference(deleting, deleted).getbbox() is not None, "deleted cards must animate before disappearing"
+            assert all(n['id'] != seed for n in request(flow_socket, {"op":"status"})['nodes'])
             search("super+space", ["openQuery", "@ + "])
             assert catalog()["presentation"]["graph_visible"], "creation search must keep Nodes view"
             search("alt+space", ["toggle"])
@@ -171,9 +184,9 @@ def run(state_file=None):
             wait(lambda: catalog()["selected_workspace"] == first["id"], compositor)
             children.append(subprocess.Popen([sys.executable, __file__, "--application"], env=environment, stdout=log, stderr=log))
             source = wait(lambda: next((n["id"] for n in catalog()["nodes"] if n["title"] == "Application connection source"), None), compositor)
+            opened = request(flow_socket, {"op":"performance"}).get("transition_open", {}).get("count", 0)
             key("super+Tab")
-            wait(lambda: catalog()["presentation"]["graph_visible"], compositor)
-            time.sleep(0.25)
+            wait(lambda: request(flow_socket, {"op":"performance"}).get("transition_open", {}).get("count", 0) > opened, compositor)
             new_row = capture("first-toggle-new-row.png")
             assert card_pixels(new_row) > 5000, "a newly allocated row must fit on its first toggle even after another row was shown"
             request(flow_socket, {"op": "ui", "command": {"action": "select", "id": source}})
@@ -181,6 +194,11 @@ def run(state_file=None):
             wait(lambda: catalog()["presentation"]["graph_visible"] and not any(w["is_focused"] for w in request(niri_socket, "Windows")["Windows"]), compositor)
             key("Tab")
             wait(lambda: catalog()["presentation"].get("lookup_node") == source, compositor)
+            # Windows now expose only the typed on_exit signal by default. Add
+            # an explicit data pin for this data-to-Display creation workflow.
+            window_node = next(n for n in request(flow_socket, {"op":"status"})['nodes'] if n['id'] == source)
+            window_node['flow']['outputs'].append({'name':'output', 'ty':{'kind':'string'}})
+            request(flow_socket, {"op":"update", "node":window_node})
             display = next(m for m in catalog()["macros"] if m["kind"] == "display")
             request(flow_socket, {"op": "ui", "command": {"action": "create_connected", "id": display["id"], "source": {"node": source, "pin": "output"}, "input": "value"}})
             wait(lambda: any(edge["source"]["node"] == source for edge in request(flow_socket, {"op": "status"})["connections"]), compositor)
@@ -291,7 +309,7 @@ def run(state_file=None):
             log.flush()
             errors = (artifacts / "session.log").read_text()
             assert "drawing failure" not in errors and "Cross-workspace connection" not in errors, errors[-4000:]
-            print("Desktop smoke passed: first-toggle framing on existing and newly allocated rows, search shortcuts, static wallpaper, connected creation, compact parameters with Enter-to-save, editable live windows with Shift+Tab, pin search in both directions, key-binding search, and application selection at 2x scale.")
+            print("Desktop smoke passed: first-toggle framing on existing and newly allocated rows, Win+Enter/Win+Q run/stop, green running sidelines, animated deletion, search shortcuts, static wallpaper, connected creation, compact parameters with Enter-to-save, editable live windows with Shift+Tab, pin search in both directions, key-binding search, and application selection at 2x scale.")
         finally:
             for child in reversed(children):
                 if child.poll() is None:

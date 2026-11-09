@@ -52,6 +52,8 @@ pub enum UiCommand {
     Windows,
     ZoomIn,
     ZoomOut,
+    RunSelected,
+    StopSelected,
     Navigate {
         direction: String,
     },
@@ -1485,6 +1487,11 @@ impl Runtime {
             node.status.active() || self.runs.contains_key(id) || graph,
             "Node is not active"
         );
+        if let Some(window) = node.window_id {
+            crate::niri::request(niri_ipc::Request::Action(niri_ipc::Action::CloseWindow {
+                id: Some(window),
+            }))?;
+        }
         node.status = Status::Stopped;
         node.finished_at = Some(now());
         node.log("system", "Stopped by you.");

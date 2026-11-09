@@ -14,6 +14,90 @@ pub struct Cache {
     metadata: HashMap<(String, String), gsk::RenderNode>,
     signatures: HashMap<String, Vec<u8>>,
     revision: Option<u64>,
+    cards: HashMap<String, (Node, Rect)>,
+    removed: Vec<RemovedCard>,
+    card_revision: Option<u64>,
+}
+struct RemovedCard {
+    image: gsk::RenderNode,
+    rect: Rect,
+    started: std::time::Instant,
+}
+
+impl Cache {
+    fn removals(&mut self, state: &State, revision: u64, view: &View) {
+        let now = std::time::Instant::now();
+        let ids: std::collections::HashSet<_> =
+            state.nodes.iter().map(|node| node.id.as_str()).collect();
+        if view.theme.removal_ms == 0 || view.chrome < 0.999 {
+            self.removed.clear();
+        } else {
+            for (id, (node, rect)) in &self.cards {
+                if ids.contains(id.as_str()) {
+                    continue;
+                }
+                let snapshot = gtk::Snapshot::new();
+                let c = snapshot.append_cairo(&graphene::Rect::new(
+                    -8.,
+                    -8.,
+                    WIDTH as f32 + 16.,
+                    node_height(node) as f32 + 16.,
+                ));
+                c.select_font_face(
+                    &view.theme.font,
+                    gtk::cairo::FontSlant::Normal,
+                    gtk::cairo::FontWeight::Normal,
+                );
+                canvas::draw_node(&c, node, &Position::default(), false, &view.theme);
+                drop(c);
+                if let Some(image) = snapshot.to_node() {
+                    self.removed.push(RemovedCard {
+                        image,
+                        rect: *rect,
+                        started: now,
+                    });
+                }
+            }
+        }
+        self.cards.retain(|id, _| ids.contains(id.as_str()));
+        for node in canvas::ordered_nodes(state) {
+            let (_, rect, _) = window_geometry(node, view);
+            self.cards
+                .entry(node.id.clone())
+                .and_modify(|(previous, old_rect)| {
+                    if self.card_revision != Some(revision) {
+                        *previous = node.clone();
+                    }
+                    *old_rect = rect;
+                })
+                .or_insert_with(|| (node.clone(), rect));
+        }
+        self.card_revision = Some(revision);
+    }
+
+    pub fn animate_removals(&mut self, snapshot: &gtk::Snapshot, view: &View) -> bool {
+        let duration = view.theme.removal_ms as f64 / 1000.;
+        self.removed
+            .retain(|card| card.started.elapsed().as_secs_f64() < duration);
+        for card in &self.removed {
+            let t = (card.started.elapsed().as_secs_f64() / duration).clamp(0., 1.);
+            let shrink = 1. - 0.24 * super::motion::ease_out(t);
+            snapshot.save();
+            snapshot.translate(&graphene::Point::new(
+                (card.rect.x + card.rect.width * (1. - shrink) / 2.) as f32,
+                (card.rect.y + card.rect.height * (1. - shrink) / 2. + 14. * t * t) as f32,
+            ));
+            snapshot.scale(
+                (card.rect.width / WIDTH * shrink) as f32,
+                (card.rect.width / WIDTH * shrink) as f32,
+            );
+            snapshot.push_opacity((1. - t).powi(2));
+            snapshot.append_node(&card.image);
+            snapshot.pop();
+            snapshot.restore();
+        }
+        !self.removed.is_empty()
+    }
 }
 fn bounds(r: Rect) -> graphene::Rect {
     graphene::Rect::new(r.x as f32, r.y as f32, r.width as f32, r.height as f32)
@@ -120,10 +204,12 @@ fn graph_key(width: i32, height: i32, state: &State, revision: u64, view: &View)
         view.theme.text,
         view.theme.muted,
         view.theme.outline,
+        view.theme.running,
     ] {
         c.hex().hash(&mut h);
     }
     view.theme.radius.to_bits().hash(&mut h);
+    view.theme.running_width.to_bits().hash(&mut h);
     (
         view.zoom.to_bits(),
         view.pan_x.to_bits(),
@@ -227,22 +313,37 @@ fn native_canvas_region(state: &State, view: &View, width: i32, height: i32) -> 
     region
 }
 
-pub fn native_windows(state: &State, view: &View) -> Vec<niri_ipc::node_row::NodeWindow> {
+pub fn native_windows(
+    state: &State,
+    view: &View,
+    width: i32,
+    height: i32,
+) -> Vec<niri_ipc::node_row::NodeWindow> {
+    let viewport = Rect {
+        x: 0.,
+        y: 0.,
+        width: width as f64,
+        height: height as f64,
+    };
     canvas::ordered_nodes(state)
         .iter()
         .filter_map(|node| {
             let id = node.window_id?;
             let (_, rect, t) = window_geometry(node, view);
             let content = window_content(rect, t, view.zoom);
+            if !content.overlaps(viewport) {
+                return None;
+            }
             Some(niri_ipc::node_row::NodeWindow {
                 id,
                 bounds: (content.x, content.y, content.width, content.height),
                 expanded: node.column_mode == ColumnMode::Window && t < 0.001,
-                opacity: if !view.query.is_empty() && !canvas::matches_query(node, &view.query) {
-                    0.25
-                } else {
-                    1.0
-                },
+                opacity: view.window_opacities.get(&node.id).copied().unwrap_or(1.) as f32
+                    * if !view.query.is_empty() && !canvas::matches_query(node, &view.query) {
+                        0.25
+                    } else {
+                        1.0
+                    },
             })
         })
         .collect()
@@ -257,6 +358,7 @@ pub fn render(
     view: &View,
     cache: &mut Cache,
 ) {
+    cache.removals(state, revision, view);
     if view.native_nodes {
         let scene = gtk::Snapshot::new();
         render_inner(&scene, width, height, state, revision, view, cache);
@@ -396,7 +498,7 @@ fn render_inner(
         if node.window_id.is_none() && !node.desktop_window {
             continue;
         }
-        let (graph, rect, t) = window_geometry(node, view);
+        let (_, rect, t) = window_geometry(node, view);
         if rect.x > width as f64 + 12.0
             || rect.x + rect.width < -12.0
             || rect.y > height as f64 + 12.0
@@ -407,20 +509,21 @@ fn render_inner(
         let selected =
             view.selected.as_deref() == Some(&node.id) || view.selection.contains(&node.id);
         let matching = canvas::matches_query(node, &view.query);
-        let alpha = if node.closed_window() {
-            view.chrome
-                * if !view.query.is_empty() && !matching {
-                    0.25
-                } else {
-                    1.0
-                }
-        } else if t < 0.001 && !view.native_nodes {
-            view.live_fade
-        } else if !view.query.is_empty() && !matching {
-            0.25
-        } else {
-            1.0
-        };
+        let alpha = view.window_opacities.get(&node.id).copied().unwrap_or(1.)
+            * if node.closed_window() {
+                view.chrome
+                    * if !view.query.is_empty() && !matching {
+                        0.25
+                    } else {
+                        1.0
+                    }
+            } else if t < 0.001 && !view.native_nodes {
+                view.live_fade
+            } else if !view.query.is_empty() && !matching {
+                0.25
+            } else {
+                1.0
+            };
         if alpha <= 0.0 {
             continue;
         }
@@ -502,8 +605,11 @@ fn render_inner(
         let line = (2.0 * (1.0 - t) + view.zoom * (if selected { 2.0 } else { 1.0 }) * t) as f32;
         if t > 0.6 {
             snapshot.save();
-            snapshot.translate(&graphene::Point::new(graph.x as f32, graph.y as f32));
-            snapshot.scale(view.zoom as f32, view.zoom as f32);
+            snapshot.translate(&graphene::Point::new(rect.x as f32, rect.y as f32));
+            snapshot.scale(
+                (rect.width / WIDTH) as f32,
+                (rect.height / node_height(node)) as f32,
+            );
             snapshot.push_opacity(((t - 0.6) / 0.4).clamp(0.0, 1.0));
             snapshot.append_node(metadata(cache, state, node, index, view));
             snapshot.pop();
@@ -512,6 +618,18 @@ fn render_inner(
         // Metadata contains its own card background and inactive border. Paint
         // the shared outline last so headers and footers cannot cover selection.
         snapshot.append_border(&outline, &[line; 4], &[color(border); 4]);
+        if node.status == Status::Running && view.theme.running_width > 0. && t > 0. {
+            let inset = view.theme.radius * view.zoom;
+            snapshot.append_color(
+                &color(view.theme.running),
+                &bounds(Rect {
+                    x: rect.x + 2. * view.zoom,
+                    y: rect.y + inset,
+                    width: view.theme.running_width * view.zoom,
+                    height: (rect.height - inset * 2.).max(0.),
+                }),
+            );
+        }
         snapshot.pop();
     }
     // Selection and cut gestures must be above GPU window cards and previews.
@@ -524,6 +642,39 @@ fn render_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offscreen_native_previews_are_culled_and_fades_reach_the_compositor() {
+        let mut state = State::empty("/tmp".into());
+        let mut node = Node::new(
+            &state.selected_workspace,
+            NodeKind::Window,
+            "/tmp".into(),
+            Position::default(),
+        );
+        node.window_id = Some(7);
+        node.column_mode = ColumnMode::Node;
+        let id = node.id.clone();
+        state.nodes.push(node);
+        let mut view = View::default();
+        view.zoom = 1.;
+        view.pan_x = 0.;
+        view.pan_y = 0.;
+        view.window_opacities.insert(id.clone(), 0.4);
+        let scene = native_windows(&state, &view, 800, 600);
+        assert_eq!(scene.len(), 1);
+        assert!((scene[0].opacity - 0.4).abs() < 1e-6);
+        view.presented_rects.insert(
+            id,
+            Rect {
+                x: -500.,
+                y: 20.,
+                width: 292.,
+                height: 274.,
+            },
+        );
+        assert!(native_windows(&state, &view, 800, 600).is_empty());
+    }
 
     #[test]
     fn interrupted_morphs_and_expanded_frames_share_the_live_rectangle() {
@@ -556,7 +707,7 @@ mod tests {
         );
         view.presented_rects.insert(id.clone(), actual);
         assert_eq!(window_geometry(&state.nodes[0], &view).1, actual);
-        let native = native_windows(&state, &view);
+        let native = native_windows(&state, &view, 1920, 1080);
         assert!(native[0].expanded);
         assert_eq!(
             native[0].bounds,
@@ -577,7 +728,7 @@ mod tests {
             actual,
             "reversal starts at the last displayed frame"
         );
-        let native = native_windows(&state, &view);
+        let native = native_windows(&state, &view, 1920, 1080);
         assert!(
             !native[0].expanded,
             "input stays with the graph during a morph"

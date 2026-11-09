@@ -663,6 +663,7 @@ impl Shell {
                 id,
                 downstream: false,
             }),
+            CanvasAction::Stop(id) => self.engine.dispatch(Control::Stop { id }),
             CanvasAction::Chat => self.agent_chat(),
             CanvasAction::ConnectSearch => self.connect_search(),
             CanvasAction::ConnectPin(endpoint, output) => self.connect_pin_search(endpoint, output),
@@ -1077,7 +1078,7 @@ impl Shell {
                 .collect()
         };
         self.update_scene_geometry();
-        let from: HashMap<_, _> = state
+        let mut from: HashMap<_, _> = state
             .nodes
             .iter()
             .filter(|n| n.workspace == state.selected_workspace)
@@ -1095,7 +1096,7 @@ impl Shell {
                 (n.id.clone(), previous)
             })
             .collect();
-        let target: HashMap<_, _> = state
+        let mut target: HashMap<_, _> = state
             .nodes
             .iter()
             .filter(|n| n.workspace == state.selected_workspace)
@@ -1110,7 +1111,7 @@ impl Shell {
                 )
             })
             .collect();
-        let from_positions: HashMap<_, _> = state
+        let mut from_positions: HashMap<_, _> = state
             .nodes
             .iter()
             .filter(|n| n.workspace == state.selected_workspace)
@@ -1196,10 +1197,55 @@ impl Shell {
                 (id.clone(), rect)
             })
             .collect();
+        let viewport = super::collapse::Rect {
+            x: 0.,
+            y: 0.,
+            width: width as f64,
+            height: height as f64,
+        };
+        let fade_only: HashSet<_> = target_rects
+            .iter()
+            .filter_map(|(id, destination)| {
+                let desktop_end = if visible {
+                    from_rects[id]
+                } else {
+                    *destination
+                };
+                (!desktop_end.overlaps(viewport)).then(|| id.clone())
+            })
+            .collect();
+        let opacity_from: HashMap<_, _> = target_rects
+            .keys()
+            .map(|id| {
+                let opacity = view.window_opacities.get(id).copied().unwrap_or(
+                    if visible && fade_only.contains(id) {
+                        0.
+                    } else {
+                        1.
+                    },
+                );
+                (id.clone(), opacity)
+            })
+            .collect();
+        for id in &fade_only {
+            if visible {
+                from.insert(id.clone(), target[id]);
+                from_positions.insert(id.clone(), target_positions[id].clone());
+            } else {
+                target.insert(id.clone(), from[id]);
+                target_positions.insert(id.clone(), from_positions[id].clone());
+            }
+        }
         drop(view);
         {
             let mut view = self.view.borrow_mut();
+            view.window_opacities = opacity_from.clone();
             view.presented_rects = from_rects.clone();
+            for id in &fade_only {
+                if visible {
+                    view.presented_rects.insert(id.clone(), target_rects[id]);
+                }
+            }
             for (id, from) in &from_positions {
                 let base = &bases[id];
                 view.presented_positions.insert(
@@ -1254,8 +1300,8 @@ impl Shell {
         let weak = self.weak.clone();
         let after = RefCell::new(after);
         let previous = Cell::new(started);
-        let animation_started = Cell::new(None::<std::time::Instant>);
-        self.window().add_tick_callback(move |_, _| {
+        let animation_started = Cell::new(None::<i64>);
+        self.window().add_tick_callback(move |_, clock| {
             let Some(shell) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
@@ -1285,17 +1331,17 @@ impl Shell {
             }
             let duration = shell.view.borrow().theme.motion_ms as f64;
             let animation_started = animation_started.get().unwrap_or_else(|| {
-                let now = std::time::Instant::now();
+                let now = clock.frame_time();
                 animation_started.set(Some(now));
                 now
             });
-            let elapsed = animation_started.elapsed().as_secs_f64() * 1000.0;
+            let elapsed = (clock.frame_time() - animation_started) as f64 / 1000.;
             let progress = if duration == 0.0 {
                 1.0
             } else {
                 (elapsed / duration).clamp(0.0, 1.0)
             };
-            let eased = progress * progress * (3.0 - 2.0 * progress);
+            let eased = super::motion::ease_out(progress);
             let fade = if duration == 0.0 || shell.native_nodes {
                 0.0
             } else {
@@ -1340,8 +1386,16 @@ impl Shell {
                     } else {
                         *rect
                     };
-                    view.presented_rects
-                        .insert(id.clone(), from_rects[id].interpolate(destination, eased));
+                    let fade = fade_only.contains(id);
+                    let rect = if fade {
+                        if visible { destination } else { from_rects[id] }
+                    } else {
+                        super::motion::transform(from_rects[id], destination, eased)
+                    };
+                    view.presented_rects.insert(id.clone(), rect);
+                    let opacity_to = if fade && !visible { 0. } else { 1. };
+                    let opacity = opacity_from[id] + (opacity_to - opacity_from[id]) * eased;
+                    view.window_opacities.insert(id.clone(), opacity);
                 }
                 view.chrome =
                     chrome_from + ((if visible { 1.0 } else { 0.0 }) - chrome_from) * eased;
@@ -1366,6 +1420,7 @@ impl Shell {
                     {
                         let mut view = shell.view.borrow_mut();
                         view.morphing = false;
+                        view.window_opacities.clear();
                         // Graph cards follow the camera again; peeks keep screen coordinates.
                         view.presented_rects
                             .retain(|id, _| visible && target.get(id) == Some(&0.0));
@@ -1859,6 +1914,43 @@ impl Shell {
     }
     fn control(&self, command: UiCommand) {
         match command {
+            UiCommand::RunSelected | UiCommand::StopSelected => {
+                let run = matches!(command, UiCommand::RunSelected);
+                if self.graph_visible.get() {
+                    let view = self.view.borrow();
+                    let mut ids = view.selection.clone();
+                    ids.extend(view.selected.clone());
+                    drop(view);
+                    let state = self.engine.snapshot().state;
+                    for id in ids {
+                        let Some(node) = state.node(&id) else {
+                            continue;
+                        };
+                        if run && !node.status.active() {
+                            self.engine.dispatch(Control::Run {
+                                id,
+                                downstream: false,
+                            });
+                        } else if !run && node.status.active() {
+                            self.engine.dispatch(Control::Stop { id });
+                        }
+                    }
+                } else {
+                    let action = if run {
+                        niri_ipc::Action::Spawn {
+                            command: crate::config::flow()
+                                .terminal
+                                .clone()
+                                .unwrap_or_else(|| vec!["alacritty".into()]),
+                        }
+                    } else {
+                        niri_ipc::Action::CloseWindow { id: None }
+                    };
+                    if let Err(error) = niri::request(niri_ipc::Request::Action(action)) {
+                        self.show_error(&error.to_string());
+                    }
+                }
+            }
             UiCommand::RefreshImages => self.collect_images(),
             UiCommand::AgentChat => self.agent_chat(),
             UiCommand::Arrange => self.arrange(),

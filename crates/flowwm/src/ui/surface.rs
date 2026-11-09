@@ -1,6 +1,6 @@
 //! Retained GSK canvas: cached text/edges, GPU textures and borders during window morphs.
 use gtk::{glib, graphene, gsk, prelude::*, subclass::prelude::*};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 type Renderer = Box<dyn Fn(&Surface, &gtk::Snapshot, i32, i32)>;
 pub struct RowSlide {
     pub outgoing: Option<gsk::RenderNode>,
@@ -16,6 +16,8 @@ mod imp {
         pub renderer: RefCell<Option<Renderer>>,
         pub frame: RefCell<Option<gsk::RenderNode>>,
         pub slide: RefCell<Option<RowSlide>>,
+        pub animation_requested: Cell<bool>,
+        pub animating: Cell<bool>,
     }
     #[glib::object_subclass]
     impl ObjectSubclass for Surface {
@@ -83,6 +85,22 @@ mod imp {
 }
 glib::wrapper! {pub struct Surface(ObjectSubclass<imp::Surface>) @extends gtk::Widget, @implements gtk::Accessible,gtk::Buildable,gtk::ConstraintTarget;}
 impl Surface {
+    /// Request frames only while a renderer still has unfinished animation.
+    pub fn animate(&self) {
+        self.imp().animation_requested.set(true);
+        if self.imp().animating.replace(true) {
+            return;
+        }
+        self.add_tick_callback(|area, _| {
+            if area.imp().animation_requested.replace(false) {
+                area.queue_draw();
+                glib::ControlFlow::Continue
+            } else {
+                area.imp().animating.set(false);
+                glib::ControlFlow::Break
+            }
+        });
+    }
     pub fn dismiss_popovers(&self) -> bool {
         let mut dismissed = false;
         let mut child = self.first_child();

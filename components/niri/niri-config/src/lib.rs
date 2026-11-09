@@ -33,6 +33,7 @@ pub mod appearance;
 pub mod binds;
 pub mod debug;
 pub mod error;
+pub mod flow;
 pub mod gestures;
 pub mod input;
 pub mod layer_rule;
@@ -68,6 +69,7 @@ const RECURSION_LIMIT: u8 = 10;
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Config {
+    pub flow: flow::Flow,
     pub input: Input,
     pub outputs: Outputs,
     pub spawn_at_startup: Vec<SpawnAtStartup>,
@@ -195,6 +197,17 @@ where
             }
 
             match name {
+                "flow" => {
+                    let part: flow::Flow = knuffel::Decode::decode_node(node, ctx)?;
+                    if let Err(error) = part.validate() {
+                        ctx.emit_error(DecodeError::unexpected(
+                            &node.node_name,
+                            "flow configuration",
+                            error,
+                        ));
+                    }
+                    config.borrow_mut().flow.merge_with(&part);
+                }
                 "input" => m_merge!(input),
                 "cursor" => m_merge!(cursor),
                 "clipboard" => m_merge!(clipboard),
@@ -995,6 +1008,15 @@ mod tests {
 
         assert_debug_snapshot!(parsed, @r#"
         Config {
+            flow: Flow {
+                terminal: None,
+                motion_ms: None,
+                removal_ms: None,
+                inertia_decay: None,
+                running_color: None,
+                running_width: None,
+                binds: None,
+            },
             input: Input {
                 keyboard: Keyboard {
                     xkb: Xkb {

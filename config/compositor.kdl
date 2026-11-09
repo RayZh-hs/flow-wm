@@ -1,4 +1,4 @@
-// FlowWM compositor preferences. The shortcut registry generates keybindings.kdl.
+// FlowWM settings: compositor, environment, global keys, and native graph in one file.
 input {
     keyboard { numlock; }
     touchpad { tap; dwt; natural-scroll; }
@@ -63,17 +63,199 @@ recent-windows {
         Alt+Shift+grave { previous-window filter="app-id"; }
     }
 }
-include "keybindings.kdl"
+binds {
+    Mod+Tab hotkey-overlay-title="Nodes / Windows (leave window peek first)" repeat=false allow-inhibiting=false { spawn "flowwm" "toggle"; }
+    Mod+Shift+Tab hotkey-overlay-title="Return to windows" repeat=false allow-inhibiting=false { spawn "flowwm" "windows"; }
+    Mod+equal hotkey-overlay-title="Zoom in (Nodes) / increase column width (Windows)" repeat=true { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"zoom_in\"}}"; }
+    Mod+minus hotkey-overlay-title="Zoom out (Nodes) / decrease column width (Windows)" repeat=true { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"zoom_out\"}}"; }
+    Mod+Space hotkey-overlay-title="Dux app search (Windows) / create a node (Nodes)" repeat=false allow-inhibiting=false { spawn "flowwm" "new"; }
+    Alt+Space hotkey-overlay-title="Open Dux app search" repeat=false allow-inhibiting=false { spawn "flowwm" "launcher"; }
+    Mod+Shift+Space hotkey-overlay-title="Find a node in Dux" repeat=false allow-inhibiting=false { spawn "flowwm" "search"; }
+    Mod+Shift+slash hotkey-overlay-title="Show key bindings" repeat=false allow-inhibiting=false { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"help\"}}"; }
+    Mod+Left hotkey-overlay-title="Select node / focus window left" repeat=true allow-inhibiting=false { spawn "flowwm" "navigate" "left"; }
+    Mod+Ctrl+Left hotkey-overlay-title="Move selection / window left" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"left\"}}"; }
+    Mod+Ctrl+H hotkey-overlay-title="Move selection / window left" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"left\"}}"; }
+    Mod+Down hotkey-overlay-title="Select node / focus window down" repeat=true allow-inhibiting=false { spawn "flowwm" "navigate" "down"; }
+    Mod+Ctrl+Down hotkey-overlay-title="Move selection / window down" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"down\"}}"; }
+    Mod+Ctrl+J hotkey-overlay-title="Move selection / window down" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"down\"}}"; }
+    Mod+Up hotkey-overlay-title="Select node / focus window up" repeat=true allow-inhibiting=false { spawn "flowwm" "navigate" "up"; }
+    Mod+Ctrl+Up hotkey-overlay-title="Move selection / window up" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"up\"}}"; }
+    Mod+Ctrl+K hotkey-overlay-title="Move selection / window up" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"up\"}}"; }
+    Mod+Right hotkey-overlay-title="Select node / focus window right" repeat=true allow-inhibiting=false { spawn "flowwm" "navigate" "right"; }
+    Mod+Ctrl+Right hotkey-overlay-title="Move selection / window right" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"right\"}}"; }
+    Mod+Ctrl+L hotkey-overlay-title="Move selection / window right" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"right\"}}"; }
+    Mod+T hotkey-overlay-title="Open terminal" repeat=false { spawn "alacritty"; }
+    Mod+K hotkey-overlay-title="Open terminal" repeat=false { spawn "alacritty"; }
+    Alt+F4 hotkey-overlay-title="Close window" repeat=false { close-window; }
+    Mod+Shift+E hotkey-overlay-title="Log out" repeat=false { quit; }
+    Ctrl+Alt+Delete hotkey-overlay-title="Log out" repeat=false { quit; }
+    Mod+Page_Up hotkey-overlay-title="Previous workspace" repeat=true { focus-workspace-up; }
+    Mod+I hotkey-overlay-title="Previous workspace" repeat=true { focus-workspace-up; }
+    Mod+Page_Down hotkey-overlay-title="Next workspace" repeat=true { focus-workspace-down; }
+    Mod+U hotkey-overlay-title="Next workspace" repeat=true { focus-workspace-down; }
+    Mod+Shift+Page_Up hotkey-overlay-title="Move workspace up" repeat=true { move-workspace-up; }
+    Mod+Shift+I hotkey-overlay-title="Move workspace up" repeat=true { move-workspace-up; }
+    Mod+Shift+Page_Down hotkey-overlay-title="Move workspace down" repeat=true { move-workspace-down; }
+    Mod+Shift+U hotkey-overlay-title="Move workspace down" repeat=true { move-workspace-down; }
+    Mod+F hotkey-overlay-title="Maximize column" repeat=false { maximize-column; }
+    Mod+Shift+F hotkey-overlay-title="Fullscreen window" repeat=false { fullscreen-window; }
+    Mod+E hotkey-overlay-title="Open file manager" repeat=false { spawn "dolphin"; }
+    Mod+B hotkey-overlay-title="Open browser" repeat=false { spawn "xdg-open" "about:blank"; }
+    Mod+V hotkey-overlay-title="Clipboard manager" repeat=false { spawn "dms" "ipc" "call" "clipboard" "toggle"; }
+    Mod+P hotkey-overlay-title="Power menu" repeat=false { spawn "dms" "ipc" "call" "powermenu" "toggle"; }
+    Mod+Shift+Period hotkey-overlay-title="Notepad" repeat=false { spawn "dms" "ipc" "call" "notepad" "toggle"; }
+    Mod+Shift+C hotkey-overlay-title="Pick a color" repeat=false { spawn "dms" "color" "pick" "-a"; }
+    Mod+Alt+L hotkey-overlay-title="Lock screen" repeat=false { spawn "dms" "ipc" "call" "lock" "lock"; }
+    Mod+O hotkey-overlay-title="Toggle workspace overview" repeat=false { toggle-overview; }
+    Mod+Shift+Left hotkey-overlay-title="Focus monitor left" repeat=true { focus-monitor-left; }
+    Mod+Shift+H hotkey-overlay-title="Focus monitor left" repeat=true { focus-monitor-left; }
+    Mod+Ctrl+Shift+Left hotkey-overlay-title="Move column to monitor left" repeat=true { move-column-to-monitor-left; }
+    Mod+Ctrl+Shift+H hotkey-overlay-title="Move column to monitor left" repeat=true { move-column-to-monitor-left; }
+    Mod+Shift+Down hotkey-overlay-title="Focus monitor down" repeat=true { focus-monitor-down; }
+    Mod+Shift+J hotkey-overlay-title="Focus monitor down" repeat=true { focus-monitor-down; }
+    Mod+Ctrl+Shift+Down hotkey-overlay-title="Move column to monitor down" repeat=true { move-column-to-monitor-down; }
+    Mod+Ctrl+Shift+J hotkey-overlay-title="Move column to monitor down" repeat=true { move-column-to-monitor-down; }
+    Mod+Shift+Up hotkey-overlay-title="Focus monitor up" repeat=true { focus-monitor-up; }
+    Mod+Shift+K hotkey-overlay-title="Focus monitor up" repeat=true { focus-monitor-up; }
+    Mod+Ctrl+Shift+Up hotkey-overlay-title="Move column to monitor up" repeat=true { move-column-to-monitor-up; }
+    Mod+Ctrl+Shift+K hotkey-overlay-title="Move column to monitor up" repeat=true { move-column-to-monitor-up; }
+    Mod+Shift+Right hotkey-overlay-title="Focus monitor right" repeat=true { focus-monitor-right; }
+    Mod+Shift+L hotkey-overlay-title="Focus monitor right" repeat=true { focus-monitor-right; }
+    Mod+Ctrl+Shift+Right hotkey-overlay-title="Move column to monitor right" repeat=true { move-column-to-monitor-right; }
+    Mod+Ctrl+Shift+L hotkey-overlay-title="Move column to monitor right" repeat=true { move-column-to-monitor-right; }
+    Mod+Home hotkey-overlay-title="Focus first column" repeat=true { focus-column-first; }
+    Mod+Ctrl+Home hotkey-overlay-title="Move column to first position" repeat=true { move-column-to-first; }
+    Mod+End hotkey-overlay-title="Focus last column" repeat=true { focus-column-last; }
+    Mod+Ctrl+End hotkey-overlay-title="Move column to last position" repeat=true { move-column-to-last; }
+    Mod+Ctrl+Page_Up hotkey-overlay-title="Move column to workspace up" repeat=true { move-column-to-workspace-up; }
+    Mod+Ctrl+I hotkey-overlay-title="Move column to workspace up" repeat=true { move-column-to-workspace-up; }
+    Mod+WheelScrollUp hotkey-overlay-title="Focus workspace up" repeat=true cooldown-ms=150 { focus-workspace-up; }
+    Mod+Ctrl+WheelScrollUp hotkey-overlay-title="Move column to workspace up" repeat=true cooldown-ms=150 { move-column-to-workspace-up; }
+    Mod+Ctrl+Page_Down hotkey-overlay-title="Move column to workspace down" repeat=true { move-column-to-workspace-down; }
+    Mod+Ctrl+U hotkey-overlay-title="Move column to workspace down" repeat=true { move-column-to-workspace-down; }
+    Mod+WheelScrollDown hotkey-overlay-title="Focus workspace down" repeat=true cooldown-ms=150 { focus-workspace-down; }
+    Mod+Ctrl+WheelScrollDown hotkey-overlay-title="Move column to workspace down" repeat=true cooldown-ms=150 { move-column-to-workspace-down; }
+    Mod+WheelScrollLeft hotkey-overlay-title="Focus column left" repeat=true { focus-column-left; }
+    Mod+Shift+WheelScrollUp hotkey-overlay-title="Focus column left" repeat=true { focus-column-left; }
+    Mod+Ctrl+WheelScrollLeft hotkey-overlay-title="Move column left" repeat=true { move-column-left; }
+    Mod+Ctrl+Shift+WheelScrollUp hotkey-overlay-title="Move column left" repeat=true { move-column-left; }
+    Mod+WheelScrollRight hotkey-overlay-title="Focus column right" repeat=true { focus-column-right; }
+    Mod+Shift+WheelScrollDown hotkey-overlay-title="Focus column right" repeat=true { focus-column-right; }
+    Mod+Ctrl+WheelScrollRight hotkey-overlay-title="Move column right" repeat=true { move-column-right; }
+    Mod+Ctrl+Shift+WheelScrollDown hotkey-overlay-title="Move column right" repeat=true { move-column-right; }
+    Mod+1 hotkey-overlay-title="Focus workspace 1" repeat=false { focus-workspace 1; }
+    Mod+Ctrl+1 hotkey-overlay-title="Move column to workspace 1" repeat=false { move-column-to-workspace 1; }
+    Mod+2 hotkey-overlay-title="Focus workspace 2" repeat=false { focus-workspace 2; }
+    Mod+Ctrl+2 hotkey-overlay-title="Move column to workspace 2" repeat=false { move-column-to-workspace 2; }
+    Mod+3 hotkey-overlay-title="Focus workspace 3" repeat=false { focus-workspace 3; }
+    Mod+Ctrl+3 hotkey-overlay-title="Move column to workspace 3" repeat=false { move-column-to-workspace 3; }
+    Mod+4 hotkey-overlay-title="Focus workspace 4" repeat=false { focus-workspace 4; }
+    Mod+Ctrl+4 hotkey-overlay-title="Move column to workspace 4" repeat=false { move-column-to-workspace 4; }
+    Mod+5 hotkey-overlay-title="Focus workspace 5" repeat=false { focus-workspace 5; }
+    Mod+Ctrl+5 hotkey-overlay-title="Move column to workspace 5" repeat=false { move-column-to-workspace 5; }
+    Mod+6 hotkey-overlay-title="Focus workspace 6" repeat=false { focus-workspace 6; }
+    Mod+Ctrl+6 hotkey-overlay-title="Move column to workspace 6" repeat=false { move-column-to-workspace 6; }
+    Mod+7 hotkey-overlay-title="Focus workspace 7" repeat=false { focus-workspace 7; }
+    Mod+Ctrl+7 hotkey-overlay-title="Move column to workspace 7" repeat=false { move-column-to-workspace 7; }
+    Mod+8 hotkey-overlay-title="Focus workspace 8" repeat=false { focus-workspace 8; }
+    Mod+Ctrl+8 hotkey-overlay-title="Move column to workspace 8" repeat=false { move-column-to-workspace 8; }
+    Mod+9 hotkey-overlay-title="Focus workspace 9" repeat=false { focus-workspace 9; }
+    Mod+Ctrl+9 hotkey-overlay-title="Move column to workspace 9" repeat=false { move-column-to-workspace 9; }
+    Mod+BracketLeft hotkey-overlay-title="Consume or expel window left" repeat=false { consume-or-expel-window-left; }
+    Mod+BracketRight hotkey-overlay-title="Consume or expel window right" repeat=false { consume-or-expel-window-right; }
+    Mod+Comma hotkey-overlay-title="Consume window into column" repeat=false { consume-window-into-column; }
+    Mod+Period hotkey-overlay-title="Expel window from column" repeat=false { expel-window-from-column; }
+    Mod+R hotkey-overlay-title="Cycle column width" repeat=true { switch-preset-column-width; }
+    Mod+Shift+R hotkey-overlay-title="Cycle window height" repeat=true { switch-preset-window-height; }
+    Mod+Ctrl+R hotkey-overlay-title="Reset window height" repeat=false { reset-window-height; }
+    Mod+Ctrl+F hotkey-overlay-title="Expand column into available space" repeat=false { expand-column-to-available-width; }
+    Mod+C hotkey-overlay-title="Center column" repeat=true { center-column; }
+    Mod+Ctrl+C hotkey-overlay-title="Center visible columns" repeat=true { center-visible-columns; }
+    Mod+Shift+Minus hotkey-overlay-title="Decrease window height" repeat=true { set-window-height "-10%"; }
+    Mod+Shift+Equal hotkey-overlay-title="Increase window height" repeat=true { set-window-height "+10%"; }
+    Mod+D hotkey-overlay-title="Toggle floating window" repeat=false { toggle-window-floating; }
+    Mod+Shift+D hotkey-overlay-title="Focus floating / tiling windows" repeat=false { switch-focus-between-floating-and-tiling; }
+    Mod+W hotkey-overlay-title="Toggle tabbed column" repeat=false { toggle-column-tabbed-display; }
+    Print hotkey-overlay-title="Screenshot selection" repeat=false { screenshot; }
+    Mod+Shift+S hotkey-overlay-title="Screenshot selection" repeat=false { screenshot; }
+    Ctrl+Print hotkey-overlay-title="Screenshot screen" repeat=false { screenshot-screen; }
+    Alt+Print hotkey-overlay-title="Screenshot window" repeat=false { screenshot-window; }
+    Mod+Shift+P hotkey-overlay-title="Power off monitors" repeat=false { power-off-monitors; }
+    Mod+Escape hotkey-overlay-title="Toggle shortcut inhibitor" repeat=false allow-inhibiting=false { toggle-keyboard-shortcuts-inhibit; }
+    Super+Alt+S hotkey-overlay-title="Toggle screen reader" repeat=false allow-when-locked=true { spawn-sh "pkill orca || exec orca"; }
+    XF86AudioRaiseVolume hotkey-overlay-title="Raise volume" repeat=true allow-when-locked=true { spawn-sh "wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.1+ -l 1.0"; }
+    XF86AudioLowerVolume hotkey-overlay-title="Lower volume" repeat=true allow-when-locked=true { spawn-sh "wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.1-"; }
+    XF86AudioMute hotkey-overlay-title="Mute speakers" repeat=false allow-when-locked=true { spawn-sh "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"; }
+    XF86AudioMicMute hotkey-overlay-title="Mute microphone" repeat=false allow-when-locked=true { spawn-sh "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle"; }
+    XF86AudioPlay hotkey-overlay-title="Play / pause media" repeat=false allow-when-locked=true { spawn-sh "playerctl play-pause"; }
+    XF86AudioStop hotkey-overlay-title="Stop media" repeat=false allow-when-locked=true { spawn-sh "playerctl stop"; }
+    XF86AudioPrev hotkey-overlay-title="Previous track" repeat=false allow-when-locked=true { spawn-sh "playerctl previous"; }
+    XF86AudioNext hotkey-overlay-title="Next track" repeat=false allow-when-locked=true { spawn-sh "playerctl next"; }
+    XF86MonBrightnessUp hotkey-overlay-title="Increase brightness" repeat=true { spawn "brightnessctl" "--class=backlight" "set" "+10%"; }
+    XF86MonBrightnessDown hotkey-overlay-title="Decrease brightness" repeat=true { spawn "brightnessctl" "--class=backlight" "set" "10%-"; }
+    Mod+Return repeat=false allow-inhibiting=false hotkey-overlay-title="Run selection / open terminal" { spawn "flowwm" "send" "{\"op\":\"ui\",\"command\":{\"action\":\"run_selected\"}}"; }
+    Mod+Q repeat=false allow-inhibiting=false hotkey-overlay-title="Stop selection / close window" { spawn "flowwm" "send" "{\"op\":\"ui\",\"command\":{\"action\":\"stop_selected\"}}"; }
+}
+
+// Native graph settings. Keys use niri syntax; action="none" disables a graph key.
+flow {
+    terminal "alacritty"
+    motion-ms 220
+    removal-ms 180
+    inertia-decay 10.0
+    running-color "#71c68c"
+    running-width 3.0
+    binds {
+        Tab action="connect" title="Choose an output, then a compatible node"
+        Ctrl+f action="search" title="Find nodes; frame all"
+        slash action="search" title="Find nodes; frame all"
+        question action="help" title="Show key bindings"
+        Ctrl+p action="arrange" title="Arrange and frame the graph"
+        Ctrl+a action="select_all" title="Select every node on this row"
+        Ctrl+c action="copy" title="Copy selected nodes and their connections"
+        Ctrl+x action="cut" title="Cut selected nodes"
+        Ctrl+v action="paste" title="Paste an idle copy"
+        Ctrl+d action="duplicate" title="Duplicate selection"
+        Return action="open" title="Peek at the selected window / open output"
+        KP_Enter action="open" title="Peek at the selected window / open output"
+        Shift+Tab action="edit" title="Edit selected node"
+        Shift+Return action="edit" title="Edit selected node"
+        e action="edit" title="Edit selected node"
+        r action="run" title="Run selected node"
+        Delete action="delete" title="Delete selection"
+        BackSpace action="delete" title="Delete selection"
+        Alt+BackSpace action="clear_history" title="Clear closed window history"
+        Escape action="escape" title="Leave peek, dismiss, clear search, deselect"
+        f action="focus" title="Center the selection"
+        Home action="fit" title="Frame all nodes"
+        h action="pan_left" title="Pan viewport left"
+        Shift+h action="fast_pan_left" title="Pan viewport left faster"
+        j action="pan_down" title="Pan viewport down"
+        Shift+j action="fast_pan_down" title="Pan viewport down faster"
+        k action="pan_up" title="Pan viewport up"
+        Shift+k action="fast_pan_up" title="Pan viewport up faster"
+        l action="pan_right" title="Pan viewport right"
+        Shift+l action="fast_pan_right" title="Pan viewport right faster"
+        a action="navigate_left" title="Select left"
+        Shift+a action="move_left" title="Move selection left"
+        s action="navigate_down" title="Select down"
+        Shift+s action="move_down" title="Move selection down"
+        w action="navigate_up" title="Select up"
+        Shift+w action="move_up" title="Move selection up"
+        d action="navigate_right" title="Select right"
+        Shift+d action="move_right" title="Move selection right"
+    }
+}
+
 
 // Dux writes these files inside the FlowWM profile.
-include "niri/dms/colors.kdl"
-include "niri/dms/layout.kdl"
-include "niri/dms/outputs.kdl"
-include "niri/dms/cursor.kdl"
-include "niri/dms/windowrules.kdl"
-include "niri/dms/alttab.kdl"
-include "niri/dms/input.kdl"
-include "niri/dms/wpblur.kdl"
+include "dms/colors.kdl"
+include "dms/layout.kdl"
+include "dms/outputs.kdl"
+include "dms/cursor.kdl"
+include "dms/windowrules.kdl"
+include "dms/alttab.kdl"
+include "dms/input.kdl"
+include "dms/wpblur.kdl"
 
-// Keep personal startup hooks, output rules, and overrides here.
-include "local.kdl"
+// Add personal startup hooks, output rules, and environment settings here.

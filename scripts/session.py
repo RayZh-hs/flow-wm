@@ -25,19 +25,20 @@ def environment(profile=False):
     # Apply the same private session environment to the compositor, Dux, the
     # graph service, and their children. KDL environment blocks only reach
     # processes spawned directly by the compositor.
-    path = Path(data["config"]) / "environment.json"
+    path = Path(data["config"]) / "config.kdl"
     if path.is_file():
-        overrides = json.loads(path.read_text())
+        config_environment = {**result, "FLOWWM_CONFIG_DIR": data["config"]}
+        overrides = json.loads(subprocess.check_output([str(ROOT / "bin/flowwm"), "config-environment"], env=config_environment, text=True))
         for name, value in overrides.items():
             if value is None:
                 result.pop(name, None)
-            elif isinstance(value, str):
-                result[name] = value
             else:
-                raise ValueError(f"{path}: {name} must be a string or null")
+                result[name] = value
     result["FLOWWM_SESSION"] = "1"
     result["FLOWWM_CONFIG_DIR"] = data["config"]
     result["FLOWWM_INSTALL_ROOT"] = str(ROOT)
+    result["FLOWWM_STATE_DIR"] = data["state"]
+    result["FLOWWM_CACHE_DIR"] = data["cache"]
     adapters = ROOT / "extensions/agent-sessions/bin"
     paths = [str(ROOT / "bin")]
     if adapters.is_dir() and result.get("FLOWWM_AGENT_SESSIONS") != "0":
@@ -46,7 +47,7 @@ def environment(profile=False):
     if profile:
         for name in ("XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"):
             result.setdefault("DMS_ORIG_" + name, result.get(name, ""))
-        result.update({"XDG_CONFIG_HOME": data["config"], "XDG_STATE_HOME": data["state"],
+        result.update({"XDG_CONFIG_HOME": str(Path(data["config"]) / ".shell"), "XDG_STATE_HOME": data["state"],
                        "XDG_CACHE_HOME": data["cache"], "DMS_SHELL_DIR": str(ROOT / "shell")})
     return result
 
@@ -71,6 +72,9 @@ def command(kind, arguments=()):
 def login():
     if service_active("niri.service") or service_active("flowwm-compositor.service"):
         raise SystemExit("A window-manager session is already running. Select FlowWM after logging out.")
+    from configuration import cleanup_profile
+    data = settings()
+    cleanup_profile(data["config"], data["state"])
     os.environ["XDG_CURRENT_DESKTOP"] = "niri"
     os.environ["XDG_SESSION_TYPE"] = "wayland"
     # Inactive units can be unloaded between logins; targeted reset-failed rejects them.
@@ -117,7 +121,7 @@ def main():
     # Theme workers pass their own profile; nested shells must not write into the installed desktop.
     explicit_theme_profile = (kind == "dms-cli" and arguments[:1] == ["matugen"]
                               and any(arg == "--config-dir" or arg.startswith("--config-dir=") for arg in arguments))
-    process_environment = os.environ.copy() if explicit_theme_profile else environment(profile=kind in ("shell", "dms", "dms-cli"))
+    process_environment = os.environ.copy() if explicit_theme_profile else environment(profile=kind in ("dms", "dms-cli"))
     os.execvpe(argv[0], argv, process_environment)
 
 

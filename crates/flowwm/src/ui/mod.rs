@@ -4,6 +4,7 @@ mod empty;
 mod gpu;
 mod keybindings;
 mod layout;
+mod motion;
 mod native;
 mod parameters;
 mod shell;

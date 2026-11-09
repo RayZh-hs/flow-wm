@@ -10,6 +10,9 @@ import re
 import shutil
 import subprocess
 import tempfile
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from configuration import migrate, cleanup_profile
 
 ROOT = Path(__file__).resolve().parents[1]
 REPLACE_SERVICES = ("flowwm.service", "flowwm-dms.service", "flowwm-agent-sessions.service")
@@ -59,87 +62,33 @@ def prepare_profile(config, state, cache, bundle, user_config, user_state, user_
         (destination / "dms").mkdir(parents=True, exist_ok=True)
         if not (destination / "DankMaterialShell").exists():
             (destination / "DankMaterialShell").symlink_to("dms", target_is_directory=True)
-    if not (config / "DankMaterialShell").exists():
-        (config / "DankMaterialShell").symlink_to("dms", target_is_directory=True)
-    generated = config / "niri/dms"
+    # Dux expects an XDG tree; compatibility paths stay below .shell.
+    shell_home = config / ".shell"
+    (shell_home / "niri").mkdir(parents=True, exist_ok=True)
+    for link, target in [(shell_home / "DankMaterialShell", "../dms"), (shell_home / "niri/dms", "../../dms")]:
+        if not link.exists():
+            link.symlink_to(target, target_is_directory=True)
+    generated = config / "dms"
+    old_generated = config / "niri/dms"
+    if old_generated.is_dir() and not old_generated.is_symlink():
+        for path in old_generated.iterdir():
+            if not (generated / path.name).exists():
+                shutil.copy2(path, generated / path.name)
     generated.mkdir(parents=True, exist_ok=True)
     for name in ("colors", "layout", "outputs", "cursor", "windowrules", "alttab", "input", "wpblur"):
         if not (generated / f"{name}.kdl").exists():
             default = ROOT / "config/dms" / f"{name}.kdl"
             atomic_text(generated / f"{name}.kdl", default.read_text() if default.is_file() else "// Managed by Dux.\n")
-    local = config / "local.kdl"
-    if not local.exists():
-        atomic_text(local, "// Personal compositor settings and startup hooks. Preserved on reinstall.\n")
     wallpaper = state / "dms/wallpaper.png"
     if not wallpaper.exists():
         shutil.copy2(ROOT / "assets/wallpaper.png", wallpaper)
     session = state / "dms/session.json"
     if not session.exists():
         atomic_text(session, json.dumps({"wallpaperPath": str(wallpaper), "isLightMode": False}, indent=2) + "\n")
-    niri_config = config / "config.kdl"
-    if not niri_config.exists():
-        atomic_text(niri_config, (ROOT / "config/compositor.kdl").read_text())
-    registry = config / "keybindings.json"
-    if not registry.exists():
-        defaults = json.loads((ROOT / "config/keybindings.json").read_text())
-        terminal = next((name for name in (os.environ.get("TERMINAL", ""), "alacritty", "foot", "kitty", "konsole", "gnome-terminal", "xterm") if name and shutil.which(name)), "alacritty")
-        for binding in defaults:
-            if binding.get("niri") == 'spawn "alacritty"':
-                binding["niri"] = "spawn " + json.dumps(terminal)
-        atomic_text(registry, json.dumps(defaults, indent=2) + "\n")
-    bindings = json.loads(registry.read_text())
-    # Add the new camera shortcuts to existing profiles without replacing user
-    # bindings or taking keys that the user has assigned to another action.
-    defaults = json.loads((ROOT / "config/keybindings.json").read_text())
-    def normalized_key(key):
-        return "+".join(sorted(part.casefold().replace("super", "mod") for part in key.split("+")))
-    changed = False
-    for binding in bindings:
-        legacy = {('Mod+Minus', 'set-column-width "-10%"'): 'zoom_out',
-                  ('Mod+Equal', 'set-column-width "+10%"'): 'zoom_in'}
-        action = legacy.get((binding.get("keys", [""])[0], binding.get("niri"))) if len(binding.get("keys", [])) == 1 else None
-        if action and binding.get("action") == "compositor":
-            binding.clear()
-            binding.update(next(default for default in defaults if default["action"] == action))
-            changed = True
-    actions = {binding["action"] for binding in bindings}
-    occupied = {normalized_key(key) for binding in bindings if binding.get("scope") == "global" for key in binding["keys"]}
-    for binding in defaults:
-        if binding["action"] not in {"zoom_in", "zoom_out"} or binding["action"] in actions:
-            continue
-        if any(normalized_key(key) in occupied for key in binding["keys"]):
-            continue
-        bindings.append(binding)
-        occupied.update(normalized_key(key) for key in binding["keys"])
-        changed = True
-    for binding in bindings:
-        if binding.get("scope") == "gesture" and binding["action"] == "zoom" and binding["keys"] == ["Scroll"]:
-            binding.update(next(default for default in defaults if default["action"] == "zoom"))
-            changed = True
-    if changed:
-        atomic_text(registry, json.dumps(bindings, indent=2) + "\n")
-    lines = ["// Generated from keybindings.json by the FlowWM installer.", "binds {"]
-    used = set()
-    flowwm = str(launcher.with_name("flowwm"))
-    for binding in bindings:
-        if binding.get("scope") != "global":
-            continue
-        command = binding.get("niri")
-        if not command:
-            command = "spawn " + " ".join(json.dumps(arg) for arg in [flowwm, *binding["command"]])
-        for key in binding["keys"]:
-            normalized = normalized_key(key)
-            if normalized in used:
-                raise ValueError(f"Duplicate global shortcut: {key}")
-            used.add(normalized)
-            title = json.dumps(binding["description"])
-            properties = [f"hotkey-overlay-title={title}"]
-            for name in ("repeat", "allow_when_locked", "allow_inhibiting", "cooldown_ms"):
-                if name in binding:
-                    properties.append(f"{name.replace('_', '-')}={json.dumps(binding[name])}")
-            lines.append(f"    {key} {' '.join(properties)} {{ {command}; }}")
-    lines.append("}")
-    atomic_text(config / "keybindings.kdl", "\n".join(lines) + "\n")
+    defaults = (ROOT / "config/compositor.kdl").read_text()
+    terminal = next((name for name in (os.environ.get("TERMINAL", ""), "alacritty", "foot", "kitty", "konsole", "gnome-terminal", "xterm") if name and shutil.which(name)), "alacritty")
+    defaults = defaults.replace('spawn "alacritty"', 'spawn ' + json.dumps(terminal)).replace('terminal "alacritty"', 'terminal ' + json.dumps(terminal))
+    migrate(config, state, defaults, launcher, atomic_text)
     extensions = config / "extensions"
     extensions.mkdir(exist_ok=True)
     for original in (ROOT / "config/extensions").glob("*.json"):
@@ -285,6 +234,9 @@ def replace_session(bundle, session):
         run("systemctl", "--user", "set-environment", "FLOWWM_INSTALL_ROOT=" + str(bundle))
         run("systemctl", "--user", "start", *services_for(bundle))
         verify_services(bundle, session[0])
+        if (bundle / "installation.json").is_file():
+            metadata = json.loads((bundle / "installation.json").read_text())
+            cleanup_profile(metadata["config"], metadata["state"])
     except BaseException as error:
         print("Replacement failed; restoring the previous FlowWM and DMS snapshot.", flush=True)
         try:
@@ -358,6 +310,7 @@ def main():
         shutil.copytree(ROOT / "components/dms/quickshell", bundle / "shell", symlinks=False,
                         ignore=shutil.ignore_patterns(".git", ".github", "tests", "__pycache__"))
         shutil.copy2(ROOT / "scripts/session.py", bundle / "session.py")
+        shutil.copy2(ROOT / "scripts/configuration.py", bundle / "configuration.py")
         if (ROOT / "extensions").is_dir():
             shutil.copytree(ROOT / "extensions", bundle / "extensions", ignore=shutil.ignore_patterns("__pycache__", "test_*.py"))
         profile = user_config / "flow-wm"
@@ -397,6 +350,7 @@ os.execv(sys.executable,[sys.executable,str(script),*sys.argv[1:]])
     except BaseException:
         # A failed installation must not reload any running services.
         raise
+    cleanup_profile(config, state)
     print(f"Installed FlowWM snapshot: {bundle}")
     print(f"Persistent FlowWM profile: {profile}")
     print("The login screen uses the installed snapshot. Only an explicit install changes current.")

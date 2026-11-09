@@ -21,7 +21,7 @@ python3 scripts/install.py
 
 The installer builds a matching compositor, graph service, and Dux shell, then copies them into a versioned snapshot. It creates `~/.local/bin/flowwm` and `~/.local/bin/flowwm-session`; add `~/.local/bin` to your PATH.
 
-The desktop is self-contained. Its configuration is **`~/.config/flow-wm/`**, or `$XDG_CONFIG_HOME/flow-wm/`. A fresh installation works without an existing niri or DMS configuration. FlowWM ships its own Dux preferences, bar layout, dark wallpaper, and initial compositor appearance. The installer generates these and the shortcut registry independently of `~/.config/niri/` and preserves your FlowWM preferences on reinstall.
+The desktop is self-contained. Its configuration is **`~/.config/flow-wm/`**, or `$XDG_CONFIG_HOME/flow-wm/`. A fresh installation works without an existing niri or DMS configuration. FlowWM ships its own Dux preferences, bar layout, dark wallpaper, and initial compositor appearance. The installer creates these independently of `~/.config/niri/` and preserves your FlowWM preferences on reinstall.
 
 The installer also writes a login-screen entry to `~/.config/flow-wm/flowwm.desktop`. To make it available in a system display manager:
 
@@ -46,7 +46,7 @@ flowwm-session describe                          # inspect selected paths and bi
 
 ## Keyboard and mouse
 
-**Win** is niri's `Mod` key. **Win+?** opens the searchable **Key bindings** window in either view; **?** opens the same help from the graph. Help comes from the same [registry](../config/keybindings.json) that defines graph shortcuts and generates compositor bindings.
+**Win** is niri's `Mod` key. **Win+?** opens the searchable **Key bindings** window in either view; **?** opens the same help from the graph. Help reads the same [KDL configuration](../config/compositor.kdl) that defines graph shortcuts and compositor bindings.
 
 | Shortcut | Action |
 | --- | --- |
@@ -68,6 +68,7 @@ flowwm-session describe                          # inspect selected paths and bi
 | Enter or double-click | Peek at a window, edit a constant, or open workflow output |
 | Shift+Tab, Shift+Enter or E | Edit node parameters |
 | F / Home | Center selection / frame all nodes |
+| Win+Enter / Win+Q | Run / stop selected nodes |
 | R | Run the selected node |
 | Delete or Backspace | Delete selection; close selected live application windows |
 | Alt+1…9, 0 | Select by index; hold Alt to display indices |
@@ -75,9 +76,9 @@ flowwm-session describe                          # inspect selected paths and bi
 | Alt+Backspace | Clear closed window history on the current row |
 | Escape | Leave peek, dismiss popup, clear search, then deselect |
 
-In Windows view, Win+arrows navigates the normal niri layout and Win+Ctrl+arrows moves windows/columns. Win+Shift+arrows focuses another monitor; Win+Ctrl+Shift+arrows moves a column to that monitor. Win+T, Win+K, and Win+Return open the terminal selected during installation (Alacritty is preferred when available). Win+E opens Dolphin, Win+B opens the default browser, Win+V opens the clipboard, Win+P opens the power menu, Win+Shift+Period opens the notepad, and Win+Alt+L locks the screen. These application bindings require their corresponding programs; customize them in the registry.
+In Windows view, Win+arrows navigates the normal niri layout and Win+Ctrl+arrows moves windows/columns. Win+Shift+arrows focuses another monitor; Win+Ctrl+Shift+arrows moves a column to that monitor. Win+T, Win+K, and Win+Return open the terminal selected during installation (Alacritty is preferred when available). Win+E opens Dolphin, Win+B opens the default browser, Win+V opens the clipboard, Win+P opens the power menu, Win+Shift+Period opens the notepad, and Win+Alt+L locks the screen. These application bindings require their corresponding programs; customize them in `config.kdl`.
 
-Win+Page Up/Down or Win+I/U changes workspaces; add Ctrl to move a column or Shift to reorder the workspace. Win+1…9 selects a workspace and Win+Ctrl+1…9 moves a column there. Media, volume, brightness, screenshots, floating windows, column sizing, fullscreen, close-window, and logout bindings are also in the registry and shortcut help.
+Win+Page Up/Down or Win+I/U changes workspaces; add Ctrl to move a column or Shift to reorder the workspace. Win+1…9 selects a workspace and Win+Ctrl+1…9 moves a column there. Media, volume, brightness, screenshots, floating windows, column sizing, fullscreen, close-window, and logout bindings are also in `config.kdl` and shortcut help.
 
 | Mouse gesture | Action |
 | --- | --- |
@@ -169,13 +170,9 @@ The extension observer discovers already running or explicitly addressed executa
 
 | Location | Contents |
 | --- | --- |
-| `~/.config/flow-wm/config.kdl` | Compositor preferences |
-| `~/.config/flow-wm/keybindings.json` | Shortcut registry |
-| `~/.config/flow-wm/keybindings.kdl` | Generated global bindings |
-| `~/.config/flow-wm/local.kdl` | Personal compositor overrides and startup hooks, included last |
-| `~/.config/flow-wm/environment.json` | Optional personal environment shared by session processes |
-| `~/.config/flow-wm/dms/` | Private Dux preferences and plugin settings |
-| `~/.config/flow-wm/niri/dms/` | Dux-generated compositor appearance/input settings |
+| `~/.config/flow-wm/config.kdl` | Compositor, environment, global bindings, graph bindings, and motion |
+| `~/.config/flow-wm/dms/` | Dux preferences, plugins, and generated compositor appearance/input settings |
+| `~/.config/flow-wm/.shell/` | Private XDG compatibility paths used only by Dux |
 | `~/.config/flow-wm/extensions/` | Declarative node/type/cast manifests |
 | `~/.config/flow-wm/agent.json` | Optional graph-assistant command |
 | `~/.local/share/flowwm/state.json` | Persistent graphs and recipes |
@@ -184,13 +181,33 @@ The extension observer discovers already running or explicitly addressed executa
 | `~/.local/state/flow-wm/dms/wallpaper.png` | Bundled wallpaper copied on first installation |
 | `$XDG_RUNTIME_DIR/flowwm.sock` | Local control socket |
 
-XDG directory overrides are respected. `FLOWWM_CONFIG_DIR` selects an explicit FlowWM configuration directory. Reinstall with `--skip-build` after editing the shortcut registry to regenerate global bindings, then reload the graph/Dux services or log in again for graph shortcut changes. Compositor preferences can be edited directly; customize global shortcuts through the registry to keep help accurate.
+XDG directory overrides are respected. `FLOWWM_CONFIG_DIR` selects an explicit FlowWM configuration directory. Edit `config.kdl` directly: niri validates and reloads compositor settings and global bindings. Restart the graph service for graph bindings and motion changes. Reinstalling preserves this file; no binding generation step is needed.
 
-Global registry entries support `repeat`, `allow_when_locked`, `allow_inhibiting`, and `cooldown_ms`; these are emitted as niri binding properties. View toggles and launchers do not repeat, media keys can work while locked, and workspace wheel bindings have a cooldown.
+Global `binds` use native niri actions and properties such as `repeat`, `allow-when-locked`, `allow-inhibiting`, and `cooldown-ms`. The `flow` section configures the canvas:
+
+```kdl
+flow {
+    terminal "alacritty"
+    motion-ms 220
+    removal-ms 180
+    inertia-decay 10.0
+    running-color "#71c68c"
+    running-width 3.0
+    binds {
+        r action="run" title="Run selected node"
+        Ctrl+r action="stop" title="Stop selected node"
+        Delete action="delete" title="Delete selection"
+    }
+}
+```
+
+Graph keys use niri's key names and modifiers. `action="none"` disables a graph binding. A `flow.binds` block defines the graph's keys; keep the other shipped entries when adding your own. Native `include` files can override individual settings and bindings. Zero motion/removal duration disables that animation; niri's `animations { off; }` and Dux's reduce-motion setting disable both. The native niri slowdown setting also applies to graph animations. Removed cards shrink and fade briefly, and the renderer requests frames only while animation remains. The running sideline is independent of selection color. On view changes, visible windows follow an eased arc; off-screen windows fade at their graph positions.
 
 The default wallpaper is attached to niri's output backdrop, so it stays fixed while workspace rows scroll. This is configured with `place-within-backdrop` rules for Quickshell and the Dux blur wallpaper, together with a transparent layout background.
 
-Place machine-specific `spawn-at-startup` / `spawn-sh-at-startup` hooks, output rules, and local window rules in `local.kdl`. For environment variables needed by Dux-launched applications as well as compositor-launched applications, create `environment.json`: a JSON object of variable names to strings, with `null` to unset a variable. Each installed session process loads it before starting. Changes reach restarted graph/Dux services immediately and the compositor and session startup hooks at the next login. Neither file is overwritten on reinstall. Proxy addresses, input-method setup, GPU overrides, keyring setup, and personal scripts are not part of the shipped defaults.
+Place personal startup hooks, output rules, window rules, and an `environment { ... }` block in `config.kdl`. Environment entries accept strings or `null` to unset a variable. The session uses niri's parser to supply the same values to the compositor, graph service, Dux, and their children. Environment changes reach services when restarted and startup hooks at the next login. Ordinary applications keep the user's normal XDG directories.
+
+The installer migrates the former `keybindings.json`, generated `keybindings.kdl`, `local.kdl`, and `environment.json` into `config.kdl`, preserving custom keys and startup settings. Originals are archived under `~/.local/state/flow-wm/config-backups/before-flat-layout/`. Dux's generated KDL files move alongside its settings in `dms/`. Unused application profiles left by the old private XDG home are archived there too; cleanup waits until no process uses that home.
 
 Graphs from previous versions remain in the existing data directory. Older private desktop preferences under `~/.local/state/flowwm/desktop/` are left in place; review and copy desired settings into the new profile. Ordinary niri configuration is not imported. Back up `state.json` and your configuration before experimenting with older binaries.
 

@@ -14,116 +14,92 @@ spec.loader.exec_module(installer)
 
 
 class ProfileIsolation(unittest.TestCase):
-    def test_profile_edits_and_reinstall_do_not_modify_niri(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            original = root / 'original'
-            (original / 'niri').mkdir(parents=True)
-            (original / 'dms').mkdir()
-            (original / 'niri/config.kdl').write_text('include "dms-overwrite.kdl"\n')
-            (original / 'niri/dms-overwrite.kdl').write_text('binds {\n Mod+Left { focus-column-left; }\n Mod+Space { spawn "dms" "ipc" "call" "spotlight" "toggle"; }\n}\n')
-            (original / 'dms/settings.json').write_text(json.dumps({'barConfigs': [{'leftWidgets': ['workspaceSwitcher', 'focusedWindow']}], 'custom': 42}))
-            (original / 'dms/plugin_settings.json').write_text('{"other":{"enabled":true}}')
-            initial = {p.relative_to(original): p.read_bytes() for p in original.rglob('*') if p.is_file()}
-            profile = root / 'profile'
-            arguments = [profile / 'config', profile / 'state', profile / 'cache', root / 'installed/v1', original, root / 'state', root / 'cache', root / 'bin/flowwm-session']
-            installer.prepare_profile(*arguments)
-            config = profile / 'config'
-            self.assertIn('"navigate" "left"', (config / 'keybindings.kdl').read_text())
-            self.assertIn('"new"', (config / 'keybindings.kdl').read_text())
-            settings = json.loads((config / 'dms/settings.json').read_text())
-            self.assertEqual([installer.widget_id(w) for w in settings['barConfigs'][0]['leftWidgets']],
-                             ['launcherButton', 'workspaceSwitcher', 'flowwm', 'focusedWindow'])
-            self.assertEqual(settings['currentThemeName'], 'dynamic')
-            self.assertNotIn('custom', settings)
-            settings['custom'] = 99
-            (config / 'dms/settings.json').write_text(json.dumps(settings))
-            arguments[3] = root / 'installed/v2'
-            installer.prepare_profile(*arguments)
-            self.assertEqual(json.loads((config / 'dms/settings.json').read_text())['custom'], 99)
-            self.assertNotIn('installed/v1', (config / 'keybindings.kdl').read_text())
-            # An explicit install cannot repoint an active session's loaded plugin.
-            self.assertEqual(os.readlink(config / 'dms/plugins/flowwm'), str(root / 'installed/v1/shell/PLUGINS/FlowWM'))
-            self.assertEqual(initial, {p.relative_to(original): p.read_bytes() for p in original.rglob('*') if p.is_file()})
-            (config / 'dms/settings.json').write_text('{}')
-            self.assertNotEqual((original / 'dms/settings.json').read_text(), '{}')
+    def profile(self, root):
+        arguments = [root / 'config', root / 'state', root / 'cache', root / 'bundle', root / 'original', root / 'original-state', root / 'original-cache', root / 'bin/flowwm-session']
+        installer.prepare_profile(*arguments)
+        return arguments
 
-    def test_fresh_home_needs_no_niri_or_dms_configuration(self):
+    def test_fresh_profile_is_flat_and_reinstall_preserves_edits(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            config = root / 'config/flow-wm'
-            installer.prepare_profile(config, root / 'state', root / 'cache', root / 'bundle', root / 'missing-config', root / 'missing-state', root / 'missing-cache', root / 'bin/flowwm-session')
-            self.assertTrue((config / 'config.kdl').is_file())
-            self.assertTrue((config / 'keybindings.kdl').is_file())
-            session = json.loads((root / 'state/dms/session.json').read_text())
-            self.assertTrue(Path(session['wallpaperPath']).is_file())
-            self.assertNotIn('launcherQueryHistory', session)
+            args = self.profile(root)
+            config = args[0]
+            text = (config / 'config.kdl').read_text()
+            self.assertIn('run_selected', text)
+            self.assertIn('flow {', text)
+            self.assertIn('include "dms/colors.kdl"', text)
+            for name in ('keybindings.json', 'keybindings.kdl', 'environment.json', 'local.kdl'):
+                self.assertFalse((config / name).exists())
+            self.assertEqual((config / '.shell/niri/dms').resolve(), config / 'dms')
+            self.assertEqual((config / '.shell/DankMaterialShell').resolve(), config / 'dms')
+            text += '\nspawn-at-startup "my-session-hook"\n'
+            (config / 'config.kdl').write_text(text)
+            installer.prepare_profile(*args)
+            self.assertEqual((config / 'config.kdl').read_text(), text)
             compositor = installer.ROOT / 'target/niri/debug/niri'
             if compositor.is_file():
                 subprocess.run([str(compositor), 'validate', '--config', str(config / 'config.kdl')], check=True, capture_output=True)
-            self.assertFalse((config / 'niri/config.kdl').exists())
-            self.assertEqual(json.loads((config / 'dms/plugin_settings.json').read_text())['flowwm']['enabled'], True)
 
-    def test_personal_settings_and_wallpaper_survive_reinstall(self):
+    def test_legacy_settings_are_inlined_and_backed_up(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            arguments = [root / 'config', root / 'state', root / 'cache', root / 'bundle',
-                         root / 'original', root / 'original-state', root / 'original-cache', root / 'bin/flowwm-session']
-            installer.prepare_profile(*arguments)
-            custom = {
-                root / 'config/local.kdl': 'spawn-at-startup "my-session-hook"\n',
-                root / 'config/environment.json': '{"http_proxy":"http://localhost:9999"}',
-                root / 'state/dms/session.json': '{"wallpaperPath":"/my/custom/wallpaper.png"}',
+            config = root / 'config'
+            (config / 'niri/dms').mkdir(parents=True)
+            (config / 'niri/dms/colors.kdl').write_text('// custom colors\n')
+            legacy = {
+                'config.kdl': 'include "keybindings.kdl"\ninclude "niri/dms/colors.kdl"\ninclude "local.kdl"\n',
+                'keybindings.kdl': 'binds { Mod+T { spawn "my-terminal"; }; }\n',
+                'local.kdl': 'spawn-at-startup "my-session-hook"\nenvironment {\n    KEEP "native"\n}\n',
+                'environment.json': '{"KEEP":"legacy","EXTRA":"value","UNSET":null}',
+                'keybindings.json': json.dumps([
+                    {'scope': 'global', 'action': 'compositor', 'keys': ['Mod+T'], 'niri': 'spawn "my-terminal"', 'description': 'Custom terminal'},
+                    {'scope': 'graph', 'action': 'run', 'keys': ['<Control>r'], 'description': 'My run key'},
+                ]),
             }
-            for path, contents in custom.items():
-                path.write_text(contents)
-            installer.prepare_profile(*arguments)
-            for path, contents in custom.items():
-                self.assertEqual(path.read_text(), contents)
+            for name, text in legacy.items():
+                (config / name).write_text(text)
+            args = self.profile(root)
+            text = (config / 'config.kdl').read_text()
+            self.assertIn('spawn "my-terminal"', text)
+            self.assertIn('spawn-at-startup "my-session-hook"', text)
+            self.assertIn('Ctrl+r action="run"', text)
+            self.assertIn('KEEP "native"', text)
+            self.assertNotIn('KEEP "legacy"', text)
+            self.assertIn('EXTRA "value"', text)
+            self.assertIn('UNSET null', text)
+            self.assertEqual((config / 'dms/colors.kdl').read_text(), '// custom colors\n')
+            for name, contents in legacy.items():
+                self.assertEqual((root / 'state/config-backups/before-flat-layout' / name).read_text(), contents)
+                if name != 'config.kdl': self.assertFalse((config / name).exists())
+            installer.prepare_profile(*args)
+            self.assertEqual((config / 'config.kdl').read_text(), text)
 
-    def test_binding_properties_and_niri_alias_conflicts(self):
+    def test_custom_global_bindings_and_alias_conflicts(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            config = root / 'config'
-            arguments = [config, root / 'state', root / 'cache', root / 'bundle',
-                         root / 'original', root / 'original-state', root / 'original-cache', root / 'bin/flowwm-session']
-            installer.prepare_profile(*arguments)
-            text = (config / 'keybindings.kdl').read_text()
-            self.assertIn('repeat=false allow-inhibiting=false', text)
-            self.assertIn('repeat=true allow-when-locked=true', text)
-            self.assertIn('cooldown-ms=150', text)
-            bindings = json.loads((config / 'keybindings.json').read_text())
-            bindings.append({**bindings[0], 'keys': ['Super+tab']})
-            (config / 'keybindings.json').write_text(json.dumps(bindings))
+            (root / 'config').mkdir()
+            (root / 'config/config.kdl').write_text('include "keybindings.kdl"\n')
+            bindings = [{'scope': 'global', 'action': 'compositor', 'keys': ['Mod+Tab', 'Super+tab'], 'description': 'Conflict', 'niri': 'spawn "true"'}]
+            (root / 'config/keybindings.json').write_text(json.dumps(bindings))
             with self.assertRaisesRegex(ValueError, 'Duplicate global shortcut'):
-                installer.prepare_profile(*arguments)
+                self.profile(root)
+            self.assertTrue((root / 'config/keybindings.json').exists())
 
-    def test_camera_shortcuts_upgrade_existing_profiles_and_respect_custom_keys(self):
+    def test_profile_cleanup_archives_accidental_application_configs(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            config = root / 'config'
-            arguments = [config, root / 'state', root / 'cache', root / 'bundle',
-                         root / 'original', root / 'original-state', root / 'original-cache', root / 'bin/flowwm-session']
-            installer.prepare_profile(*arguments)
-            registry = config / 'keybindings.json'
-            bindings = [b for b in json.loads(registry.read_text()) if b['action'] not in ('zoom_in', 'zoom_out')]
-            bindings.extend([
-                {'keys': ['Mod+Minus'], 'action': 'compositor', 'scope': 'global', 'description': 'Decrease column width', 'niri': 'set-column-width "-10%"'},
-                {'keys': ['Mod+Equal'], 'action': 'compositor', 'scope': 'global', 'description': 'Increase column width', 'niri': 'set-column-width "+10%"'},
-            ])
-            registry.write_text(json.dumps(bindings))
-            installer.prepare_profile(*arguments)
-            self.assertIn('Mod+minus', (config / 'keybindings.kdl').read_text())
-            self.assertIn('Mod+equal', (config / 'keybindings.kdl').read_text())
-            bindings = [b for b in json.loads(registry.read_text()) if b['action'] not in ('zoom_in', 'zoom_out')]
-            bindings.append({'keys': ['Super+equal'], 'action': 'custom_equal', 'scope': 'global',
-                             'description': 'Custom', 'niri': 'spawn "true"'})
-            registry.write_text(json.dumps(bindings))
-            installer.prepare_profile(*arguments)
-            actions = [b['action'] for b in json.loads(registry.read_text())]
-            self.assertIn('zoom_out', actions)
-            self.assertNotIn('zoom_in', actions)
-            self.assertIn('custom_equal', actions)
+            config, state = root / 'config', root / 'state'
+            (config / 'Code/User').mkdir(parents=True)
+            (config / 'Code/User/settings.json').write_text('{"custom":true}')
+            (config / 'dms').mkdir()
+            (config / 'DankMaterialShell').symlink_to('dms')
+            (config / 'my-include.kdl').write_text('// personal include')
+            self.assertTrue(installer.cleanup_profile(config, state))
+            self.assertFalse((config / 'Code').exists())
+            self.assertFalse((config / 'DankMaterialShell').exists())
+            self.assertTrue((config / 'dms').exists())
+            self.assertTrue((config / 'my-include.kdl').exists())
+            self.assertEqual((state / 'config-backups/before-flat-layout/application-configs/Code/User/settings.json').read_text(), '{"custom":true}')
 
     def test_units_validate_without_an_installed_niri_or_dms_service(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -165,6 +141,8 @@ class LoginIsolation(unittest.TestCase):
                 self.assertEqual(command, [executable, *arguments])
                 for name, path in caller.items():
                     expected = path if explicit or name == 'XDG_DATA_HOME' else data[name[4:-5].lower()]
+                    if not explicit and name == 'XDG_CONFIG_HOME':
+                        expected = str(Path(expected) / '.shell')
                     self.assertEqual(environment[name], expected)
 
     def test_private_environment_reaches_all_session_processes(self):
@@ -173,11 +151,12 @@ class LoginIsolation(unittest.TestCase):
         spec.loader.exec_module(runtime)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            (root / 'environment.json').write_text(json.dumps({'http_proxy': 'http://localhost:9999', 'QT_IM_MODULES': None}))
+            (root / 'config.kdl').write_text('environment { http_proxy \"http://localhost:9999\"; QT_IM_MODULES null; }')
             data = {'config': str(root), 'state': str(root / 'state'), 'cache': str(root / 'cache')}
             for profile in (False, True):
                 with self.subTest(profile=profile), patch.object(runtime, 'settings', return_value=data), \
-                     patch.dict(os.environ, {'QT_IM_MODULES': 'old'}):
+                     patch.dict(os.environ, {'QT_IM_MODULES': 'old'}), \
+                     patch.object(runtime.subprocess, 'check_output', return_value=json.dumps({'http_proxy': 'http://localhost:9999', 'QT_IM_MODULES': None})):
                     environment = runtime.environment(profile=profile)
                     self.assertEqual(environment['http_proxy'], 'http://localhost:9999')
                     self.assertNotIn('QT_IM_MODULES', environment)
@@ -196,7 +175,7 @@ class LoginIsolation(unittest.TestCase):
                 environment = runtime.environment(profile=True)
                 for key, path in data.items():
                     name = 'XDG_' + key.upper() + '_HOME'
-                    self.assertEqual(environment[name], path)
+                    self.assertEqual(environment[name], str(Path(path) / '.shell') if key == 'config' else path)
                     self.assertEqual(environment['DMS_ORIG_' + name], original.get(name, ''))
                 with patch.dict(os.environ, environment, clear=True):
                     nested = runtime.environment(profile=True)
@@ -214,7 +193,7 @@ class LoginIsolation(unittest.TestCase):
                 raise subprocess.CalledProcessError(1, command, stderr="Unit not loaded")
         with patch.object(runtime, 'service_active', return_value=False), \
              patch.object(runtime.subprocess, 'run', side_effect=cold_manager), \
-             patch.object(runtime.signal, 'signal'), patch.dict(os.environ):
+             patch.object(runtime.signal, 'signal'), patch.object(runtime, 'settings', return_value={'config':'/private/config','state':'/private/state'}), patch.dict(os.environ):
             runtime.login()
             self.assertEqual(os.environ['XDG_CURRENT_DESKTOP'], 'niri')
             self.assertEqual(os.environ['XDG_SESSION_TYPE'], 'wayland')
@@ -244,7 +223,7 @@ class ReplaceSession(unittest.TestCase):
         self.new = self.root / 'new snapshot'
         for bundle in (self.old, self.new):
             bundle.mkdir()
-            (bundle / 'installation.json').write_text('{}')
+            (bundle / 'installation.json').write_text(json.dumps({'config':str(self.root / 'config'), 'state':str(self.root / 'state')}))
         self.pin = str(self.old)
         self.pids = {'flowwm-compositor.service': 100, 'flowwm.service': 101, 'flowwm-dms.service': 102}
         self.environments = {pid: os.fsencode('FLOWWM_INSTALL_ROOT=' + self.pin) + b'\0'
@@ -254,6 +233,9 @@ class ReplaceSession(unittest.TestCase):
         self.overrides = {}
         self.next_pid = 103
         mock = patch.object(installer.subprocess, 'check_output', side_effect=self.query)
+        mock.start()
+        self.addCleanup(mock.stop)
+        mock = patch.object(installer, 'cleanup_profile')
         mock.start()
         self.addCleanup(mock.stop)
         mock = patch.object(installer, 'run', side_effect=self.command)
@@ -364,7 +346,7 @@ class InstallReplace(unittest.TestCase):
         for relative in ('target/release/flowwm', 'target/release/flowwm-shell',
                          'target/niri/release/niri', 'components/dms/core/bin/dms',
                          'components/dms/quickshell/PLUGINS/FlowWM/manifest.json',
-                         'scripts/session.py', 'config/dms-niri.kdl'):
+                         'scripts/session.py', 'scripts/configuration.py', 'config/dms-niri.kdl'):
             path = self.repo / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('fixture\n')

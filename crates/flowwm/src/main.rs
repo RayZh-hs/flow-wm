@@ -58,6 +58,8 @@ impl From<Kind> for NodeKind {
 enum Cmd {
     #[command(hide = true)]
     EvaluateWorker,
+    /// Read the shared KDL session environment without starting a desktop.
+    ConfigEnvironment,
     /// Start the native graph overlay and desktop bar.
     Start {
         #[arg(long)]
@@ -163,6 +165,17 @@ fn main() -> Result<()> {
         background: false,
     });
     let control = match command {
+        Cmd::ConfigEnvironment => {
+            let config = flowwm::config::load()?;
+            let values: std::collections::BTreeMap<_, _> = config
+                .environment
+                .0
+                .into_iter()
+                .map(|v| (v.name, v.value))
+                .collect();
+            println!("{}", serde_json::to_string(&values)?);
+            return Ok(());
+        }
         Cmd::EvaluateWorker => return flowwm::graph::run_worker(),
         Cmd::Start {
             windowed,

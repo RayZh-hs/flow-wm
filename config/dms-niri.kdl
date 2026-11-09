@@ -1,4 +1,4 @@
-// Minimal manual integration. Installed FlowWM generates these from keybindings.json.
+// Minimal manual integration. Installed FlowWM keeps bindings in config.kdl.
 binds {
     Mod+Tab repeat=false allow-inhibiting=false hotkey-overlay-title="FlowWM: Nodes / Windows" { spawn "flowwm" "toggle"; }
     Mod+Shift+Tab repeat=false allow-inhibiting=false hotkey-overlay-title="FlowWM: Return to windows" { spawn "flowwm" "windows"; }
