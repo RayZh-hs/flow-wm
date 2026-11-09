@@ -114,7 +114,11 @@ def main():
             raise RuntimeError(f"FlowWM's private plugin slot is not a symlink: {plugin}")
         plugin.symlink_to(target, target_is_directory=True)
     argv = command(kind, arguments)
-    os.execvpe(argv[0], argv, environment(profile=kind in ("shell", "dms", "dms-cli")))
+    # Theme workers pass their own profile; nested shells must not write into the installed desktop.
+    explicit_theme_profile = (kind == "dms-cli" and arguments[:1] == ["matugen"]
+                              and any(arg == "--config-dir" or arg.startswith("--config-dir=") for arg in arguments))
+    process_environment = os.environ.copy() if explicit_theme_profile else environment(profile=kind in ("shell", "dms", "dms-cli"))
+    os.execvpe(argv[0], argv, process_environment)
 
 
 if __name__ == "__main__":

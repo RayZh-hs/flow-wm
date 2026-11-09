@@ -115,6 +115,31 @@ class ProfileIsolation(unittest.TestCase):
 
 
 class LoginIsolation(unittest.TestCase):
+    def test_matugen_with_explicit_profile_keeps_caller_xdg_paths(self):
+        spec = importlib.util.spec_from_file_location('runtime', Path(__file__).with_name('session.py'))
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        data = {'config': '/installed/config', 'state': '/installed/state', 'cache': '/installed/cache'}
+        caller = {f'XDG_{name}_HOME': f'/nested/{name.lower()}' for name in ('CONFIG', 'STATE', 'CACHE', 'DATA')}
+        cases = [
+            (['matugen', 'generate', '--config-dir', '/nested/config'], True),
+            (['matugen', 'queue', '--config-dir=/nested/config'], True),
+            (['matugen', 'qtengine', '--config-dir', '/nested/config'], True),
+            (['matugen', 'check'], False),
+            (['ipc', 'call', 'spotlight', 'toggle'], False),
+        ]
+        for arguments, explicit in cases:
+            with self.subTest(arguments=arguments), patch.object(runtime, 'settings', return_value=data), \
+                 patch.dict(os.environ, caller, clear=True), \
+                 patch.object(runtime.sys, 'argv', ['flowwm-session', 'dms-cli', *arguments]), \
+                 patch.object(runtime.os, 'execvpe') as execute:
+                runtime.main()
+                executable, command, environment = execute.call_args.args
+                self.assertEqual(command, [executable, *arguments])
+                for name, path in caller.items():
+                    expected = path if explicit or name == 'XDG_DATA_HOME' else data[name[4:-5].lower()]
+                    self.assertEqual(environment[name], expected)
+
     def test_private_environment_reaches_all_session_processes(self):
         spec = importlib.util.spec_from_file_location('runtime', Path(__file__).with_name('session.py'))
         runtime = importlib.util.module_from_spec(spec)

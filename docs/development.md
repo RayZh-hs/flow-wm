@@ -133,6 +133,14 @@ switched between the two profiles, and the workflow service is not enabled for
 ordinary graphical sessions. Integrated FlowWM refuses a compositor without the
 native node-row contract.
 
+Matugen commands with an explicit `--config-dir` retain the caller's XDG
+directories, including when invoked through the installed `dms` wrapper. For
+nested Dux tests, set all four XDG configuration, state, cache, and data homes
+to temporary directories and use a private runtime directory and D-Bus session.
+Set `DMS_EXECUTABLE` to `components/dms/core/bin/dms` to test the newly built CLI.
+The renderer resolves `CONFIG_DIR` from the request's `--config-dir`, so a queued
+request also respects its target profile.
+
 ## Source updates
 
 The fork URLs, branch names, and upstream URLs are in `components.json`.

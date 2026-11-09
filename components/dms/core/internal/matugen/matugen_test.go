@@ -457,8 +457,50 @@ func TestSubstituteVars(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			result := substituteVars(tc.input, tc.shellDir)
+			result := (&Options{ShellDir: tc.shellDir, ConfigDir: configDir}).substituteVars(tc.input)
 			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
+
+func TestTemplateConfigUsesRequestedProfile(t *testing.T) {
+	liveConfig := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", liveConfig)
+	shellDir, err := filepath.Abs("../../../quickshell")
+	assert.NoError(t, err)
+	for _, tc := range []struct {
+		name     string
+		terminal bool
+		dark     bool
+		opacity  int
+	}{
+		{name: "niri"},
+		{name: "kitty", terminal: true},
+		{name: "kitty dark", terminal: true, dark: true},
+		{name: "kitty opacity", terminal: true, opacity: 85},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profile := t.TempDir()
+			checker := mocks_utils.NewMockAppChecker(t)
+			command, config, output := "niri", "niri.toml", "niri/dms/colors.kdl"
+			if tc.terminal {
+				command, config, output = "kitty", "kitty.toml", "kitty/dank-theme.conf"
+			}
+			checker.EXPECT().AnyCommandExists(command).Return(true)
+			opts := &Options{ShellDir: shellDir, ConfigDir: profile, AppChecker: checker,
+				TerminalsAlwaysDark: tc.dark, TerminalOpacity: tc.opacity}
+			merged, err := os.CreateTemp(t.TempDir(), "templates-*.toml")
+			assert.NoError(t, err)
+			defer merged.Close()
+			if tc.terminal {
+				appendTerminalConfig(opts, merged, t.TempDir(), []string{command}, nil, config)
+			} else {
+				appendConfig(opts, merged, []string{command}, nil, nil, config)
+			}
+			data, err := os.ReadFile(merged.Name())
+			assert.NoError(t, err)
+			assert.Contains(t, string(data), "output_path = '"+filepath.Join(profile, output)+"'")
+			assert.NotContains(t, string(data), liveConfig)
 		})
 	}
 }
@@ -1263,7 +1305,7 @@ func TestAppendTerminalConfigOpacity(t *testing.T) {
 	assert.Equal(t, "tab {{x}}\n", string(b))
 
 	got, runTmp = run(0)
-	assert.Equal(t, substituteVars(toml, shellDir)+"\n", got)
+	assert.Equal(t, (&Options{ShellDir: shellDir}).substituteVars(toml)+"\n", got)
 	_, err = os.Stat(filepath.Join(runTmp, "kitty.conf"))
 	assert.True(t, os.IsNotExist(err))
 }

@@ -684,7 +684,7 @@ func buildMergedConfig(opts *Options, cfgFile *os.File, tmpDir string) error {
 			if strings.TrimSpace(line) == "[config]" {
 				continue
 			}
-			cfgFile.WriteString(substituteVars(line, opts.ShellDir) + "\n")
+			cfgFile.WriteString(opts.substituteVars(line) + "\n")
 		}
 		cfgFile.WriteString("\n")
 	}
@@ -811,7 +811,7 @@ func appendConfigContent(
 		}
 		content = strings.Join(lines, "\n")
 	}
-	cfgFile.WriteString(substituteVars(content, opts.ShellDir))
+	cfgFile.WriteString(opts.substituteVars(content))
 	cfgFile.WriteString("\n")
 }
 
@@ -832,7 +832,7 @@ func appendTerminalConfig(opts *Options, cfgFile *os.File, tmpDir string, checkC
 	content := string(data)
 
 	if !opts.TerminalsAlwaysDark && !terminalOpacityManaged(opts) {
-		cfgFile.WriteString(substituteVars(content, opts.ShellDir))
+		cfgFile.WriteString(opts.substituteVars(content))
 		cfgFile.WriteString("\n")
 		return
 	}
@@ -870,7 +870,7 @@ func appendTerminalConfig(opts *Options, cfgFile *os.File, tmpDir string, checkC
 			fmt.Sprintf("'%s'", tmpPath))
 	}
 
-	cfgFile.WriteString(substituteVars(content, opts.ShellDir))
+	cfgFile.WriteString(opts.substituteVars(content))
 	cfgFile.WriteString("\n")
 }
 
@@ -991,9 +991,10 @@ output_path = '%s/themes/dankshell-light.json'
 	log.Infof("Added %s theme config (extension found at %s)", name, extDir)
 }
 
-func substituteVars(content, shellDir string) string {
-	result := strings.ReplaceAll(content, "'SHELL_DIR/", "'"+shellDir+"/")
-	result = strings.ReplaceAll(result, "'CONFIG_DIR/", "'"+utils.XDGConfigHome()+"/")
+func (o *Options) substituteVars(content string) string {
+	result := strings.ReplaceAll(content, "'SHELL_DIR/", "'"+o.ShellDir+"/")
+	// Queued requests can target a different profile from the daemon's environment.
+	result = strings.ReplaceAll(result, "'CONFIG_DIR/", "'"+o.ConfigDir+"/")
 	result = strings.ReplaceAll(result, "'DATA_DIR/", "'"+utils.XDGDataHome()+"/")
 	result = strings.ReplaceAll(result, "'CACHE_DIR/", "'"+utils.XDGCacheHome()+"/")
 	if homeDir, err := os.UserHomeDir(); err == nil {
