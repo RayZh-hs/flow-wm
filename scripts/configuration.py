@@ -85,7 +85,10 @@ def migrate(config, state, defaults, launcher, atomic_text):
     if not re.search(r'(?m)^flow\s*\{', text):
         text += '\n' + re.search(r'(?ms)^flow \{.*?^\}', defaults).group() + '\n'
     text = text.replace('niri/dms/', 'dms/')
-    atomic_text(main, text)
+    mode = main.stat().st_mode & 0o777 if main.exists() else 0o644
+    for path in legacy:
+        mode &= path.stat().st_mode & 0o777
+    atomic_text(main, text, mode=mode)
     for path in legacy:
         path.unlink()
 

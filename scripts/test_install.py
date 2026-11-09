@@ -58,8 +58,10 @@ class ProfileIsolation(unittest.TestCase):
             }
             for name, text in legacy.items():
                 (config / name).write_text(text)
+            (config / 'environment.json').chmod(0o600)
             args = self.profile(root)
             text = (config / 'config.kdl').read_text()
+            self.assertEqual((config / 'config.kdl').stat().st_mode & 0o777, 0o600)
             self.assertIn('spawn "my-terminal"', text)
             self.assertIn('spawn-at-startup "my-session-hook"', text)
             self.assertIn('Ctrl+r action="run"', text)
