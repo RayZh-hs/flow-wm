@@ -1941,7 +1941,7 @@ fn draw_window_node(
         c.push_group();
     }
     rounded(c, rect.x, rect.y, rect.width, rect.height, radius);
-    theme.surface_high.alpha(c, t);
+    theme.node_background(n.status).alpha(c, t);
     let _ = c.fill_preserve();
     let accent = if selected {
         theme.primary
@@ -2067,19 +2067,6 @@ fn wire_cut(parent: &Node, node: &Node, points: &[(f64, f64)], view: &View) -> b
     route_cut(a, b, points, false)
 }
 
-pub(super) fn draw_running_line(c: &Context, x: f64, y: f64, height: f64, theme: &Theme) {
-    rounded(
-        c,
-        x + 2.,
-        y + theme.radius,
-        theme.running_width,
-        (height - 2. * theme.radius).max(0.),
-        theme.running_width / 2.,
-    );
-    theme.running.source(c);
-    let _ = c.fill();
-}
-
 pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, theme: &Theme) {
     let (x, y) = (p.x, p.y);
     let height = node_height(n);
@@ -2097,7 +2084,7 @@ pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, the
     c.set_source_rgba(0.0, 0.0, 0.0, 0.18);
     let _ = c.fill();
     rounded(c, x, y, WIDTH, height, theme.radius);
-    theme.surface_high.source(c);
+    theme.node_background(n.status).source(c);
     let _ = c.fill_preserve();
     if selected {
         theme.primary.source(c);
@@ -2106,9 +2093,6 @@ pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, the
     }
     c.set_line_width(if selected { 2.0 } else { 1.0 });
     let _ = c.stroke();
-    if n.status == Status::Running && theme.running_width > 0. {
-        draw_running_line(c, x, y, height, theme);
-    }
     rounded(c, x + 14.0, y + 16.0, 25.0, 23.0, 5.0);
     c.set_source_rgba(accent.0, accent.1, accent.2, 0.13);
     let _ = c.fill();
@@ -2837,6 +2821,79 @@ mod rendering_tests {
     }
 
     #[test]
+    fn running_backdrops_cover_cards_without_changing_selection() {
+        use super::super::theme::Color;
+        let mut view = View {
+            zoom: 1.,
+            ..View::default()
+        };
+        view.theme.running = Color(0., 1., 0.);
+        view.theme.running_opacity = 0.17;
+        view.theme.primary = Color(1., 0., 0.);
+        for kind in [NodeKind::Shell, NodeKind::Agent, NodeKind::Window] {
+            let mut node = Node::new("row", kind, "/tmp".into(), Position { x: 80., y: 100. });
+            if kind == NodeKind::Window {
+                node.window_id = Some(1);
+            }
+            let render = |node: &Node, selected, view: &View| {
+                raster(500, 450, |c| {
+                    if node.window_id.is_some() {
+                        draw_window_node(
+                            c,
+                            node,
+                            &node.position,
+                            super::super::collapse::Rect {
+                                x: node.position.x,
+                                y: node.position.y,
+                                width: WIDTH,
+                                height: node_height(node),
+                            },
+                            1.,
+                            selected,
+                            view,
+                        );
+                    } else {
+                        draw_node(c, node, &node.position, selected, &view.theme);
+                    }
+                })
+            };
+            for selected in [false, true] {
+                let idle = render(&node, selected, &view);
+                let base = pixel(&idle, 500, 200, 110);
+                for status in [
+                    Status::Running,
+                    Status::Queued,
+                    Status::Review,
+                    Status::Done,
+                    Status::Failed,
+                    Status::Stopped,
+                    Status::Idle,
+                ] {
+                    node.status = status;
+                    let image = render(&node, selected, &view);
+                    let background = pixel(&image, 500, 200, 110);
+                    if status == Status::Running {
+                        assert!(background & 0x00ff00 > base & 0x00ff00);
+                        // The old sideline occupied this point at the left edge.
+                        assert_eq!(pixel(&image, 500, 83, 170), background);
+                    } else {
+                        assert_eq!(background, base, "{kind:?}: {status:?}");
+                    }
+                    if selected {
+                        assert_eq!(pixel(&image, 500, 100, 100), pixel(&idle, 500, 100, 100));
+                    }
+                }
+                node.status = Status::Running;
+                view.theme.running_opacity = 0.;
+                let disabled = render(&node, selected, &view);
+                assert_eq!(pixel(&disabled, 500, 200, 110), base);
+                view.theme.running_opacity = 0.17;
+                node.status = Status::Idle;
+            }
+        }
+    }
+
+    #[test]
     fn selected_window_outline_survives_headers_and_footers() {
         let mut node = Node::new(
             "row",
@@ -3074,24 +3131,24 @@ mod rendering_tests {
             ..View::default()
         };
         let mut cache = super::super::gpu::Cache::default();
-        let mut render = |state: &State, view: &View| {
+        let mut render = |state: &State, view: &View, revision| {
             raster(500, 400, |c| {
                 let snapshot = gtk::Snapshot::new();
-                super::super::gpu::render(&snapshot, 500, 400, state, 1, view, &mut cache);
+                super::super::gpu::render(&snapshot, 500, 400, state, revision, view, &mut cache);
                 snapshot.to_node().unwrap().draw(c);
             })
         };
-        let visible = render(&state, &view);
+        let visible = render(&state, &view, 1);
         assert_eq!(node_height(&state.nodes[0]), 78.0);
         assert_ne!(
             pixel(&visible, 500, 200, 140),
             pixel(&visible, 500, 200, 220)
         );
         view.chrome = 0.0;
-        let hidden = render(&state, &view);
+        let hidden = render(&state, &view, 1);
         assert_eq!(pixel(&hidden, 500, 200, 140), pixel(&hidden, 500, 200, 220));
         view.chrome = 0.5;
-        let entering = render(&state, &view);
+        let entering = render(&state, &view, 1);
         assert_eq!(
             pixel(&entering, 500, 200, 110),
             pixel(&hidden, 500, 200, 110)
@@ -3106,7 +3163,7 @@ mod rendering_tests {
             end: (400.0, 160.0),
             additive: false,
         });
-        let selected = render(&state, &view);
+        let selected = render(&state, &view, 1);
         // Both the tint and the rectangle edge must cross the GPU card's body.
         assert_ne!(
             pixel(&visible, 500, 200, 145),
@@ -3126,7 +3183,7 @@ mod rendering_tests {
         view.theme.primary = super::super::theme::Color(1.0, 0.0, 0.0);
         view.theme.outline = super::super::theme::Color(0.0, 1.0, 0.0);
         state.nodes[0].window_id = Some(1);
-        let selected = render(&state, &view);
+        let selected = render(&state, &view, 2);
         for (x, y) in [
             (100, 100),
             (80, 130),
@@ -3142,5 +3199,39 @@ mod rendering_tests {
                 "GPU selection at {x},{y}: {rgb:x}"
             );
         }
+        // Running tint must agree across the GPU body and cached Cairo metadata.
+        state.nodes[0].status = Status::Running;
+        view.theme.running = super::super::theme::Color(0., 1., 0.);
+        view.theme.running_opacity = 0.17;
+        let running = render(&state, &view, 3);
+        let background = pixel(&running, 500, 200, 110);
+        assert!(background & 0x00ff00 > pixel(&selected, 500, 200, 110) & 0x00ff00);
+        for (x, y) in [(83, 230), (200, 230), (200, 345)] {
+            assert_eq!(
+                pixel(&running, 500, x, y),
+                background,
+                "GPU tint at {x},{y}"
+            );
+        }
+        assert_eq!(
+            pixel(&running, 500, 100, 100),
+            pixel(&selected, 500, 100, 100)
+        );
+
+        // Changing the theme without a state revision must refresh metadata too.
+        view.theme.running_opacity = 0.4;
+        view.theme.running = super::super::theme::Color(0., 0., 1.);
+        let recolored = render(&state, &view, 3);
+        assert_ne!(pixel(&recolored, 500, 200, 110), background);
+        assert_eq!(
+            pixel(&recolored, 500, 200, 110),
+            pixel(&recolored, 500, 200, 230)
+        );
+        view.theme.running_opacity = 0.;
+        let disabled = render(&state, &view, 3);
+        assert_eq!(
+            pixel(&disabled, 500, 200, 110),
+            pixel(&selected, 500, 200, 110)
+        );
     }
 }

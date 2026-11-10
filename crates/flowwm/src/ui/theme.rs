@@ -1,3 +1,4 @@
+use crate::model::Status;
 use gtk::cairo::Context;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -55,10 +56,11 @@ pub struct Theme {
     pub motion_ms: u32,
     pub removal_ms: u32,
     pub running: Color,
-    pub running_width: f64,
+    pub running_opacity: f64,
 }
 impl Default for Theme {
     fn default() -> Self {
+        let flow = crate::config::flow();
         Self {
             primary: Color::parse("#d0bcff").unwrap(),
             on_primary: Color::parse("#381e72").unwrap(),
@@ -73,21 +75,38 @@ impl Default for Theme {
             error: Color::parse("#f2b8b5").unwrap(),
             radius: 12.0,
             font: "sans-serif".into(),
-            motion_ms: crate::config::flow().motion_ms.unwrap_or(220),
-            removal_ms: crate::config::flow().removal_ms.unwrap_or(180),
-            running: crate::config::flow()
+            motion_ms: flow.motion_ms.unwrap_or(220),
+            removal_ms: flow.removal_ms.unwrap_or(180),
+            running: flow
                 .running_color
                 .as_deref()
                 .and_then(Color::parse)
                 .unwrap_or(Color(0.44, 0.78, 0.55)),
-            running_width: crate::config::flow()
-                .running_width
-                .unwrap_or(3.0)
-                .clamp(0., 12.),
+            running_opacity: flow
+                .running_opacity
+                .unwrap_or(if flow.running_width == Some(0.) {
+                    0.
+                } else {
+                    0.17
+                }),
         }
     }
 }
 impl Theme {
+    /// Blend the running tint into the card, leaving previews and selection intact.
+    pub fn node_background(&self, status: Status) -> Color {
+        let amount = if status == Status::Running {
+            self.running_opacity
+        } else {
+            0.
+        };
+        Color(
+            self.surface_high.0 + (self.running.0 - self.surface_high.0) * amount,
+            self.surface_high.1 + (self.running.1 - self.surface_high.1) * amount,
+            self.surface_high.2 + (self.running.2 - self.surface_high.2) * amount,
+        )
+    }
+
     pub fn paths() -> Vec<PathBuf> {
         let home = directories::BaseDirs::new().expect("home directory");
         let mut paths = vec![

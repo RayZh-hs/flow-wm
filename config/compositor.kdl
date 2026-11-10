@@ -204,7 +204,7 @@ flow {
     removal-ms 180
     inertia-decay 10.0
     running-color "#71c68c"
-    running-width 3.0
+    running-opacity 0.17
     binds {
         Tab action="connect" title="Choose an output, then a compatible node"
         Ctrl+f action="search" title="Find nodes; frame all"

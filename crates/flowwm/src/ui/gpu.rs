@@ -122,7 +122,7 @@ fn metadata<'a>(
     view: &View,
 ) -> &'a gsk::RenderNode {
     let key = format!(
-        "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
         node.id,
         view.numbers,
         index,
@@ -132,6 +132,8 @@ fn metadata<'a>(
         view.theme.muted.hex(),
         view.theme.surface_high.hex(),
         view.theme.outline.hex(),
+        view.theme.running.hex(),
+        view.theme.running_opacity.to_bits(),
         view.theme.radius.to_bits(),
         node_height(node).to_bits(),
     );
@@ -209,7 +211,7 @@ fn graph_key(width: i32, height: i32, state: &State, revision: u64, view: &View)
         c.hex().hash(&mut h);
     }
     view.theme.radius.to_bits().hash(&mut h);
-    view.theme.running_width.to_bits().hash(&mut h);
+    view.theme.running_opacity.to_bits().hash(&mut h);
     (
         view.zoom.to_bits(),
         view.pan_x.to_bits(),
@@ -566,7 +568,7 @@ fn render_inner(
                 snapshot.append_color(&color(view.theme.surface), &bounds(rect));
             }
         }
-        let fill = view.theme.surface_high;
+        let fill = view.theme.node_background(node.status);
         snapshot.append_color(
             &gdk::RGBA::new(fill.0 as f32, fill.1 as f32, fill.2 as f32, t as f32),
             &bounds(rect),
@@ -618,18 +620,6 @@ fn render_inner(
         // Metadata contains its own card background and inactive border. Paint
         // the shared outline last so headers and footers cannot cover selection.
         snapshot.append_border(&outline, &[line; 4], &[color(border); 4]);
-        if node.status == Status::Running && view.theme.running_width > 0. && t > 0. {
-            let inset = view.theme.radius * view.zoom;
-            snapshot.append_color(
-                &color(view.theme.running),
-                &bounds(Rect {
-                    x: rect.x + 2. * view.zoom,
-                    y: rect.y + inset,
-                    width: view.theme.running_width * view.zoom,
-                    height: (rect.height - inset * 2.).max(0.),
-                }),
-            );
-        }
         snapshot.pop();
     }
     // Selection and cut gestures must be above GPU window cards and previews.

@@ -1014,6 +1014,7 @@ mod tests {
                 removal_ms: None,
                 inertia_decay: None,
                 running_color: None,
+                running_opacity: None,
                 running_width: None,
                 binds: None,
             },

@@ -192,7 +192,7 @@ flow {
     removal-ms 180
     inertia-decay 10.0
     running-color "#71c68c"
-    running-width 3.0
+    running-opacity 0.17
     binds {
         r action="run" title="Run selected node"
         Ctrl+r action="stop" title="Stop selected node"
@@ -201,7 +201,9 @@ flow {
 }
 ```
 
-Graph keys use niri's key names and modifiers. `action="none"` disables a graph binding. A `flow.binds` block defines the graph's keys; keep the other shipped entries when adding your own. Native `include` files can override individual settings and bindings. Zero motion/removal duration disables that animation; niri's `animations { off; }` and Dux's reduce-motion setting disable both. The native niri slowdown setting also applies to graph animations. Removed cards shrink and fade briefly, and the renderer requests frames only while animation remains. The running sideline is independent of selection color. On view changes, visible windows follow an eased arc; off-screen windows fade at their graph positions.
+Graph keys use niri's key names and modifiers. `action="none"` disables a graph binding. A `flow.binds` block defines the graph's keys; keep the other shipped entries when adding your own. Native `include` files can override individual settings and bindings. Zero motion/removal duration disables that animation; niri's `animations { off; }` and Dux's reduce-motion setting disable both. The native niri slowdown setting also applies to graph animations. Removed cards shrink and fade briefly, and the renderer requests frames only while animation remains. On view changes, visible windows follow an eased arc; off-screen windows fade at their graph positions.
+
+Running nodes use a green backdrop tint, including the headers and footers of live window cards. `running-color` sets the tint color, and `running-opacity` controls its strength from `0.0` (disabled) to `1.0` (solid), defaulting to `0.17`. Window previews and selection outlines retain their own colors. The former `running-width` setting is still accepted for compatibility: zero disables the tint when `running-opacity` is omitted; other widths use the default tint strength.
 
 The default wallpaper is attached to niri's output backdrop, so it stays fixed while workspace rows scroll. This is configured with `place-within-backdrop` rules for Quickshell and the Dux blur wallpaper, together with a transparent layout background.
 

@@ -12,6 +12,9 @@ pub struct Flow {
     #[knuffel(child, unwrap(argument))]
     pub running_color: Option<String>,
     #[knuffel(child, unwrap(argument))]
+    pub running_opacity: Option<f64>,
+    /// Legacy sideline setting; zero still disables the running tint.
+    #[knuffel(child, unwrap(argument))]
     pub running_width: Option<f64>,
     #[knuffel(child)]
     pub binds: Option<GraphBinds>,
@@ -42,6 +45,7 @@ impl crate::utils::MergeWith<Flow> for Flow {
             removal_ms,
             inertia_decay,
             running_color,
+            running_opacity,
             running_width
         );
         if let Some(binds) = &part.binds {
@@ -63,6 +67,12 @@ impl Flow {
             .is_some_and(|v| !v.is_finite() || v <= 0.)
         {
             return Err("flow inertia-decay must be finite and greater than zero".into());
+        }
+        if self
+            .running_opacity
+            .is_some_and(|v| !v.is_finite() || !(0. ..=1.).contains(&v))
+        {
+            return Err("flow running-opacity must be between 0 and 1".into());
         }
         if self
             .running_width
@@ -143,24 +153,36 @@ mod tests {
     #[test]
     fn includes_merge_graph_overrides_and_reject_invalid_settings() {
         use crate::utils::MergeWith;
-        let mut flow = crate::Config::parse_mem(r##"flow { motion-ms 200; running-color "#71c68c"; binds { r action="run"; Ctrl+r action="stop"; }; }"##).unwrap().flow;
-        let override_flow =
-            crate::Config::parse_mem(r#"flow { removal-ms 140; binds { r action="none"; }; }"#)
-                .unwrap()
-                .flow;
+        let mut flow = crate::Config::parse_mem(r##"flow { motion-ms 200; running-color "#71c68c"; running-opacity 0.17; running-width 0.0; binds { r action="run"; Ctrl+r action="stop"; }; }"##).unwrap().flow;
+        let override_flow = crate::Config::parse_mem(
+            r#"flow { removal-ms 140; running-opacity 0.25; binds { r action="none"; }; }"#,
+        )
+        .unwrap()
+        .flow;
         flow.merge_with(&override_flow);
         assert_eq!(flow.motion_ms, Some(200));
         assert_eq!(flow.removal_ms, Some(140));
+        assert_eq!(flow.running_opacity, Some(0.25));
+        assert_eq!(flow.running_width, Some(0.0));
         let binds = flow.binds.unwrap().bindings;
         assert_eq!(binds.len(), 2);
         assert!(binds.iter().any(|b| b.key == "r" && b.action == "none"));
         for text in [
             r#"flow { inertia-decay 0.0; }"#,
             r#"flow { running-color "green"; }"#,
+            r#"flow { running-opacity -0.1; }"#,
+            r#"flow { running-opacity 1.1; }"#,
             r#"flow { binds { r action="typo"; }; }"#,
             r#"flow { binds { Ctrl+r action="run"; Control+R action="stop"; }; }"#,
         ] {
             assert!(crate::Config::parse_mem(text).is_err(), "{text}");
+        }
+        for opacity in [0., 0.17, 1.] {
+            let flow =
+                crate::Config::parse_mem(&format!("flow {{ running-opacity {opacity:?}; }}"))
+                    .unwrap()
+                    .flow;
+            assert_eq!(flow.running_opacity, Some(opacity));
         }
     }
 }
