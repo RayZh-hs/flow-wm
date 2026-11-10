@@ -9,10 +9,9 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-import tempfile
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from configuration import migrate, cleanup_profile
+from configuration import atomic_text, migrate, cleanup_profile
 
 ROOT = Path(__file__).resolve().parents[1]
 REPLACE_SERVICES = ("flowwm.service", "flowwm-dms.service", "flowwm-agent-sessions.service")
@@ -25,19 +24,6 @@ def services_for(bundle):
 def run(*arguments, **kwargs):
     print("+ " + " ".join(map(str, arguments)), flush=True)
     return subprocess.run(list(map(str, arguments)), check=True, text=True, **kwargs)
-
-
-def atomic_text(path, content, mode=0o644):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
-    temporary = Path(temporary)
-    try:
-        with os.fdopen(fd, "w") as stream:
-            stream.write(content)
-        temporary.chmod(mode)
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def point(path, target):

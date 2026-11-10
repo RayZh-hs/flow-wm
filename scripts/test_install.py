@@ -104,7 +104,8 @@ class ProfileIsolation(unittest.TestCase):
             self.assertTrue((config / 'my-include.kdl').exists())
             self.assertEqual((state / 'config-backups/before-flat-layout/application-configs/Code/User/settings.json').read_text(), '{"custom":true}')
 
-    def test_existing_launcher_commands_gain_keyboard_handoff_without_rebinding_keys(self):
+    def test_existing_launcher_commands_upgrade_at_login_without_rebinding_keys(self):
+        from configuration import activate_launcher_bindings
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             args = self.profile(root)
@@ -121,6 +122,11 @@ class ProfileIsolation(unittest.TestCase):
             main.write_text(original)
             main.chmod(0o600)
             installer.prepare_profile(*args)
+            self.assertEqual(main.read_text(), original, 'installation must keep the active compositor config compatible')
+            compositor = root / 'bundle/bin/niri'
+            with patch('configuration.subprocess.run') as validate:
+                self.assertTrue(activate_launcher_bindings(config, state, args[-1], compositor))
+            self.assertEqual(validate.call_args.args[0][:3], [str(compositor), 'validate', '--config'])
             updated = main.read_text()
             self.assertEqual(updated.count('spawn-with-keyboard-focus'), 3)
             self.assertIn('Mod+F1 { spawn-with-keyboard-focus "flowwm" "new" namespace="dms:spotlight" wait-for-ready=true;', updated)
@@ -130,6 +136,30 @@ class ProfileIsolation(unittest.TestCase):
             self.assertEqual((state / 'config-backups/before-launcher-input/config.kdl').read_text(), original)
             installer.prepare_profile(*args)
             self.assertEqual(main.read_text(), updated)
+            with patch('configuration.subprocess.run') as validate:
+                self.assertFalse(activate_launcher_bindings(config, state, args[-1], compositor))
+            validate.assert_not_called()
+
+    def test_login_binding_validation_failure_preserves_the_original_config(self):
+        from configuration import activate_launcher_bindings
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = root / 'config'
+            config.mkdir()
+            main = config / 'config.kdl'
+            original = 'binds { Mod+space { spawn "flowwm" "new"; }; }\n'
+            main.write_text(original)
+            main.chmod(0o600)
+            def reject(command, **kwargs):
+                self.assertEqual(main.read_text(), original)
+                self.assertIn('spawn-with-keyboard-focus', Path(command[-1]).read_text())
+                raise subprocess.CalledProcessError(1, command)
+            with patch('configuration.subprocess.run', side_effect=reject):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    activate_launcher_bindings(config, root / 'state', root / 'flowwm-session', root / 'niri')
+            self.assertEqual(main.read_text(), original)
+            self.assertEqual(main.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(list(config.iterdir()), [main])
 
     def test_units_validate_without_an_installed_niri_or_dms_service(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -234,14 +264,51 @@ class LoginIsolation(unittest.TestCase):
         self.assertIn('FLOWWM_INSTALL_ROOT', cleanup)
         self.assertIn('FLOWWM_SESSION', cleanup)
 
+    def test_login_activates_new_bindings_before_starting_the_selected_compositor(self):
+        spec = importlib.util.spec_from_file_location('runtime', Path(__file__).with_name('session.py'))
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = root / 'config'
+            config.mkdir()
+            main = config / 'config.kdl'
+            original = 'binds { Mod+space { spawn "flowwm" "new"; }; }\n'
+            main.write_text(original)
+            bundle = root / 'selected-snapshot'
+            events = []
+            def execute(command, **kwargs):
+                if command[:2] == [str(bundle / 'bin/niri'), 'validate']:
+                    self.assertEqual(main.read_text(), original)
+                    self.assertEqual(Path(command[-1]).parent, config)
+                    self.assertIn('wait-for-ready=true', Path(command[-1]).read_text())
+                    events.append('validated')
+                if command[:3] == ['systemctl', '--user', 'set-environment']:
+                    self.assertIn('FLOWWM_INSTALL_ROOT=' + str(bundle), command)
+                    events.append('selected')
+                if command == ['systemctl', '--user', '--wait', 'start', 'flowwm-compositor.service']:
+                    self.assertEqual(events, ['validated', 'selected'])
+                    self.assertIn('spawn-with-keyboard-focus', main.read_text())
+                    events.append('started')
+            with patch.object(runtime, 'ROOT', bundle), \
+                 patch.object(runtime, 'settings', return_value={'config':str(config), 'state':str(root / 'state')}), \
+                 patch.object(runtime, 'service_active', return_value=False), \
+                 patch.object(runtime.subprocess, 'run', side_effect=execute), \
+                 patch.object(runtime.signal, 'signal'), patch.object(runtime.shutil, 'which', return_value=None), \
+                 patch('configuration.cleanup_profile'), patch.dict(os.environ, {'FLOWWM_INSTALL_ROOT':'old-snapshot'}):
+                runtime.login()
+            self.assertEqual(events, ['validated', 'selected', 'started'])
+
     def test_an_existing_niri_session_is_never_replaced(self):
         spec = importlib.util.spec_from_file_location('runtime', Path(__file__).with_name('session.py'))
         runtime = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(runtime)
-        with patch.object(runtime, 'service_active', return_value=True), patch.object(runtime.subprocess, 'run') as run:
+        with patch.object(runtime, 'service_active', return_value=True), patch.object(runtime.subprocess, 'run') as run, \
+             patch('configuration.activate_launcher_bindings') as activate:
             with self.assertRaises(SystemExit):
                 runtime.login()
             run.assert_not_called()
+            activate.assert_not_called()
 
 
 class ReplaceSession(unittest.TestCase):

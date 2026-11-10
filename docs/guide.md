@@ -44,6 +44,8 @@ flowwm-session describe                          # inspect selected paths and bi
 
 `--replace` keeps the current compositor and application windows running. Compositor changes take effect at the next login. Reloading the graph service stops its owned workflow subprocesses. If a service reload fails, the installer attempts to restore the preceding services. Development builds and nested tests never change the installed snapshot.
 
+Bindings that require a newer compositor are activated at the next login, after the previous compositor has stopped. Installing a snapshot keeps existing search bindings compatible with the running desktop. The login launcher validates the upgraded bindings with the selected snapshot's compositor before saving them; a validation failure leaves the configuration unchanged.
+
 ## Keyboard and mouse
 
 **Win** is niri's `Mod` key. **Win+?** opens the searchable **Key bindings** window in either view; **?** opens the same help from the graph. Help reads the same [KDL configuration](../config/compositor.kdl) that defines graph shortcuts and compositor bindings.
@@ -109,7 +111,7 @@ Creation and connection selection use the desktop search interface. The native g
 
 Win+Space preserves the current view: it opens ordinary application search in Windows and node creation search in Nodes. Win+Shift+Space searches nodes without switching views; choosing a node reveals it. Alt+Space always opens ordinary application search.
 
-You can start typing immediately after a search shortcut. The compositor holds the keys until Dux's search field is ready, including when reopening during its close animation. The search bindings in `config.kdl` use `spawn-with-keyboard-focus` with `namespace="dms:spotlight" wait-for-ready=true`. Its `timeout-ms` defaults to 1000; if search cannot open, input returns to the original application while it still has focus. Set `timeout-ms=0` to disable the handoff for a custom launcher. Installation upgrades existing FlowWM search commands while preserving their keys and saves the previous file under the state directory's `config-backups/before-launcher-input/`.
+You can start typing immediately after a search shortcut. The compositor holds the keys until Dux's search field is ready, including when reopening during its close animation. The search bindings in `config.kdl` use `spawn-with-keyboard-focus` with `namespace="dms:spotlight" wait-for-ready=true`. Its `timeout-ms` defaults to 1000; if search cannot open, input returns to the original application while it still has focus. Set `timeout-ms=0` to disable the handoff for a custom launcher. The first login with the updated compositor upgrades existing FlowWM search commands while preserving their keys and saves the previous file under the state directory's `config-backups/before-launcher-input/`.
 
 | Query | Results |
 | --- | --- |

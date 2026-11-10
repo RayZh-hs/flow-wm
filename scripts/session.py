@@ -72,8 +72,9 @@ def command(kind, arguments=()):
 def login():
     if service_active("niri.service") or service_active("flowwm-compositor.service"):
         raise SystemExit("A window-manager session is already running. Select FlowWM after logging out.")
-    from configuration import cleanup_profile
+    from configuration import activate_launcher_bindings, cleanup_profile
     data = settings()
+    activate_launcher_bindings(data["config"], data["state"], Path.home() / ".local/bin/flowwm-session", ROOT / "bin/niri")
     cleanup_profile(data["config"], data["state"])
     os.environ["XDG_CURRENT_DESKTOP"] = "niri"
     os.environ["XDG_SESSION_TYPE"] = "wayland"

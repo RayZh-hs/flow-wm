@@ -1,8 +1,26 @@
 """Migrate the former generated profile to one editable niri configuration."""
 import json
+import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
+import tempfile
+
+
+def atomic_text(path, content, mode=0o644, validate=None):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
+    temporary = Path(temporary)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(content)
+        temporary.chmod(mode)
+        if validate is not None:
+            validate(temporary)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def graph_block(bindings, defaults):
@@ -54,19 +72,29 @@ def launcher_focus_bindings(text, launcher):
     )
 
 
+def activate_launcher_bindings(config, state, launcher, compositor):
+    """Activate compositor-specific bindings only after the previous session has ended."""
+    main = Path(config) / 'config.kdl'
+    if not main.is_file():
+        return False
+    original = main.read_text()
+    upgraded = launcher_focus_bindings(original, launcher)
+    if original == upgraded:
+        return False
+    backup = Path(state) / 'config-backups/before-launcher-input/config.kdl'
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    if not backup.exists():
+        shutil.copy2(main, backup)
+    atomic_text(main, upgraded, mode=main.stat().st_mode & 0o777,
+                validate=lambda candidate: subprocess.run([str(compositor), 'validate', '--config', str(candidate)], check=True))
+    return True
+
+
 def migrate(config, state, defaults, launcher, atomic_text):
     """Preserve the originals before inlining known legacy files; never overwrite edits on reinstall."""
     main = config / 'config.kdl'
     legacy = [config / name for name in ('keybindings.json', 'keybindings.kdl', 'local.kdl', 'environment.json') if (config / name).is_file()]
     if main.exists() and not legacy:
-        original = main.read_text()
-        upgraded = launcher_focus_bindings(original, launcher)
-        if original != upgraded:
-            backup = state / 'config-backups/before-launcher-input/config.kdl'
-            backup.parent.mkdir(parents=True, exist_ok=True)
-            if not backup.exists():
-                shutil.copy2(main, backup)
-            atomic_text(main, upgraded, mode=main.stat().st_mode & 0o777)
         return
     text = main.read_text() if main.exists() else defaults
     if main.exists():
@@ -102,7 +130,6 @@ def migrate(config, state, defaults, launcher, atomic_text):
     if not re.search(r'(?m)^flow\s*\{', text):
         text += '\n' + re.search(r'(?ms)^flow \{.*?^\}', defaults).group() + '\n'
     text = text.replace('niri/dms/', 'dms/')
-    text = launcher_focus_bindings(text, launcher)
     text = text.replace('// FlowWM compositor preferences. The shortcut registry generates keybindings.kdl.', '// FlowWM settings: compositor, environment, global bindings, and native graph.')
     mode = main.stat().st_mode & 0o777 if main.exists() else 0o644
     for path in legacy:

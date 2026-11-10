@@ -121,6 +121,8 @@ python3 scripts/install.py --skip-build --replace
 python3 scripts/install.py --rollback --replace
 ```
 
+Installation leaves existing search actions unchanged so the running compositor can still reload its shared config. After checking that no compositor session is active, `session.py login` activates the keyboard-handoff bindings and validates a temporary file beside `config.kdl` with the selected snapshot's compositor. Only a successful validation replaces the original, preserving permissions and a backup. Included files keep their normal relative paths during validation.
+
 `--replace` reloads `flowwm.service`, `flowwm-dms.service`, and the bundled terminal
 session extension after installing or selecting a snapshot. It updates their
 `FLOWWM_INSTALL_ROOT` in the user service manager, verifies that the services adopt
