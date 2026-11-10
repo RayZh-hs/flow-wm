@@ -147,8 +147,8 @@ impl Arrangement {
     }
 }
 
-/// Layer a directed graph with deterministic cycle breaking and stable ordering.
-pub fn arrange(state: &State) -> Vec<(String, Position)> {
+/// Layer a directed graph, wrapping each layer to fit the viewport's aspect ratio.
+pub fn arrange(state: &State, width: i32, height: i32) -> Vec<(String, Position)> {
     use std::collections::{BTreeMap, BTreeSet};
     let nodes: BTreeMap<_, _> = state
         .nodes
@@ -186,25 +186,45 @@ pub fn arrange(state: &State) -> Vec<(String, Position)> {
         pending.remove(&ready);
         ranks.insert(ready, rank);
     }
-    let mut result = vec![];
-    let mut y = 80.0;
-    for rank in 0..=ranks.values().copied().max().unwrap_or(0) {
-        let mut layer: Vec<_> = nodes
-            .values()
-            .copied()
-            .filter(|n| ranks[&n.id] == rank)
-            .collect();
+    let mut layers = vec![vec![]; ranks.values().copied().max().unwrap_or(0) + 1];
+    for node in nodes.values() {
+        layers[ranks[&node.id]].push(*node);
+    }
+    for layer in &mut layers {
         layer.sort_by(|a, b| {
             a.position
-                .x
-                .total_cmp(&b.position.x)
+                .y
+                .total_cmp(&b.position.y)
+                .then_with(|| a.position.x.total_cmp(&b.position.x))
                 .then_with(|| a.id.cmp(&b.id))
         });
-        let height = layer
-            .iter()
+    }
+    let row_height = |row: &[&Node]| {
+        row.iter()
             .map(|n| super::canvas::node_height(n))
-            .fold(0., f64::max);
-        for (index, node) in layer.iter().enumerate() {
+            .fold(0., f64::max)
+    };
+    let max_columns = layers.iter().map(Vec::len).max().unwrap_or(0);
+    let columns = (1..=max_columns)
+        .max_by(|a, b| {
+            let scale = |columns: usize| {
+                let w = span(columns, WIDTH + 100.);
+                let mut h = 0.;
+                for row in layers.iter().flat_map(|layer| layer.chunks(columns)) {
+                    if h > 0. {
+                        h += 110.;
+                    }
+                    h += row_height(row);
+                }
+                ((width as f64 - 160.).max(1.) / w).min((height as f64 - 160.).max(1.) / h)
+            };
+            scale(*a).total_cmp(&scale(*b)).then_with(|| a.cmp(b))
+        })
+        .unwrap_or(1);
+    let mut result = vec![];
+    let mut y = 80.0;
+    for row in layers.iter().flat_map(|layer| layer.chunks(columns)) {
+        for (index, node) in row.iter().enumerate() {
             result.push((
                 node.id.clone(),
                 Position {
@@ -213,7 +233,7 @@ pub fn arrange(state: &State) -> Vec<(String, Position)> {
                 },
             ));
         }
-        y += height + 110.;
+        y += row_height(row) + 110.;
     }
     result
 }
@@ -369,7 +389,7 @@ mod tests {
         state.nodes[1].dependencies.push(source);
         let mut layout = Arrangement::default();
         layout.update(&state, 1200, 800);
-        let positions = arrange(&state);
+        let positions = arrange(&state, 1200, 800);
         state.workspaces[0].graph_arranged = true;
         for (id, p) in positions {
             state.node_mut(&id).unwrap().position = p;
@@ -392,6 +412,70 @@ mod tests {
             layout.position(&restored.nodes[1]).y,
             state.nodes[1].position.y
         );
+    }
+
+    #[test]
+    fn arranging_many_windows_wraps_to_the_viewport_and_is_idempotent() {
+        for (width, height) in [(1200, 800), (800, 1200), (100, 100)] {
+            let mut state = scene(40, 0);
+            let positions = arrange(&state, width, height);
+            assert_eq!(positions.len(), 40);
+            assert!(positions.iter().any(|(_, p)| p.y > 80.));
+            for (id, p) in &positions {
+                assert!(p.x.is_finite() && p.y.is_finite());
+                state.node_mut(id).unwrap().position = p.clone();
+            }
+            let coordinates = |positions: Vec<(String, Position)>| {
+                positions
+                    .into_iter()
+                    .map(|(id, p)| (id, p.x, p.y))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                coordinates(positions.clone()),
+                coordinates(arrange(&state, width, height))
+            );
+            let bounds = positions.iter().fold((0_f64, 0_f64), |(w, h), (_, p)| {
+                (w.max(p.x - 100. + WIDTH), h.max(p.y - 80. + HEIGHT + 120.))
+            });
+            if width > height {
+                assert!(bounds.0 > bounds.1);
+            } else if width < height {
+                assert!(bounds.0 < bounds.1);
+            }
+        }
+    }
+
+    #[test]
+    fn wrapped_layers_clear_mixed_card_heights_and_preserve_dependencies() {
+        let mut state = scene(12, 3);
+        let mut target = Node::new(
+            &state.selected_workspace,
+            NodeKind::Human,
+            "/tmp".into(),
+            Position::default(),
+        );
+        target
+            .dependencies
+            .extend(state.nodes.iter().map(|n| n.id.clone()));
+        let target_id = target.id.clone();
+        state.nodes.push(target);
+        let positions: HashMap<_, _> = arrange(&state, 1200, 800).into_iter().collect();
+        for (i, a) in state.nodes.iter().enumerate() {
+            let p = &positions[&a.id];
+            for b in state.nodes.iter().skip(i + 1) {
+                let q = &positions[&b.id];
+                assert!(
+                    p.x + WIDTH <= q.x
+                        || q.x + WIDTH <= p.x
+                        || p.y + super::super::canvas::node_height(a) <= q.y
+                        || q.y + super::super::canvas::node_height(b) <= p.y
+                );
+            }
+            if a.id != target_id {
+                assert!(p.y + super::super::canvas::node_height(a) < positions[&target_id].y);
+            }
+        }
     }
 
     #[test]

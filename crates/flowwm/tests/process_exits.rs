@@ -246,6 +246,33 @@ fn closing_shared_process_windows_keeps_connections_until_the_process_exits() {
 }
 
 #[test]
+fn closing_a_window_without_exit_consumers_removes_it_while_its_process_lives() {
+    let mut child = application("os._exit(0)");
+    let mut fixture = Fixture::new(&[Some(child.id() as i32), Some(child.id() as i32)]);
+    let source = fixture.sources[0].clone();
+    let target = fixture.engine.snapshot().state.connections[0]
+        .target
+        .node
+        .clone();
+    fixture
+        .engine
+        .request(Control::Disconnect {
+            source: source.clone(),
+            target,
+        })
+        .unwrap();
+    fixture.desktop.windows.remove(0);
+    fixture.sync();
+    let state = fixture.engine.snapshot().state;
+    assert!(state.node(&source).is_none());
+    assert_eq!(state.node(&fixture.sources[1]).unwrap().window_id, Some(2));
+    assert!(child.try_wait().unwrap().is_none());
+    release(&mut child);
+    child.wait().unwrap();
+    fixture.wait_codes(&[0]);
+}
+
+#[test]
 fn a_reopened_window_does_not_replace_the_closed_window_still_awaiting_exit() {
     let mut first = application("os._exit(37)");
     let mut second = application("os._exit(0)");
@@ -335,6 +362,32 @@ fn explicitly_deleting_a_closed_window_cancels_its_exit_delivery() {
             id: fixture.sources[0].clone(),
         })
         .unwrap();
+    release(&mut child);
+    child.wait().unwrap();
+    fixture.sync();
+    assert!(fixture.codes().is_empty());
+}
+
+#[test]
+fn manually_stopping_a_closed_window_removes_it_and_cancels_exit_delivery() {
+    let mut child = application("os._exit(37)");
+    let mut fixture = Fixture::new(&[Some(child.id() as i32)]);
+    fixture.desktop.windows.clear();
+    fixture.sync();
+    fixture
+        .engine
+        .request(Control::Stop {
+            id: fixture.sources[0].clone(),
+        })
+        .unwrap();
+    assert!(
+        fixture
+            .engine
+            .snapshot()
+            .state
+            .node(&fixture.sources[0])
+            .is_none()
+    );
     release(&mut child);
     child.wait().unwrap();
     fixture.sync();

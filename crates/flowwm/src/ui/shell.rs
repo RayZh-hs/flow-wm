@@ -685,7 +685,8 @@ impl Shell {
     fn arrange(&self) {
         self.prepare_camera();
         let state = self.engine.snapshot().state;
-        let positions = super::layout::arrange(&state);
+        let (width, height) = self.scene_size();
+        let positions = super::layout::arrange(&state, width, height);
         let previous: HashMap<_, _> = state
             .nodes
             .iter()
@@ -1403,7 +1404,7 @@ impl Shell {
             }
             shell.reveal.set(if visible { eased } else { 1.0 - eased });
             // Geometry reaches the real client before the capture fades away.
-            if !visible && progress >= 1.0 {
+            if !visible && progress >= 1.0 && !shell.native_nodes {
                 shell.content().set_opacity(fade);
             }
             shell.canvas().queue_draw();
@@ -1411,8 +1412,9 @@ impl Shell {
                 let weak = shell.weak.clone();
                 let after = after.borrow_mut().take();
                 let target = target.clone();
-                // Mapping and keyboard changes must happen outside GDK's frame preparation.
-                glib::idle_add_local_once(move || {
+                // Submit the endpoint scene and chrome together before unmapping.
+                // Native previews keep rendering until the canvas's null commit.
+                super::surface::after_paint(clock, move || {
                     let Some(shell) = weak.upgrade() else { return };
                     if shell.transition_serial.get() != serial {
                         return;
@@ -1912,10 +1914,36 @@ impl Shell {
             }
         }
     }
+    fn stop_focused_window(&self) -> bool {
+        let focused = self
+            .desktop
+            .lock()
+            .unwrap()
+            .windows
+            .iter()
+            .find(|w| w.is_focused)
+            .map(|w| w.id);
+        let state = self.engine.snapshot().state;
+        let Some(node) = state.nodes.iter().find(|n| {
+            n.kind == NodeKind::Window && n.window_id.is_some() && n.window_id == focused
+        }) else {
+            return false;
+        };
+        self.engine.dispatch(Control::Stop {
+            id: node.id.clone(),
+        });
+        true
+    }
     fn control(&self, command: UiCommand) {
         match command {
             UiCommand::RunSelected | UiCommand::StopSelected => {
                 let run = matches!(command, UiCommand::RunSelected);
+                if !run
+                    && (!self.graph_visible.get() || self.peeking())
+                    && self.stop_focused_window()
+                {
+                    return;
+                }
                 if self.graph_visible.get() {
                     let view = self.view.borrow();
                     let mut ids = view.selection.clone();
@@ -1931,7 +1959,7 @@ impl Shell {
                                 id,
                                 downstream: false,
                             });
-                        } else if !run && node.status.active() {
+                        } else if !run && (node.status.active() || node.kind == NodeKind::Window) {
                             self.engine.dispatch(Control::Stop { id });
                         }
                     }

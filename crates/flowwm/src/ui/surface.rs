@@ -1,7 +1,26 @@
 //! Retained GSK canvas: cached text/edges, GPU textures and borders during window morphs.
-use gtk::{glib, graphene, gsk, prelude::*, subclass::prelude::*};
-use std::cell::{Cell, RefCell};
+use gtk::{gdk, glib, graphene, gsk, prelude::*, subclass::prelude::*};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 type Renderer = Box<dyn Fn(&Surface, &gtk::Snapshot, i32, i32)>;
+
+/// Finish a scene change after GTK has submitted its final frame. Queueing the
+/// completion directly from a tick can unmap the surface before it is painted.
+pub fn after_paint(clock: &gdk::FrameClock, complete: impl FnOnce() + 'static) {
+    let handler = Rc::new(RefCell::new(None));
+    let disconnect = handler.clone();
+    let complete = RefCell::new(Some(complete));
+    *handler.borrow_mut() = Some(clock.connect_after_paint(move |clock| {
+        if let Some(handler) = disconnect.borrow_mut().take() {
+            clock.disconnect(handler);
+        }
+        if let Some(complete) = complete.borrow_mut().take() {
+            glib::idle_add_local_once(complete);
+        }
+    }));
+}
 pub struct RowSlide {
     pub outgoing: Option<gsk::RenderNode>,
     pub incoming: bool,

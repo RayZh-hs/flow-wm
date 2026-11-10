@@ -683,13 +683,16 @@ impl State {
         if node.status.active() && !node.desktop_window {
             bail!("Stop or resolve the node before deleting it");
         }
+        // Windows may close while a dependent is executing; detach that source
+        // just as desktop reconciliation does for an external window closure.
         ensure!(
-            !self
-                .nodes
-                .iter()
-                .any(|n| n.dependencies.iter().any(|d| d == id)
-                    && n.status.active()
-                    && !n.desktop_window),
+            node.kind == NodeKind::Window
+                || !self
+                    .nodes
+                    .iter()
+                    .any(|n| n.dependencies.iter().any(|d| d == id)
+                        && n.status.active()
+                        && !n.desktop_window),
             "An active node depends on this node"
         );
         self.nodes.retain(|n| n.id != id);

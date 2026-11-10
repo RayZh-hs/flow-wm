@@ -169,6 +169,62 @@ def run(args):
                 time.sleep(0.5)
                 capture("peek-reversed.png")
                 result["verified"] = ["three peek/collapse cycles preserve graph pixels and saved positions", "Win+= zooms in and Win+- restores the camera", "Ctrl+scroll zooms and ordinary scrolling pans", "camera input exits peek", "rapid morph reversals complete"]
+                ui("nodes")
+                time.sleep(0.4)
+                subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+p"], env=env, check=True)
+                wait(lambda: next(w for w in request(flow, {"op": "status"})["workspaces"] if w["id"] == catalog["selected_workspace"])["graph_arranged"], compositor)
+                time.sleep(0.4)
+                arranged = {n["id"]: n["position"] for n in request(flow, {"op": "status"})["nodes"]}
+                if args.windows >= 12:
+                    assert len({p["y"] for p in arranged.values()}) > 1, "Ctrl+P left numerous windows on one line"
+                subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+p"], env=env, check=True)
+                time.sleep(0.4)
+                assert arranged == {n["id"]: n["position"] for n in request(flow, {"op": "status"})["nodes"]}, "repeated arrangement changed the layout"
+                capture("arranged-windows.png")
+
+                def close_with_key(target):
+                    others = {w["id"] for w in request(niri, "Windows")["Windows"]} - {target["window_id"]}
+                    subprocess.run(["xdotool", "key", "--clearmodifiers", "super+q"], env=env, check=True)
+                    wait(lambda: not any(w["id"] == target["window_id"] for w in request(niri, "Windows")["Windows"]), compositor)
+                    wait(lambda: not any(n["id"] == target["id"] for n in request(flow, {"op": "status"})["nodes"]), compositor)
+                    # The other windows share the same application process. It
+                    # must remain alive without retaining the closed node.
+                    time.sleep(0.2)
+                    assert not any(n["id"] == target["id"] for n in request(flow, {"op": "status"})["nodes"])
+                    assert others == {w["id"] for w in request(niri, "Windows")["Windows"]}, "closing one window affected other windows of the application"
+
+                ui("select", id=target["id"])
+                close_with_key(target)
+                result["verified"].extend(["Ctrl+P wraps large layers and is idempotent", "Win+Q removes the selected Nodes window while its shared process remains alive"])
+                remaining = [n for n in request(flow, {"op": "catalog"})["nodes"] if n.get("window_id")]
+                if remaining:
+                    target = remaining[0]
+                    ui("select", id=target["id"])
+                    ui("windows")
+                    wait(lambda: not rows(), compositor)
+                    wait(lambda: any(w["id"] == target["window_id"] and w["is_focused"] for w in request(niri, "Windows")["Windows"]), compositor)
+                    close_with_key(target)
+                    result["verified"].append("Win+Q removes the focused Windows node")
+                remaining = [n for n in request(flow, {"op": "catalog"})["nodes"] if n.get("window_id")]
+                if remaining:
+                    ui("nodes")
+                    time.sleep(0.4)
+                    target = remaining[0]
+                    ui("open", id=target["id"])
+                    wait(lambda: any(w["id"] == target["window_id"] and w["is_focused"] for w in request(niri, "Windows")["Windows"]), compositor)
+                    close_with_key(target)
+                    result["verified"].append("Win+Q removes a focused peek window")
+                for view in ("nodes", "windows"):
+                    remaining = [n for n in request(flow, {"op": "catalog"})["nodes"] if n.get("window_id")]
+                    if not remaining:
+                        break
+                    target = remaining[0]
+                    ui(view)
+                    time.sleep(0.4)
+                    request(niri, {"Action": {"CloseWindow": {"id": target["window_id"]}}})
+                    wait(lambda: not any(w["id"] == target["window_id"] for w in request(niri, "Windows")["Windows"]), compositor)
+                    wait(lambda: not any(n["id"] == target["id"] for n in request(flow, {"op": "status"})["nodes"]), compositor)
+                    result["verified"].append(f"external close removes an unconnected {view} window despite its shared process")
             args.output.write_text(json.dumps(result, indent=2) + "\n")
             print(json.dumps(result, indent=2))
         finally:

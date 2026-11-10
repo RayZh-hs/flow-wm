@@ -625,6 +625,42 @@ fn live_desktop_windows_accept_connections_without_changing_workflow_edit_guards
 }
 
 #[test]
+fn closing_a_window_detaches_running_dependents_without_stopping_their_work() {
+    let mut state = State::empty("/tmp".into());
+    let mut window = Node::new(
+        &state.selected_workspace,
+        NodeKind::Window,
+        "/tmp".into(),
+        Position::default(),
+    );
+    window.desktop_window = true;
+    window.status = Status::Running;
+    let source = Node::new(
+        &state.selected_workspace,
+        NodeKind::Shell,
+        "/tmp".into(),
+        Position::default(),
+    );
+    let mut job = Node::new(
+        &state.selected_workspace,
+        NodeKind::Human,
+        "/tmp".into(),
+        Position::default(),
+    );
+    job.dependencies = vec![window.id.clone(), source.id.clone()];
+    job.status = Status::Running;
+    state
+        .nodes
+        .extend([window.clone(), source.clone(), job.clone()]);
+    assert!(state.remove(&source.id).is_err());
+    state.remove(&window.id).unwrap();
+    let job = state.node(&job.id).unwrap();
+    assert_eq!(job.status, Status::Running);
+    assert_eq!(job.dependencies, vec![source.id]);
+    state.validate().unwrap();
+}
+
+#[test]
 fn deleting_a_running_node_cancels_its_process_before_removing_the_node() {
     let f = Fixture::new();
     let node = f.node(NodeKind::Shell, "sleep 30");

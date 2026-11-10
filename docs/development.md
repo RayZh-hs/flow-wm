@@ -200,7 +200,9 @@ python3 scripts/benchmark_views.py --windows 100 --samples 5 --verify
 
 This starts a private Xvfb/niri desktop with static GTK application windows,
 measures repeated view changes, and checks peek restoration, reversible zoom,
-and interrupted morphs. The report separates scene publication from GSK scene
+interrupted morphs, Ctrl+P wrapping, and Win+Q removal in both views and peeks.
+The test windows share a process, so closing a window must remove its node while
+leaving the other windows alive. The report separates scene publication from GSK scene
 construction. Captures and JSON are saved in `artifacts/view-benchmark/`.
 `--flowwm` and `--compositor` can select saved builds for a comparison. Requires
 Python GTK 4 and Pillow, Xvfb, xdotool, and grim. Physical trackpad feel still needs
@@ -238,6 +240,10 @@ if the binding is invalid or already occupied. GTK sets the ID after mapping its
 GDK surface because its own mapping path restores the ordinary application ID.
 A null canvas buffer restores the Windows presentation; destroying the toplevel
 removes the role. Losing the graph process therefore exposes the normal windows.
+View transitions submit their endpoint geometry and chrome before GTK's
+`after-paint` callback schedules unmapping. Native canvases retain full widget
+opacity until that null commit so preview geometry and chrome reach the endpoint
+together.
 Node-only rows retain their workspace and leave an empty trailing row available.
 
 The IPC crate defines `NodeRowSupport`, `SetNodeRow`, and `NodeRows`. Scene updates

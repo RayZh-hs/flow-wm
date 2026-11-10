@@ -97,11 +97,11 @@ Win+Page Up/Down or Win+I/U changes workspaces; add Ctrl to move a column or Shi
 
 Two-finger panning follows trackpad movement in pixels and glides to a stop after release. A new gesture stops the glide. Peeking expands the live client in place in the node scene, temporarily moving nearby cards aside; closing the peek restores their graph positions.
 
-Entering Nodes from Windows frames the complete row. Manual node positions persist. Ctrl+P computes a fresh arrangement, including disconnected nodes and graphs containing signal loops. Connections use straight spans with rounded bends; backwards routes loop around their endpoints. Window preview backgrounds are blurred and dimmed to stay visually inside the card.
+Entering Nodes from Windows frames the complete row. Manual node positions persist. Ctrl+P computes a fresh arrangement, including disconnected nodes and graphs containing signal loops. Large layers wrap into multiple rows based on the viewport's proportions, keeping each dependent layer below its inputs. Connections use straight spans with rounded bends; backwards routes loop around their endpoints. Window preview backgrounds are blurred and dimmed to stay visually inside the card.
 
 Copying preserves selected nodes, their internal connections, types, casts, and watcher definitions. Pasting creates fresh idle nodes with cleared results and window bindings. Copied commands do not run; copied watchers are disabled. Repeated pastes avoid existing cards. Cut uses the normal deletion behavior, including closing selected live windows.
 
-Imported application windows closed in **Windows view** are removed from the graph with their dangling connections. Closing an application in **Nodes view** retains its closed card until you remove it or clear history. Workflow nodes survive closing their output windows.
+Win+Q closes and removes the selected application window node in **Nodes view**, or the focused window and its node in **Windows view** and window peeks. Its connections are removed too, even if the application's shared process keeps running. Other window closures also remove imported cards in either view. Windows with connected exit workflows can retain a closed card while awaiting process exit; Win+Q explicitly removes these too. Workflow nodes survive closing their output windows.
 
 ## Dux search
 

@@ -588,10 +588,25 @@ impl Runtime {
                     if desktop.connected && desktop.windows_ready && desktop.workspaces_ready {
                         self.prune_window_processes(Some(&desktop.session));
                     }
+                    // A shared application can outlive a closed window. Only
+                    // keep its card when an exit workflow still needs the source.
+                    let consumers: HashSet<_> = self
+                        .state
+                        .connections
+                        .iter()
+                        .map(|e| e.source.node.as_str())
+                        .chain(
+                            self.state
+                                .nodes
+                                .iter()
+                                .flat_map(|n| n.dependencies.iter().map(String::as_str)),
+                        )
+                        .chain(self.state.watchers.iter().map(|w| w.source.as_str()))
+                        .collect();
                     let retained = self
                         .window_processes
                         .iter()
-                        .filter(|(_, p)| p.pending)
+                        .filter(|(id, p)| p.pending && consumers.contains(id.as_str()))
                         .map(|(id, _)| id.clone())
                         .chain(self.exit_pending.iter().cloned())
                         .collect();
@@ -1155,7 +1170,10 @@ impl Runtime {
                     self.pending_deletions.insert(id);
                     return Ok(json!({"stopping":true}));
                 }
-                if let Some(node) = self.state.node(&id).filter(|n| n.desktop_window)
+                if let Some(node) = self
+                    .state
+                    .node(&id)
+                    .filter(|n| n.desktop_window || n.kind == NodeKind::Window)
                     && let Some(window) = node.window_id
                 {
                     crate::niri::request(niri_ipc::Request::Action(
@@ -1478,6 +1496,16 @@ impl Runtime {
         Ok(json!({"ok":true}))
     }
     fn stop(&mut self, id: &str) -> Result<()> {
+        // Closing a window is an explicit removal, including when its shared
+        // application process remains alive or has already finished.
+        if self
+            .state
+            .node(id)
+            .is_some_and(|n| n.kind == NodeKind::Window)
+        {
+            self.apply(Control::Delete { id: id.into() })?;
+            return Ok(());
+        }
         self.graph_pending.retain(|(root, _)| root != id);
         self.signal_pending.remove(id);
         self.signal_args.remove(id);

@@ -280,16 +280,7 @@ pub(crate) fn synchronize_with_processes(
     let removed: HashSet<_> = state
         .nodes
         .iter()
-        .filter(|n| {
-            n.desktop_window
-                && !retained.contains(&n.id)
-                && n.window_id.is_some()
-                && !seen.contains(&n.id)
-                && state
-                    .workspaces
-                    .iter()
-                    .any(|w| w.id == n.workspace && w.view == RowView::Windows)
-        })
+        .filter(|n| n.desktop_window && !retained.contains(&n.id) && !seen.contains(&n.id))
         .map(|n| n.id.clone())
         .collect();
     if !removed.is_empty() {
