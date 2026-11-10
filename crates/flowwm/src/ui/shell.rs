@@ -1746,7 +1746,7 @@ impl Shell {
         self.engine.set_presentation(presentation);
     }
     fn connect_pin_search(&self, endpoint: crate::graph::Endpoint, output: bool) {
-        self.dms_launcher(Some("connect"));
+        self.dms_launcher(Some("nodes"));
         let mut presentation = self.engine.presentation();
         presentation.lookup_node = Some(endpoint.node);
         presentation.lookup_pin = Some(endpoint.pin);
@@ -1871,8 +1871,9 @@ impl Shell {
                     .as_deref()
                     .and_then(|id| state.node(id))
                     && crate::graph::pins(&state, node, true).len() > 1
+                    && let Some(reference) = state.node_reference(&node.id)
                 {
-                    return format!("@ {}: ", node.title);
+                    return format!("@ {reference}: ");
                 }
             }
             match mode {

@@ -48,7 +48,7 @@ Scope {
             } else if (item.flowwmLayer.output) outputName = item.flowwmLayer.output;
             else targetKey = item.flowwmLayer.target;
             itemsChanged();
-            return { keepOpen: true, query: "@ " + (!outputName && catalog.lookup.outputs.length > 1 ? catalog.lookup.title + ": " : "") };
+            return { keepOpen: true, query: Catalog.connectionQuery(catalog.lookup, outputName) };
         }
         const pending = item?.flowwmArgs?.[0] === "send" ? JSON.parse(item.flowwmArgs[1]) : null;
         const connectedApplication = pending?.command?.action === "create_connected" && pending.command.id === "window";

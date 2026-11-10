@@ -125,13 +125,13 @@ Application window titles are kept out of ordinary search. Use `@ > title` to fi
 
 With a selected node, **Tab** starts a connection search:
 
-1. A node with multiple outputs opens `Node title:` and lists its output pins.
+1. A node with multiple outputs opens `@ 1:` and lists its output pins, using the same number shown when holding Alt (1–9, then 0). Nodes beyond those ten use their internal ID.
 2. Choose an output. A node with one output skips this step.
 3. Search compatible existing nodes or node types under `@`.
 4. If a target accepts the output on multiple inputs, choose the input in another search layer.
 5. FlowWM connects the pins, creating an idle node first when necessary.
 
-The small text below the search field shows the source and accepted type. This hint is read-only; it uses the graph's type and registered-cast rules. A **Back** result returns to the previous layer. Choosing a type never starts its work.
+The small text below the search field shows the source title and accepted type. The query references the node by ID, so long titles and title changes do not affect filtering. This hint is read-only; it uses the graph's type and registered-cast rules. A **Back** result returns to the previous layer. Choosing a type never starts its work.
 
 ## Nodes and typed data
 
