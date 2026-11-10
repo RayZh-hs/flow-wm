@@ -97,7 +97,7 @@ Win+Page Up/Down or Win+I/U changes workspaces; add Ctrl to move a column or Shi
 
 Two-finger panning follows trackpad movement in pixels and glides to a stop after release. A new gesture stops the glide. Peeking expands the live client in place in the node scene, temporarily moving nearby cards aside; closing the peek restores their graph positions.
 
-Entering Nodes from Windows frames the complete row. Manual node positions persist. Ctrl+P computes a fresh arrangement, including disconnected nodes and graphs containing signal loops. Large layers wrap into multiple rows based on the viewport's proportions, keeping each dependent layer below its inputs. Connections use straight spans with rounded bends; backwards routes loop around their endpoints. Window preview backgrounds are blurred and dimmed to stay visually inside the card.
+Entering Nodes from Windows frames the complete row. Manual node positions persist. Ctrl+P arranges and automatically frames the entire graph in one animation, including disconnected nodes and graphs containing signal loops. Layers stay horizontal as the view zooms out; wrapping is considered only when fitting a row would require zooming below `arrange-wrap-zoom` (40% by default). Large graphs can still zoom out further to keep all rows visible. Dependent layers stay below their inputs. Connections use straight spans with rounded bends; backwards routes loop around their endpoints. Window preview backgrounds are blurred and dimmed to stay visually inside the card.
 
 Copying preserves selected nodes, their internal connections, types, casts, and watcher definitions. Pasting creates fresh idle nodes with cleared results and window bindings. Copied commands do not run; copied watchers are disabled. Repeated pastes avoid existing cards. Cut uses the normal deletion behavior, including closing selected live windows.
 
@@ -191,6 +191,7 @@ flow {
     motion-ms 220
     removal-ms 180
     inertia-decay 10.0
+    arrange-wrap-zoom 0.4
     running-color "#71c68c"
     running-opacity 0.17
     binds {
@@ -202,6 +203,8 @@ flow {
 ```
 
 Graph keys use niri's key names and modifiers. `action="none"` disables a graph binding. A `flow.binds` block defines the graph's keys; keep the other shipped entries when adding your own. Native `include` files can override individual settings and bindings. Zero motion/removal duration disables that animation; niri's `animations { off; }` and Dux's reduce-motion setting disable both. The native niri slowdown setting also applies to graph animations. Removed cards shrink and fade briefly, and the renderer requests frames only while animation remains. On view changes, visible windows follow an eased arc; off-screen windows fade at their graph positions.
+
+`arrange-wrap-zoom` accepts values from `0.0` to `1.0`. Lower values keep more cards on each row before wrapping; `0.0` disables wrapping. The default `0.4` keeps six windows on one row even in a 1200-pixel-wide canvas. Arrange always zooms and centers the complete graph, including when starting from a single-node focus or a panned view.
 
 Running nodes use a green backdrop tint, including the headers and footers of live window cards. `running-color` sets the tint color, and `running-opacity` controls its strength from `0.0` (disabled) to `1.0` (solid), defaulting to `0.17`. Window previews and selection outlines retain their own colors. The former `running-width` setting is still accepted for compatibility: zero disables the tint when `running-opacity` is omitted; other widths use the default tint strength.
 

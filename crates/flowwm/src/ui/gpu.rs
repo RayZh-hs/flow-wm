@@ -333,7 +333,7 @@ pub fn native_windows(
             let id = node.window_id?;
             let (_, rect, t) = window_geometry(node, view);
             let content = window_content(rect, t, view.zoom);
-            if !content.overlaps(viewport) {
+            if content.width <= 0. || content.height <= 0. || !content.overlaps(viewport) {
                 return None;
             }
             Some(niri_ipc::node_row::NodeWindow {
@@ -632,6 +632,38 @@ fn render_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interrupted_camera_morphs_never_publish_degenerate_preview_bounds() {
+        let mut state = State::empty("/tmp".into());
+        let mut node = Node::new(
+            &state.selected_workspace,
+            NodeKind::Window,
+            "/tmp".into(),
+            Position::default(),
+        );
+        node.window_id = Some(7);
+        let mut view = View::default();
+        view.zoom = 1.3;
+        view.presented_rects.insert(
+            node.id.clone(),
+            Rect {
+                x: 90.,
+                y: 330.,
+                width: 145.,
+                height: 134.,
+            },
+        );
+        state.nodes.push(node);
+        assert!(native_windows(&state, &view, 1200, 800).is_empty());
+        view.presented_rects.clear();
+        let scene = niri_ipc::node_row::NodeRowScene {
+            windows: native_windows(&state, &view, 1200, 800),
+            insets: [0; 4],
+        };
+        assert_eq!(scene.windows.len(), 1);
+        assert!(scene.validate());
+    }
 
     #[test]
     fn offscreen_native_previews_are_culled_and_fades_reach_the_compositor() {

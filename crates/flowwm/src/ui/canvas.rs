@@ -192,7 +192,7 @@ pub struct View {
     pub workspace: String,
     pub fitted: bool,
     motion_serial: u64,
-    camera_target: Option<(f64, f64, f64)>,
+    pub(super) camera_target: Option<(f64, f64, f64)>,
     space_down: bool,
     empty_hover: Option<super::empty::Action>,
 }

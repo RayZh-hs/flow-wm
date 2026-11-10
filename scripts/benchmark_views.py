@@ -171,16 +171,43 @@ def run(args):
                 result["verified"] = ["three peek/collapse cycles preserve graph pixels and saved positions", "Win+= zooms in and Win+- restores the camera", "Ctrl+scroll zooms and ordinary scrolling pans", "camera input exits peek", "rapid morph reversals complete"]
                 ui("nodes")
                 time.sleep(0.4)
+                # Arrange must restore a zoomed and panned camera to the complete
+                # graph using the same action and animation.
+                for _ in range(6):
+                    ui("zoom_in")
+                subprocess.run(["xdotool", "click", "--repeat", "3", "5"], env=env, check=True)
+                time.sleep(0.4)
                 subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+p"], env=env, check=True)
                 wait(lambda: next(w for w in request(flow, {"op": "status"})["workspaces"] if w["id"] == catalog["selected_workspace"])["graph_arranged"], compositor)
                 time.sleep(0.4)
                 arranged = {n["id"]: n["position"] for n in request(flow, {"op": "status"})["nodes"]}
+                row_sizes = [sum(p["y"] == y for p in arranged.values()) for y in {p["y"] for p in arranged.values()}]
+                result["arrangement"] = {"rows": len(row_sizes), "max_columns": max(row_sizes)}
+                if args.windows >= 6:
+                    assert max(row_sizes) >= 6, "Arrange wrapped before allowing six windows on a row"
+                if args.windows == 6:
+                    assert len(row_sizes) == 1, "six windows must fit one row by zooming out"
                 if args.windows >= 12:
                     assert len({p["y"] for p in arranged.values()}) > 1, "Ctrl+P left numerous windows on one line"
                 subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+p"], env=env, check=True)
                 time.sleep(0.4)
                 assert arranged == {n["id"]: n["position"] for n in request(flow, {"op": "status"})["nodes"]}, "repeated arrangement changed the layout"
                 capture("arranged-windows.png")
+                arranged_chrome = capture_chrome("chrome-arranged.png")
+                for _ in range(8):
+                    ui("zoom_out")
+                time.sleep(0.4)
+                subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+p"], env=env, check=True)
+                time.sleep(0.4)
+                zoomed_out_chrome = capture_chrome("chrome-arranged-from-zoom-out.png")
+                difference = ImageChops.difference(Image.open(arranged_chrome).convert("RGB"), Image.open(zoomed_out_chrome).convert("RGB"))
+                assert difference.getbbox() is None, "Arrange did not restore the complete graph from a distant zoom"
+                ui("fit")
+                time.sleep(0.4)
+                fitted_chrome = capture_chrome("chrome-arranged-explicit-fit.png")
+                difference = ImageChops.difference(Image.open(arranged_chrome).convert("RGB"), Image.open(fitted_chrome).convert("RGB"))
+                assert difference.getbbox() is None, "Arrange did not automatically frame all nodes"
+                result["verified"].append("Arrange zooms out before wrapping and automatically frames the entire graph")
 
                 def close_with_key(target):
                     others = {w["id"] for w in request(niri, "Windows")["Windows"]} - {target["window_id"]}

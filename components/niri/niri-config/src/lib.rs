@@ -1013,6 +1013,7 @@ mod tests {
                 motion_ms: None,
                 removal_ms: None,
                 inertia_decay: None,
+                arrange_wrap_zoom: None,
                 running_color: None,
                 running_opacity: None,
                 running_width: None,

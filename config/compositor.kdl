@@ -203,6 +203,7 @@ flow {
     motion-ms 220
     removal-ms 180
     inertia-decay 10.0
+    arrange-wrap-zoom 0.4
     running-color "#71c68c"
     running-opacity 0.17
     binds {

@@ -686,7 +686,14 @@ impl Shell {
         self.prepare_camera();
         let state = self.engine.snapshot().state;
         let (width, height) = self.scene_size();
-        let positions = super::layout::arrange(&state, width, height);
+        let positions = super::layout::arrange(
+            &state,
+            width,
+            height,
+            crate::config::flow()
+                .arrange_wrap_zoom
+                .unwrap_or(super::layout::DEFAULT_WRAP_ZOOM),
+        );
         let previous: HashMap<_, _> = state
             .nodes
             .iter()
@@ -710,9 +717,16 @@ impl Shell {
                         );
                     }
                 }
+                let mut framed = view.clone();
+                framed.fit(&state, width as f64, height as f64);
+                view.fitted = framed.fitted;
+                let camera = (framed.zoom, framed.pan_x, framed.pan_y);
                 drop(view);
-                self.transition(true, None);
-                self.fit();
+                if framed.fitted {
+                    self.first_frame.set(false);
+                    self.pending_focus.borrow_mut().take();
+                }
+                self.transition_with_camera(true, None, Some(camera));
             }
             Err(error) => self.show_error(&error.to_string()),
         }
@@ -1040,6 +1054,14 @@ impl Shell {
         self.canvas().queue_draw();
     }
     fn transition(&self, visible: bool, after: Option<Box<dyn FnOnce()>>) {
+        self.transition_with_camera(visible, after, None);
+    }
+    fn transition_with_camera(
+        &self,
+        visible: bool,
+        after: Option<Box<dyn FnOnce()>>,
+        camera: Option<(f64, f64, f64)>,
+    ) {
         self.canvas().slide(None);
         let started = std::time::Instant::now();
         self.transition_serial.set(self.transition_serial.get() + 1);
@@ -1124,7 +1146,8 @@ impl Shell {
             .arrangement
             .update(&state, width, height);
         let view = self.view.borrow();
-        let target_zoom = view.zoom;
+        let camera_from = (view.zoom, view.pan_x, view.pan_y);
+        let (target_zoom, target_pan_x, target_pan_y) = camera.unwrap_or(camera_from);
         let bases: HashMap<_, _> = state
             .nodes
             .iter()
@@ -1141,10 +1164,10 @@ impl Shell {
         {
             let p = &bases[&node.id];
             let graph = super::collapse::Rect {
-                x: view.pan_x + p.x * view.zoom,
-                y: view.pan_y + p.y * view.zoom,
-                width: canvas::WIDTH * view.zoom,
-                height: canvas::node_height(node) * view.zoom,
+                x: target_pan_x + p.x * target_zoom,
+                y: target_pan_y + p.y * target_zoom,
+                width: canvas::WIDTH * target_zoom,
+                height: canvas::node_height(node) * target_zoom,
             };
             let mut rect = view.desktop_rects.get(&node.id).copied().unwrap_or(graph);
             if target[&node.id] == 1.0 {
@@ -1181,8 +1204,8 @@ impl Shell {
             target_positions.insert(
                 id.clone(),
                 Position {
-                    x: (rect.x - view.pan_x) / view.zoom,
-                    y: (rect.y - view.pan_y) / view.zoom,
+                    x: (rect.x - target_pan_x) / target_zoom,
+                    y: (rect.y - target_pan_y) / target_zoom,
                 },
             );
             target_rects.insert(id, rect);
@@ -1207,6 +1230,11 @@ impl Shell {
         let fade_only: HashSet<_> = target_rects
             .iter()
             .filter_map(|(id, destination)| {
+                // Cards outside a panned graph still move with the graph camera.
+                // The fade path is only for entering/leaving desktop windows.
+                if from[id] == 1.0 && target[id] == 1.0 {
+                    return None;
+                }
                 let desktop_end = if visible {
                     from_rects[id]
                 } else {
@@ -1259,6 +1287,7 @@ impl Shell {
             }
         }
         self.view.borrow_mut().presentations = from.clone();
+        self.view.borrow_mut().camera_target = camera;
         self.view.borrow_mut().morphing = true;
         self.view.borrow_mut().live_fade = 1.0;
         self.view.borrow_mut().chrome = chrome_from;
@@ -1351,6 +1380,18 @@ impl Shell {
             let has_windows = target.values().any(|t| *t == 0.0);
             {
                 let mut view = shell.view.borrow_mut();
+                let following_camera = camera.is_some() && view.camera_target == camera;
+                if following_camera {
+                    if progress >= 1.0 {
+                        (view.zoom, view.pan_x, view.pan_y) =
+                            (target_zoom, target_pan_x, target_pan_y);
+                        view.camera_target = None;
+                    } else {
+                        view.zoom = camera_from.0 + (target_zoom - camera_from.0) * eased;
+                        view.pan_x = camera_from.1 + (target_pan_x - camera_from.1) * eased;
+                        view.pan_y = camera_from.2 + (target_pan_y - camera_from.2) * eased;
+                    }
+                }
                 for (id, target) in &target {
                     let from = from.get(id).copied().unwrap_or(1.0);
                     view.presentations
@@ -1376,7 +1417,12 @@ impl Shell {
                     );
                 }
                 for (id, rect) in &target_rects {
-                    let destination = if target.get(id) == Some(&1.0) {
+                    // The camera and card rectangle share one interpolation.
+                    // Applying the camera again here would ease the preview
+                    // twice and could shrink it below its header's dimensions.
+                    let destination = if following_camera {
+                        *rect
+                    } else if target.get(id) == Some(&1.0) {
                         let p = &target_positions[id];
                         super::collapse::Rect {
                             x: view.pan_x + p.x * view.zoom,

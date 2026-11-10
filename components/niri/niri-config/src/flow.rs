@@ -9,6 +9,9 @@ pub struct Flow {
     pub removal_ms: Option<u32>,
     #[knuffel(child, unwrap(argument))]
     pub inertia_decay: Option<f64>,
+    /// Zoom out this far before considering wrapped rows; zero disables wrapping.
+    #[knuffel(child, unwrap(argument))]
+    pub arrange_wrap_zoom: Option<f64>,
     #[knuffel(child, unwrap(argument))]
     pub running_color: Option<String>,
     #[knuffel(child, unwrap(argument))]
@@ -44,6 +47,7 @@ impl crate::utils::MergeWith<Flow> for Flow {
             motion_ms,
             removal_ms,
             inertia_decay,
+            arrange_wrap_zoom,
             running_color,
             running_opacity,
             running_width
@@ -62,6 +66,12 @@ impl crate::utils::MergeWith<Flow> for Flow {
 
 impl Flow {
     pub fn validate(&self) -> Result<(), String> {
+        if self
+            .arrange_wrap_zoom
+            .is_some_and(|v| !v.is_finite() || !(0. ..=1.).contains(&v))
+        {
+            return Err("flow arrange-wrap-zoom must be between 0 and 1".into());
+        }
         if self
             .inertia_decay
             .is_some_and(|v| !v.is_finite() || v <= 0.)
@@ -155,7 +165,7 @@ mod tests {
         use crate::utils::MergeWith;
         let mut flow = crate::Config::parse_mem(r##"flow { motion-ms 200; running-color "#71c68c"; running-opacity 0.17; running-width 0.0; binds { r action="run"; Ctrl+r action="stop"; }; }"##).unwrap().flow;
         let override_flow = crate::Config::parse_mem(
-            r#"flow { removal-ms 140; running-opacity 0.25; binds { r action="none"; }; }"#,
+            r#"flow { removal-ms 140; running-opacity 0.25; arrange-wrap-zoom 0.4; binds { r action="none"; }; }"#,
         )
         .unwrap()
         .flow;
@@ -164,6 +174,7 @@ mod tests {
         assert_eq!(flow.removal_ms, Some(140));
         assert_eq!(flow.running_opacity, Some(0.25));
         assert_eq!(flow.running_width, Some(0.0));
+        assert_eq!(flow.arrange_wrap_zoom, Some(0.4));
         let binds = flow.binds.unwrap().bindings;
         assert_eq!(binds.len(), 2);
         assert!(binds.iter().any(|b| b.key == "r" && b.action == "none"));
@@ -172,6 +183,8 @@ mod tests {
             r#"flow { running-color "green"; }"#,
             r#"flow { running-opacity -0.1; }"#,
             r#"flow { running-opacity 1.1; }"#,
+            r#"flow { arrange-wrap-zoom -0.1; }"#,
+            r#"flow { arrange-wrap-zoom 1.1; }"#,
             r#"flow { binds { r action="typo"; }; }"#,
             r#"flow { binds { Ctrl+r action="run"; Control+R action="stop"; }; }"#,
         ] {
@@ -183,6 +196,12 @@ mod tests {
                     .unwrap()
                     .flow;
             assert_eq!(flow.running_opacity, Some(opacity));
+        }
+        for zoom in [0., 0.4, 1.] {
+            let flow = crate::Config::parse_mem(&format!("flow {{ arrange-wrap-zoom {zoom:?}; }}"))
+                .unwrap()
+                .flow;
+            assert_eq!(flow.arrange_wrap_zoom, Some(zoom));
         }
     }
 }

@@ -147,8 +147,11 @@ impl Arrangement {
     }
 }
 
-/// Layer a directed graph, wrapping each layer to fit the viewport's aspect ratio.
-pub fn arrange(state: &State, width: i32, height: i32) -> Vec<(String, Position)> {
+pub const DEFAULT_WRAP_ZOOM: f64 = 0.4;
+
+/// Keep layers horizontal until fitting them would require excessive zooming
+/// out, then choose a wrapped layout without shortening those preferred rows.
+pub fn arrange(state: &State, width: i32, height: i32, wrap_zoom: f64) -> Vec<(String, Position)> {
     use std::collections::{BTreeMap, BTreeSet};
     let nodes: BTreeMap<_, _> = state
         .nodes
@@ -205,7 +208,15 @@ pub fn arrange(state: &State, width: i32, height: i32) -> Vec<(String, Position)
             .fold(0., f64::max)
     };
     let max_columns = layers.iter().map(Vec::len).max().unwrap_or(0);
-    let columns = (1..=max_columns)
+    let min_columns = if wrap_zoom > 0. {
+        // A row of c cards spans c * (WIDTH + gap) - gap graph pixels.
+        ((((width as f64 - 160.).max(1.) / wrap_zoom + 100.) / (WIDTH + 100.)).floor() as usize)
+            .max(1)
+            .min(max_columns)
+    } else {
+        max_columns
+    };
+    let columns = (min_columns.max(1)..=max_columns)
         .max_by(|a, b| {
             let scale = |columns: usize| {
                 let w = span(columns, WIDTH + 100.);
@@ -389,7 +400,7 @@ mod tests {
         state.nodes[1].dependencies.push(source);
         let mut layout = Arrangement::default();
         layout.update(&state, 1200, 800);
-        let positions = arrange(&state, 1200, 800);
+        let positions = arrange(&state, 1200, 800, DEFAULT_WRAP_ZOOM);
         state.workspaces[0].graph_arranged = true;
         for (id, p) in positions {
             state.node_mut(&id).unwrap().position = p;
@@ -415,10 +426,31 @@ mod tests {
     }
 
     #[test]
+    fn arranging_zooms_out_before_wrapping_and_respects_the_threshold() {
+        let state = scene(6, 0);
+        for (width, height) in [(1200, 800), (1828, 1095)] {
+            let positions = arrange(&state, width, height, DEFAULT_WRAP_ZOOM);
+            assert!(
+                positions.iter().all(|(_, p)| p.y == 80.),
+                "six windows must stay together on a desktop-sized viewport"
+            );
+        }
+        let earlier_wrap = arrange(&state, 1200, 800, 1.);
+        assert!(earlier_wrap.iter().any(|(_, p)| p.y > 80.));
+        let large = scene(40, 0);
+        let unwrapped = arrange(&large, 1200, 800, 0.);
+        assert!(unwrapped.iter().all(|(_, p)| p.y == 80.));
+        let wrapped = arrange(&large, 1828, 1095, DEFAULT_WRAP_ZOOM);
+        assert!(wrapped.iter().any(|(_, p)| p.y > 80.));
+        assert!(wrapped.iter().filter(|(_, p)| p.y == 80.).count() >= 6);
+        assert!(arrange(&scene(0, 0), 1200, 800, DEFAULT_WRAP_ZOOM).is_empty());
+    }
+
+    #[test]
     fn arranging_many_windows_wraps_to_the_viewport_and_is_idempotent() {
         for (width, height) in [(1200, 800), (800, 1200), (100, 100)] {
             let mut state = scene(40, 0);
-            let positions = arrange(&state, width, height);
+            let positions = arrange(&state, width, height, DEFAULT_WRAP_ZOOM);
             assert_eq!(positions.len(), 40);
             assert!(positions.iter().any(|(_, p)| p.y > 80.));
             for (id, p) in &positions {
@@ -433,7 +465,7 @@ mod tests {
             };
             assert_eq!(
                 coordinates(positions.clone()),
-                coordinates(arrange(&state, width, height))
+                coordinates(arrange(&state, width, height, DEFAULT_WRAP_ZOOM))
             );
             let bounds = positions.iter().fold((0_f64, 0_f64), |(w, h), (_, p)| {
                 (w.max(p.x - 100. + WIDTH), h.max(p.y - 80. + HEIGHT + 120.))
@@ -460,7 +492,9 @@ mod tests {
             .extend(state.nodes.iter().map(|n| n.id.clone()));
         let target_id = target.id.clone();
         state.nodes.push(target);
-        let positions: HashMap<_, _> = arrange(&state, 1200, 800).into_iter().collect();
+        let positions: HashMap<_, _> = arrange(&state, 1200, 800, DEFAULT_WRAP_ZOOM)
+            .into_iter()
+            .collect();
         for (i, a) in state.nodes.iter().enumerate() {
             let p = &positions[&a.id];
             for b in state.nodes.iter().skip(i + 1) {
