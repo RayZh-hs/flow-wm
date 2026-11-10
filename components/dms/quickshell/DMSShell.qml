@@ -742,7 +742,7 @@ Item {
     LazyLoader {
         id: dankLauncherV2ModalLoader
 
-        active: false
+        activeAsync: !SettingsData.dankLauncherV2UnloadOnClose
 
         Component.onCompleted: {
             PopoutService.dankLauncherV2ModalLoader = dankLauncherV2ModalLoader;

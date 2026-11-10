@@ -87,6 +87,11 @@ pub enum Request {
     },
     /// Inspect native node rows without treating their canvases as application windows.
     NodeRows,
+    /// Acknowledge that a launcher has initialized its field for a keyboard handoff.
+    KeyboardFocusReady {
+        /// Exact layer-shell namespace receiving the input.
+        namespace: String,
+    },
     /// Request information about the configured keyboard layouts.
     KeyboardLayouts,
     /// Request information about the focused output.
@@ -223,6 +228,22 @@ pub enum Action {
     PowerOnMonitors {},
     /// Spawn a command.
     Spawn {
+        /// Command to spawn.
+        #[cfg_attr(feature = "clap", arg(last = true, required = true))]
+        command: Vec<String>,
+    },
+    /// Spawn a command, holding keyboard input until a layer surface takes focus.
+    SpawnWithKeyboardFocus {
+        /// Exact layer-shell namespace to receive the input.
+        #[cfg_attr(feature = "clap", arg(long))]
+        namespace: String,
+        /// Maximum time to wait before returning input to the current focus.
+        #[cfg_attr(feature = "clap", arg(long, default_value_t = 1000))]
+        timeout_ms: u16,
+        /// Wait for KeyboardFocusReady after the target has initialized its input field.
+        #[cfg_attr(feature = "clap", arg(long))]
+        #[serde(default)]
+        wait_for_ready: bool,
         /// Command to spawn.
         #[cfg_attr(feature = "clap", arg(last = true, required = true))]
         command: Vec<String>,

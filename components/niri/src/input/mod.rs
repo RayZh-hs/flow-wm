@@ -12,7 +12,7 @@ use niri_ipc::LayoutSwitchTarget;
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device, DeviceCapability, Event,
     GestureBeginEvent, GestureEndEvent, GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _,
-    InputEvent, KeyState, KeyboardKeyEvent, Keycode, MouseButton, PointerAxisEvent,
+    InputEvent, InputTime, KeyState, KeyboardKeyEvent, Keycode, MouseButton, PointerAxisEvent,
     PointerButtonEvent, PointerMotionEvent, ProximityState, Switch, SwitchState, SwitchToggleEvent,
     TabletToolButtonEvent, TabletToolEvent, TabletToolProximityEvent, TabletToolTipEvent,
     TabletToolTipState, TouchEvent,
@@ -70,6 +70,14 @@ pub mod touch_overview_grab;
 use backend_ext::{NiriInputBackend as InputBackend, NiriInputDevice as _};
 
 pub const DOUBLE_CLICK_TIME: Duration = Duration::from_millis(400);
+
+pub struct KeyboardHandoff {
+    namespace: String,
+    ready: bool,
+    original_focus: Option<WlSurface>,
+    timer: calloop::RegistrationToken,
+    events: Vec<(Keycode, KeyState, InputTime)>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TabletData {
@@ -414,11 +422,34 @@ impl State {
         event: I::KeyboardKeyEvent,
         consumed_by_a11y: &mut bool,
     ) {
+        if let Some(handoff) = &mut self.niri.keyboard_handoff {
+            handoff
+                .events
+                .push((event.key_code(), event.state(), Event::time(&event)));
+            if handoff.events.len() >= 256 {
+                self.finish_keyboard_handoff(false);
+            }
+            return;
+        }
+        self.on_keyboard_key(
+            event.key_code(),
+            event.state(),
+            Event::time(&event),
+            consumed_by_a11y,
+        );
+    }
+
+    fn on_keyboard_key(
+        &mut self,
+        key_code: Keycode,
+        state: KeyState,
+        time: InputTime,
+        consumed_by_a11y: &mut bool,
+    ) {
         let mod_key = self.backend.mod_key(&self.niri.config.borrow());
 
         let serial = SERIAL_COUNTER.next_serial();
-        let time = Event::time(&event);
-        let pressed = event.state() == KeyState::Pressed;
+        let pressed = state == KeyState::Pressed;
 
         // Stop bind key repeat on any release. This won't work 100% correctly in cases like:
         // 1. Press Mod
@@ -446,11 +477,8 @@ impl State {
         // other changes.
         #[cfg(feature = "dbus")]
         let block = {
-            let block = self.a11y_process_key(
-                Duration::from_micros(time.micros()),
-                event.key_code(),
-                event.state(),
-            );
+            let block =
+                self.a11y_process_key(Duration::from_micros(time.micros()), key_code, state);
             if block != KbMonBlock::Pass {
                 *consumed_by_a11y = true;
             }
@@ -466,12 +494,11 @@ impl State {
 
         let Some(Some(bind)) = self.niri.seat.get_keyboard().unwrap().input(
             self,
-            event.key_code(),
-            event.state(),
+            key_code,
+            state,
             serial,
             time,
             |this, mods, keysym| {
-                let key_code = event.key_code();
                 let modified = keysym.modified_sym();
                 let raw = keysym.raw_latin_sym_or_raw_current_sym();
                 let modifiers = modifiers_from_state(*mods);
@@ -602,6 +629,128 @@ impl State {
         self.handle_bind(bind.clone());
 
         self.start_key_repeat(bind);
+    }
+
+    fn keyboard_focus_has_namespace(&self, namespace: &str) -> bool {
+        let focus = self.niri.keyboard_focus.surface();
+        self.niri
+            .mapped_layer_surfaces
+            .keys()
+            .any(|layer| Some(layer.wl_surface()) == focus && layer.namespace() == namespace)
+    }
+
+    fn begin_keyboard_handoff(&mut self, namespace: String, timeout_ms: u16, wait_for_ready: bool) {
+        self.finish_keyboard_handoff(false);
+        if timeout_ms == 0
+            || self.niri.is_locked()
+            || (!wait_for_ready && self.keyboard_focus_has_namespace(&namespace))
+        {
+            return;
+        }
+        let timer = Timer::from_duration(Duration::from_millis(u64::from(timeout_ms)));
+        let token = self
+            .niri
+            .event_loop
+            .insert_source(timer, |_, _, state| {
+                state.finish_keyboard_handoff(false);
+                TimeoutAction::Drop
+            })
+            .unwrap();
+        self.niri.keyboard_handoff = Some(KeyboardHandoff {
+            // A still-focused closing launcher must initialize before it receives more text.
+            ready: !wait_for_ready,
+            namespace,
+            original_focus: self.niri.keyboard_focus.surface().cloned(),
+            timer: token,
+            events: Vec::new(),
+        });
+    }
+
+    pub fn keyboard_focus_ready(&mut self, namespace: &str) {
+        // Ignore readiness from a closing window before its new keyboard enter reaches the client.
+        if !self.keyboard_focus_has_namespace(namespace) {
+            return;
+        }
+        if let Some(handoff) = &mut self.niri.keyboard_handoff {
+            if handoff.namespace == namespace {
+                handoff.ready = true;
+            }
+        }
+        self.complete_keyboard_handoff();
+    }
+
+    pub fn complete_keyboard_handoff(&mut self) {
+        let Some(handoff) = &self.niri.keyboard_handoff else {
+            return;
+        };
+        if self.niri.is_locked() {
+            self.finish_keyboard_handoff(false);
+        } else if handoff.ready && self.keyboard_focus_has_namespace(&handoff.namespace) {
+            self.finish_keyboard_handoff(true);
+        }
+    }
+
+    fn finish_keyboard_handoff(&mut self, target_ready: bool) {
+        let Some(handoff) = self.niri.keyboard_handoff.take() else {
+            return;
+        };
+        self.niri.event_loop.remove(handoff.timer);
+        let deliver = !self.niri.is_locked()
+            && (target_ready
+                || self.keyboard_focus_has_namespace(&handoff.namespace)
+                || self.niri.keyboard_focus.surface() == handoff.original_focus.as_ref());
+        let keyboard = self.niri.seat.get_keyboard().unwrap();
+        for (code, state, time) in handoff.events {
+            if deliver {
+                if let Some(next) = &mut self.niri.keyboard_handoff {
+                    next.events.push((code, state, time));
+                } else {
+                    self.on_keyboard_key(code, state, time, &mut false);
+                }
+            } else {
+                // Keep XKB and release suppression correct without typing into an unrelated surface.
+                keyboard.input::<(), _>(
+                    self,
+                    code,
+                    state,
+                    SERIAL_COUNTER.next_serial(),
+                    time,
+                    |this, _, keysym| {
+                        if matches!(
+                            keysym.modified_sym(),
+                            Keysym::Shift_L
+                                | Keysym::Shift_R
+                                | Keysym::Control_L
+                                | Keysym::Control_R
+                                | Keysym::Super_L
+                                | Keysym::Super_R
+                                | Keysym::Alt_L
+                                | Keysym::Alt_R
+                                | Keysym::Meta_L
+                                | Keysym::Meta_R
+                                | Keysym::Hyper_L
+                                | Keysym::Hyper_R
+                                | Keysym::ISO_Level3_Shift
+                                | Keysym::ISO_Level5_Shift
+                                | Keysym::Caps_Lock
+                                | Keysym::Num_Lock
+                        ) {
+                            this.niri.suppressed_keys.remove(&code);
+                            return FilterResult::Forward;
+                        }
+                        if state == KeyState::Pressed {
+                            this.niri.suppressed_keys.insert(code);
+                        } else {
+                            this.niri.suppressed_keys.remove(&code);
+                        }
+                        FilterResult::Intercept(())
+                    },
+                );
+            }
+        }
+        if !deliver {
+            keyboard.advertise_modifier_state(self);
+        }
     }
 
     fn start_key_repeat(&mut self, bind: Bind) {
@@ -740,6 +889,11 @@ impl State {
                 self.niri.debug_toggle_damage();
             }
             Action::Spawn(command) => {
+                let (token, _) = self.niri.activation_state.create_external_token(None);
+                spawn(command, Some(token.clone()));
+            }
+            Action::SpawnWithKeyboardFocus(command, namespace, timeout_ms, wait_for_ready) => {
+                self.begin_keyboard_handoff(namespace, timeout_ms, wait_for_ready);
                 let (token, _) = self.niri.activation_state.create_external_token(None);
                 spawn(command, Some(token.clone()));
             }

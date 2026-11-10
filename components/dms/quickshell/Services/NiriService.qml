@@ -315,6 +315,10 @@ Singleton {
         }
     }
 
+    function acknowledgeKeyboardFocus(namespace: string) {
+        requestSocket.send(JSON.stringify({KeyboardFocusReady: {namespace: namespace}}));
+    }
+
     function fetchOutputs() {
         if (!CompositorService.isNiri)
             return;

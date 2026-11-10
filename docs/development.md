@@ -227,6 +227,8 @@ creation, its parameter dialog, and Escape, at 2x output scale. Pass a saved
 `state.json` path to replay an existing graph in the private test session.
 A local Dux IPC recorder keeps this check independent of the active shell.
 
+`python3 scripts/smoke_launcher.py` checks real Dux search fields and the FlowWM bridge in a private Xvfb/niri desktop with its own D-Bus session and XDG directories. It sends each search shortcut and typing, Backspace, and Shift with no delay, then checks the exact query and focus in connected and Spotlight layouts, including reopening while closing. Results and logs go to `artifacts/launcher-input/`. This requires Quickshell in addition to the desktop smoke dependencies. The catalog subscription carries launcher events directly; Dux acknowledges `KeyboardFocusReady` through its existing compositor socket only when the initialized field has active keyboard focus. The handoff has one bounded timer per opening and no idle polling.
+
 `components/niri/src/node_row.rs` implements a workspace-owned `NodeTile` and
 live application projections. The workspace renderer chooses the node presentation
 in place of its normal scrolling and floating passes. Node rows skip normal column and tab preparation; only expanded clients prepare

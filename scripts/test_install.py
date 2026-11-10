@@ -104,6 +104,33 @@ class ProfileIsolation(unittest.TestCase):
             self.assertTrue((config / 'my-include.kdl').exists())
             self.assertEqual((state / 'config-backups/before-flat-layout/application-configs/Code/User/settings.json').read_text(), '{"custom":true}')
 
+    def test_existing_launcher_commands_gain_keyboard_handoff_without_rebinding_keys(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = self.profile(root)
+            config, state = args[:2]
+            main = config / 'config.kdl'
+            original = '''binds {
+    Mod+F1 { spawn "flowwm" "new"; }
+    Alt+F2 { spawn "flowwm" "launcher"; }
+    Mod+F3 { spawn "flowwm" "search"; }
+    Mod+F4 { spawn "custom-launcher" "new"; }
+    Mod+F5 { spawn "flowwm" "search" "--custom"; }
+}
+'''
+            main.write_text(original)
+            main.chmod(0o600)
+            installer.prepare_profile(*args)
+            updated = main.read_text()
+            self.assertEqual(updated.count('spawn-with-keyboard-focus'), 3)
+            self.assertIn('Mod+F1 { spawn-with-keyboard-focus "flowwm" "new" namespace="dms:spotlight" wait-for-ready=true;', updated)
+            self.assertIn('spawn "custom-launcher" "new"', updated)
+            self.assertIn('spawn "flowwm" "search" "--custom"', updated)
+            self.assertEqual(main.stat().st_mode & 0o777, 0o600)
+            self.assertEqual((state / 'config-backups/before-launcher-input/config.kdl').read_text(), original)
+            installer.prepare_profile(*args)
+            self.assertEqual(main.read_text(), updated)
+
     def test_units_validate_without_an_installed_niri_or_dms_service(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

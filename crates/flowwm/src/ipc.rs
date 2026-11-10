@@ -69,6 +69,7 @@ fn serve_client(mut stream: UnixStream, engine: Engine, macros: &[Macro]) {
             return Ok(serde_json::to_value(engine.performance.snapshot())?);
         }
         if value["op"] == "subscribe" {
+            let launcher = (value["launcher"] == true).then(|| engine.connect_launcher());
             let mut generation = 0;
             let mut previous = String::new();
             while let Some(next) = engine.wait_for_change(generation) {
@@ -78,11 +79,19 @@ fn serve_client(mut stream: UnixStream, engine: Engine, macros: &[Macro]) {
                     engine.presentation(),
                     macros,
                 ))?;
-                if catalog == previous {
-                    continue;
+                if catalog != previous {
+                    writeln!(stream, "{catalog}")?;
+                    previous = catalog;
                 }
-                writeln!(stream, "{catalog}")?;
-                previous = catalog;
+                if let Some(launcher) = &launcher {
+                    for query in launcher.try_iter() {
+                        writeln!(
+                            stream,
+                            "{}",
+                            serde_json::json!({"launcher": {"query": query}})
+                        )?;
+                    }
+                }
             }
             return Ok(Value::Null);
         }

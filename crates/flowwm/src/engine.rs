@@ -339,6 +339,7 @@ pub struct Engine {
     join: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
     notifier: Arc<Notifier>,
     presentation: Arc<Mutex<Presentation>>,
+    launcher: Arc<Mutex<Option<mpsc::Sender<Option<String>>>>>,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Presentation {
@@ -421,6 +422,7 @@ impl Engine {
                 join: Arc::new(Mutex::new(Some(join))),
                 notifier,
                 presentation: Arc::new(Mutex::new(Presentation::default())),
+                launcher: Arc::new(Mutex::new(None)),
             },
             ui_rx,
         )
@@ -430,6 +432,20 @@ impl Engine {
     }
     pub fn presentation(&self) -> Presentation {
         self.presentation.lock().unwrap().clone()
+    }
+    pub fn connect_launcher(&self) -> mpsc::Receiver<Option<String>> {
+        let (tx, rx) = mpsc::channel();
+        *self.launcher.lock().unwrap() = Some(tx);
+        rx
+    }
+    pub fn open_launcher(&self, query: Option<String>) -> bool {
+        let mut launcher = self.launcher.lock().unwrap();
+        if launcher.as_ref().is_some_and(|tx| tx.send(query).is_ok()) {
+            self.notifier.signal();
+            return true;
+        }
+        *launcher = None;
+        false
     }
     pub fn set_presentation(&self, presentation: Presentation) {
         let mut current = self.presentation.lock().unwrap();

@@ -1896,6 +1896,9 @@ impl Shell {
             self.transition(false, None);
         }
         self.bar.set_visible(false);
+        if self.engine.open_launcher(query.clone()) {
+            return;
+        }
         std::thread::spawn(move || {
             let mut command = std::process::Command::new("dms");
             command.args(["ipc", "call", "spotlight"]);

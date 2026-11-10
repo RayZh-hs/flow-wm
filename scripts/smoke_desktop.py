@@ -83,6 +83,8 @@ def run(state_file=None):
         environment["PATH"] = str(bin_dir) + os.pathsep + environment["PATH"]
         installer.prepare_profile(runtime / "config", runtime / "state", runtime / "cache", runtime / "bundle", runtime / "original", runtime / "original-state", runtime / "original-cache", bin_dir / "flowwm-session")
         config = runtime / "config/config.kdl"
+        # This recorder has no keyboard surface; real launcher handoffs run in smoke_launcher.py.
+        config.write_text(config.read_text().replace('namespace="dms:spotlight"', 'namespace="dms:spotlight" timeout-ms=0'))
         config.write_text('workspace "First"\nworkspace "Second"\noutput "winit" { scale 2; }\nanimations { slowdown 4.0; }\n' + config.read_text().replace('input {', 'input {\n    mod-key-nested "Super"', 1))
         if state_file:
             state = json.loads(Path(state_file).read_text())

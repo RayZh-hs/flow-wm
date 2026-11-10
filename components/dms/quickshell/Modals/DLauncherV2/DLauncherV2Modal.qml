@@ -11,6 +11,7 @@ Item {
     readonly property string layerNamespace: impl.item ? (impl.item.layerNamespace ?? "dms:launcher") : "dms:launcher"
     readonly property bool isClosing: impl.item ? impl.item.isClosing : false
     readonly property bool keyboardActive: impl.item ? impl.item.keyboardActive : false
+    readonly property bool inputReady: impl.item?.inputReady ?? false
     readonly property bool contentVisible: impl.item ? impl.item.contentVisible : false
     readonly property var spotlightContent: impl.item ? impl.item.spotlightContent : null
     readonly property bool openedFromOverview: impl.item ? impl.item.openedFromOverview : false

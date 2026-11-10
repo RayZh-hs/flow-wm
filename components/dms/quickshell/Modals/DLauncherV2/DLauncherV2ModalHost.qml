@@ -72,6 +72,7 @@ Item {
     property bool _pendingInitialize: false
     property string _pendingQuery: ""
     property string _pendingMode: ""
+    readonly property bool inputReady: spotlightOpen && keyboardActive && !_pendingInitialize && contentFocus.Window.active && (spotlightContent?.searchField?.inputFocused ?? false)
     readonly property bool unloadContentOnClose: !spotlight && SettingsData.dankLauncherV2UnloadOnClose
 
     property bool animationsEnabled: true
@@ -467,8 +468,6 @@ Item {
 
         if (spotlightContent.searchField) {
             spotlightContent.searchField.text = targetQuery;
-            if (!connected)
-                _focusSearchField(query);
         }
         if (spotlightContent.controller)
             spotlightContent.controller.openSession(targetQuery, !!query, mode || SessionData.getLauncherRestoreMode(), !spotlight || spotlightContent.showResultsWithoutQuery === true);
@@ -478,6 +477,7 @@ Item {
         if (spotlightContent.actionPanel) {
             spotlightContent.actionPanel.hide();
         }
+        _focusSearchField(query);
     }
 
     function _focusSearchField(query) {
@@ -493,6 +493,7 @@ Item {
     }
 
     function _openCommon(query, mode) {
+        _pendingInitialize = true;
         if (!spotlightOpen && !isClosing)
             _fluidMotionActive = Theme.isFluidEffect;
         closeCleanupTimer.stop();
@@ -530,6 +531,7 @@ Item {
         if (connectedFluidMotion && !preserveFluid)
             fluidMotion.snapTo(fluidTravelCollapsedRect);
 
+        keyboardActive = true;
         spotlightOpen = true;
         contentWindow.visible = true;
         ModalManager.openModal(modalHandle);
@@ -541,13 +543,6 @@ Item {
                 return;
             root.animationsEnabled = true;
             root._motionActive = true;
-
-            Qt.callLater(() => {
-                if (!root.spotlightOpen)
-                    return;
-                root.keyboardActive = true;
-                root._focusSearchField(query);
-            });
         });
     }
 
@@ -863,6 +858,7 @@ Item {
         }
 
         FocusScope {
+            id: contentFocus
             parent: surfaceChrome.item ? surfaceChrome.item.contentSlot : contentWindow.contentItem
             anchors.fill: parent
             focus: root.keyboardActive
@@ -870,7 +866,7 @@ Item {
             Loader {
                 id: launcherContentLoader
                 anchors.fill: parent
-                active: (!root.spotlight && !root.unloadContentOnClose) || root.spotlightOpen || root.isClosing || root.contentVisible || root._pendingInitialize
+                active: !root.unloadContentOnClose || root.spotlightOpen || root.isClosing || root.contentVisible || root._pendingInitialize
                 asynchronous: false
                 sourceComponent: root.spotlight ? spotlightContentComponent : launcherContentComponent
 

@@ -68,9 +68,9 @@ binds {
     Mod+Shift+Tab hotkey-overlay-title="Return to windows" repeat=false allow-inhibiting=false { spawn "flowwm" "windows"; }
     Mod+equal hotkey-overlay-title="Zoom in (Nodes) / increase column width (Windows)" repeat=true { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"zoom_in\"}}"; }
     Mod+minus hotkey-overlay-title="Zoom out (Nodes) / decrease column width (Windows)" repeat=true { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"zoom_out\"}}"; }
-    Mod+Space hotkey-overlay-title="Dux app search (Windows) / create a node (Nodes)" repeat=false allow-inhibiting=false { spawn "flowwm" "new"; }
-    Alt+Space hotkey-overlay-title="Open Dux app search" repeat=false allow-inhibiting=false { spawn "flowwm" "launcher"; }
-    Mod+Shift+Space hotkey-overlay-title="Find a node in Dux" repeat=false allow-inhibiting=false { spawn "flowwm" "search"; }
+    Mod+Space hotkey-overlay-title="Dux app search (Windows) / create a node (Nodes)" repeat=false allow-inhibiting=false { spawn-with-keyboard-focus "flowwm" "new" namespace="dms:spotlight" wait-for-ready=true; }
+    Alt+Space hotkey-overlay-title="Open Dux app search" repeat=false allow-inhibiting=false { spawn-with-keyboard-focus "flowwm" "launcher" namespace="dms:spotlight" wait-for-ready=true; }
+    Mod+Shift+Space hotkey-overlay-title="Find a node in Dux" repeat=false allow-inhibiting=false { spawn-with-keyboard-focus "flowwm" "search" namespace="dms:spotlight" wait-for-ready=true; }
     Mod+Shift+slash hotkey-overlay-title="Show key bindings" repeat=false allow-inhibiting=false { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"help\"}}"; }
     Mod+Left hotkey-overlay-title="Select node / focus window left" repeat=true allow-inhibiting=false { spawn "flowwm" "navigate" "left"; }
     Mod+Ctrl+Left hotkey-overlay-title="Move selection / window left" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"left\"}}"; }

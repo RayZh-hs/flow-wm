@@ -126,6 +126,299 @@ fn run(config: &str, input: &str) -> String {
     run_f(&mut f, id, &surface, input)
 }
 
+fn map_keyboard_layer(f: &mut Fixture, id: ClientId, namespace: &str) -> WlSurface {
+    use crate::tests::client::LayerConfigureProps;
+    use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::{
+        zwlr_layer_shell_v1::Layer,
+        zwlr_layer_surface_v1::{Anchor, KeyboardInteractivity},
+    };
+    let layer = f.client(id).create_layer(None, Layer::Overlay, namespace);
+    let target = layer.surface.clone();
+    layer.set_configure_props(LayerConfigureProps {
+        anchor: Some(Anchor::Top),
+        size: Some((600, 200)),
+        kb_interactivity: Some(KeyboardInteractivity::Exclusive),
+        ..Default::default()
+    });
+    layer.commit();
+    f.roundtrip(id);
+    let layer = f.client(id).layer(&target);
+    layer.attach_new_buffer();
+    layer.ack_last_and_commit();
+    f.double_roundtrip(id);
+    target
+}
+
+#[test]
+fn launcher_keyboard_handoff_preserves_early_keys_and_modifiers() {
+    use crate::tests::client::KeyboardEvent;
+
+    let config = r#"binds { Mod+space repeat=false { spawn-with-keyboard-focus namespace="test-launcher"; }; }"#;
+    let (mut f, id, surface) = set_up(config);
+    f.niri().config.borrow_mut().binds = Config::parse_mem(config).unwrap().binds;
+    run_f(
+        &mut f,
+        id,
+        &surface,
+        "+LWIN +SPCE -SPCE -LWIN +LFSH +AC01 -AC01 -LFSH +AB01",
+    );
+    assert!(f.niri().keyboard_handoff.is_some());
+    assert_eq!(
+        f.client(id).state.surfaces[&surface]
+            .keyboard_events_received
+            .iter()
+            .filter(|e| matches!(e, KeyboardEvent::Key { .. }))
+            .count(),
+        1,
+        "early text must not reach the previous app"
+    );
+
+    let target = map_keyboard_layer(&mut f, id, "test-launcher");
+    assert!(f.niri().keyboard_handoff.is_none());
+    let events: Vec<_> = f
+        .client(id)
+        .state
+        .recent_keyboard_events(&target)
+        .filter_map(|e| {
+            if let KeyboardEvent::Key { key, state } = e {
+                Some((*key, *state))
+            } else {
+                None
+            }
+        })
+        .collect();
+    use wayland_client::protocol::wl_keyboard::KeyState::{Pressed, Released};
+    assert_eq!(
+        events,
+        [
+            (125, Released),
+            (42, Pressed),
+            (30, Pressed),
+            (30, Released),
+            (42, Released),
+            (44, Pressed)
+        ]
+    );
+    assert!(!f.niri().seat.get_keyboard().unwrap().modifier_state().shift);
+    let after = run_f(&mut f, id, &target, "-AB01 +AB02 -AB02");
+    assert!(after.contains("surface key released: 44"), "{after}");
+    assert!(after.contains("surface key pressed: 45"), "{after}");
+}
+
+#[test]
+fn launcher_keyboard_handoff_preserves_typing_after_a_second_pending_shortcut() {
+    use crate::tests::client::KeyboardEvent;
+    let config = r#"binds { Mod+space repeat=false { spawn-with-keyboard-focus namespace="test-launcher" wait-for-ready=true; }; }"#;
+    let (mut f, id, surface) = set_up(config);
+    f.niri().config.borrow_mut().binds = Config::parse_mem(config).unwrap().binds;
+    run_f(
+        &mut f,
+        id,
+        &surface,
+        "+LWIN +SPCE -SPCE -LWIN +LWIN +SPCE -SPCE -LWIN +AC01 -AC01",
+    );
+    let target = map_keyboard_layer(&mut f, id, "test-launcher");
+    let _ = f.client(id).state.recent_keyboard_events(&target);
+    f.niri_state().keyboard_focus_ready("test-launcher");
+    f.roundtrip(id);
+    assert!(f.niri().keyboard_handoff.is_some());
+    assert!(!f
+        .client(id)
+        .state
+        .recent_keyboard_events(&target)
+        .any(|e| matches!(e, KeyboardEvent::Key { key: 30, .. })));
+    f.niri_state().keyboard_focus_ready("test-launcher");
+    f.roundtrip(id);
+    assert!(f.niri().keyboard_handoff.is_none());
+    let after = f
+        .client(id)
+        .state
+        .recent_keyboard_events(&target)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert!(after.contains(&"key pressed: 30".to_string()), "{after:?}");
+    assert!(after.contains(&"key released: 30".to_string()), "{after:?}");
+}
+
+#[test]
+fn launcher_keyboard_handoff_waits_for_the_field_after_surface_focus() {
+    let (mut f, id, surface) = set_up("");
+    f.niri_state().do_action(
+        Action::SpawnWithKeyboardFocus(vec![], "test-launcher".into(), 1000, true),
+        false,
+    );
+    run_f(&mut f, id, &surface, "+AC01 -AC01");
+    f.niri_state().keyboard_focus_ready("test-launcher");
+    let target = map_keyboard_layer(&mut f, id, "test-launcher");
+    assert!(f.niri().keyboard_handoff.is_some());
+    let before = f
+        .client(id)
+        .state
+        .recent_keyboard_events(&target)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert!(!before.iter().any(|e| e.starts_with("key ")));
+    f.niri_state().keyboard_focus_ready("test-launcher");
+    f.roundtrip(id);
+    let after = f
+        .client(id)
+        .state
+        .recent_keyboard_events(&target)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(after, ["key pressed: 30", "key released: 30"]);
+}
+
+#[test]
+fn launcher_keyboard_handoff_waits_for_reinitialization_when_reopening() {
+    let (mut f, id, _) = set_up("");
+    let target = map_keyboard_layer(&mut f, id, "test-launcher");
+    let _ = f.client(id).state.recent_keyboard_events(&target);
+    f.niri_state().do_action(
+        Action::SpawnWithKeyboardFocus(vec![], "test-launcher".into(), 1000, true),
+        false,
+    );
+    let before = run_f(&mut f, id, &target, "+AC01 -AC01");
+    assert!(!before.contains("surface key"), "{before}");
+    assert!(f.niri().keyboard_handoff.is_some());
+    f.niri_state().keyboard_focus_ready("another-dialog");
+    assert!(f.niri().keyboard_handoff.is_some());
+    f.niri_state().keyboard_focus_ready("test-launcher");
+    f.roundtrip(id);
+    assert!(f.niri().keyboard_handoff.is_none());
+    let events = f
+        .client(id)
+        .state
+        .recent_keyboard_events(&target)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(events, ["key pressed: 30", "key released: 30"]);
+}
+
+#[test]
+fn launcher_keyboard_handoff_recovers_when_launching_fails() {
+    use std::time::{Duration, Instant};
+    let config = r#"binds { Mod+space repeat=false { spawn-with-keyboard-focus namespace="absent" timeout-ms=100; }; }"#;
+    let (mut f, id, surface) = set_up(config);
+    f.niri().config.borrow_mut().binds = Config::parse_mem(config).unwrap().binds;
+    run_f(&mut f, id, &surface, "+LWIN +SPCE -SPCE -LWIN +AC01 -AC01");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while f.niri().keyboard_handoff.is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "the keyboard must not remain captured"
+        );
+        let server = &mut f.state.server;
+        server
+            .event_loop
+            .dispatch(Duration::from_millis(100), &mut server.state)
+            .unwrap();
+    }
+    f.roundtrip(id);
+    let events = f
+        .client(id)
+        .state
+        .recent_keyboard_events(&surface)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.starts_with("key "))
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["key released: 125", "key pressed: 30", "key released: 30"]
+    );
+    assert!(f.niri().suppressed_keys.is_empty());
+}
+
+#[test]
+fn launcher_keyboard_handoff_survives_intermediate_focus_changes() {
+    let (mut f, id, surface) = set_up("");
+    f.niri_state().do_action(
+        Action::SpawnWithKeyboardFocus(vec![], "test-launcher".into(), 1000, true),
+        false,
+    );
+    run_f(&mut f, id, &surface, "+AC01 -AC01");
+    map_keyboard_layer(&mut f, id, "transient-dialog");
+    assert!(f.niri().keyboard_handoff.is_some());
+    let target = map_keyboard_layer(&mut f, id, "test-launcher");
+    let _ = f.client(id).state.recent_keyboard_events(&target);
+    f.niri_state().keyboard_focus_ready("test-launcher");
+    f.roundtrip(id);
+    let after = f
+        .client(id)
+        .state
+        .recent_keyboard_events(&target)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(after, ["key pressed: 30", "key released: 30"]);
+}
+
+#[test]
+fn launcher_keyboard_handoff_keeps_typing_when_the_shell_cannot_acknowledge() {
+    use std::time::{Duration, Instant};
+    let (mut f, id, surface) = set_up("");
+    f.niri_state().do_action(
+        Action::SpawnWithKeyboardFocus(vec![], "test-launcher".into(), 100, true),
+        false,
+    );
+    run_f(&mut f, id, &surface, "+AC01 -AC01");
+    let target = map_keyboard_layer(&mut f, id, "test-launcher");
+    let _ = f.client(id).state.recent_keyboard_events(&target);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while f.niri().keyboard_handoff.is_some() {
+        assert!(Instant::now() < deadline);
+        let server = &mut f.state.server;
+        server
+            .event_loop
+            .dispatch(Duration::from_millis(100), &mut server.state)
+            .unwrap();
+    }
+    f.roundtrip(id);
+    let after = f
+        .client(id)
+        .state
+        .recent_keyboard_events(&target)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(after, ["key pressed: 30", "key released: 30"]);
+}
+
+#[test]
+fn launcher_keyboard_handoff_does_not_type_into_an_unrelated_layer() {
+    use crate::tests::client::KeyboardEvent;
+    use std::time::{Duration, Instant};
+    let config = r#"binds { Mod+space repeat=false { spawn-with-keyboard-focus namespace="test-launcher" timeout-ms=100; }; }"#;
+    let (mut f, id, surface) = set_up(config);
+    f.niri().config.borrow_mut().binds = Config::parse_mem(config).unwrap().binds;
+    run_f(&mut f, id, &surface, "+LWIN +SPCE -SPCE -LWIN +LFSH +AC01");
+    let target = map_keyboard_layer(&mut f, id, "another-dialog");
+    assert!(f.niri().keyboard_handoff.is_some());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while f.niri().keyboard_handoff.is_some() {
+        assert!(Instant::now() < deadline);
+        let server = &mut f.state.server;
+        server
+            .event_loop
+            .dispatch(Duration::from_millis(100), &mut server.state)
+            .unwrap();
+    }
+    f.roundtrip(id);
+    assert!(f.niri().keyboard_handoff.is_none());
+    assert!(!f
+        .client(id)
+        .state
+        .recent_keyboard_events(&target)
+        .any(|e| matches!(e, KeyboardEvent::Key { key: 30, .. })));
+    let after = run_f(&mut f, id, &target, "-AC01 -LFSH +AB01 -AB01");
+    assert!(!after.contains("surface key released: 30"), "{after}");
+    assert!(after.contains("surface key pressed: 44"), "{after}");
+    assert!(after.contains("surface modifiers: depressed=0"), "{after}");
+    assert!(!f.niri().seat.get_keyboard().unwrap().modifier_state().shift);
+    assert!(f.niri().suppressed_keys.is_empty());
+}
+
 #[test]
 fn combos() {
     let c = "

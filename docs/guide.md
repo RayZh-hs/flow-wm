@@ -109,6 +109,8 @@ Creation and connection selection use the desktop search interface. The native g
 
 Win+Space preserves the current view: it opens ordinary application search in Windows and node creation search in Nodes. Win+Shift+Space searches nodes without switching views; choosing a node reveals it. Alt+Space always opens ordinary application search.
 
+You can start typing immediately after a search shortcut. The compositor holds the keys until Dux's search field is ready, including when reopening during its close animation. The search bindings in `config.kdl` use `spawn-with-keyboard-focus` with `namespace="dms:spotlight" wait-for-ready=true`. Its `timeout-ms` defaults to 1000; if search cannot open, input returns to the original application while it still has focus. Set `timeout-ms=0` to disable the handoff for a custom launcher. Installation upgrades existing FlowWM search commands while preserving their keys and saves the previous file under the state directory's `config-backups/before-launcher-input/`.
+
 | Query | Results |
 | --- | --- |
 | `@ name` | Workflow nodes across workspaces |

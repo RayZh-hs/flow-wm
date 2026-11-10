@@ -138,6 +138,55 @@ fn catalog_subscription_does_not_block_commands_and_updates_on_graph_changes() {
 }
 
 #[test]
+fn launcher_requests_share_the_subscription_without_catalog_changes_or_replay() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("flowwm.sock");
+    let (engine, _) = Engine::new(
+        State::empty(directory.path().into()),
+        Store::new(directory.path().join("data")).unwrap(),
+    );
+    assert!(!engine.open_launcher(None));
+    ipc::serve(
+        ipc::bind(&socket).unwrap(),
+        engine.clone(),
+        extensions::builtins(),
+    );
+    let mut stream = UnixStream::connect(&socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    writeln!(stream, "{{\"op\":\"subscribe\",\"launcher\":true}}").unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    serde_json::from_str::<Catalog>(&line).unwrap();
+
+    for query in [None, Some("@ + ".to_string()), Some("@ ".to_string())] {
+        assert!(engine.open_launcher(query.clone()));
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&line).unwrap(),
+            serde_json::json!({"launcher": {"query": query}})
+        );
+    }
+
+    let reconnected = engine.connect_launcher();
+    assert!(
+        reconnected.try_recv().is_err(),
+        "opening is an event, never replayed on reconnect"
+    );
+    assert!(engine.open_launcher(None));
+    assert_eq!(reconnected.recv().unwrap(), None);
+    drop(reconnected);
+    assert!(
+        !engine.open_launcher(None),
+        "a disconnected shell must use the CLI fallback"
+    );
+    engine.shutdown();
+}
+
+#[test]
 fn alerts_mark_the_owning_workspace_and_clear_without_changing_execution_status() {
     let mut state = State::empty("/tmp".into());
     let node = Node::new(

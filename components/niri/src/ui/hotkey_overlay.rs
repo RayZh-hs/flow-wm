@@ -280,7 +280,7 @@ fn collect_actions(config: &Config) -> Vec<&Action> {
 
     // Add the spawn actions.
     for bind in binds.iter().filter(|bind| {
-        matches!(bind.action, Action::Spawn(_) | Action::SpawnSh(_))
+        matches!(bind.action, Action::Spawn(_) | Action::SpawnWithKeyboardFocus(..) | Action::SpawnSh(_))
             // Only show binds with Mod or Super to filter out stuff like volume up/down.
             && (bind.key.modifiers.contains(Modifiers::COMPOSITOR)
                 || bind.key.modifiers.contains(Modifiers::SUPER))
@@ -480,7 +480,7 @@ fn action_name(action: &Action) -> String {
         }
         Action::ToggleOverview => String::from("Open the Overview"),
         Action::Screenshot(_, _) => String::from("Take a Screenshot"),
-        Action::Spawn(args) => format!(
+        Action::Spawn(args) | Action::SpawnWithKeyboardFocus(args, ..) => format!(
             "Spawn <span face='monospace' bgcolor='#000000'>{}</span>",
             args.first().unwrap_or(&String::new())
         ),

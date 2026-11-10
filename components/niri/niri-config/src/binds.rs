@@ -113,6 +113,12 @@ pub enum Action {
     DebugToggleOpaqueRegions,
     DebugToggleDamage,
     Spawn(#[knuffel(arguments)] Vec<String>),
+    SpawnWithKeyboardFocus(
+        #[knuffel(arguments)] Vec<String>,
+        #[knuffel(property(name = "namespace"))] String,
+        #[knuffel(property(name = "timeout-ms"), default = 1000)] u16,
+        #[knuffel(property(name = "wait-for-ready"), default)] bool,
+    ),
     SpawnSh(#[knuffel(argument)] String),
     DoScreenTransition(#[knuffel(property(name = "delay-ms"))] Option<u16>),
     #[knuffel(skip)]
@@ -406,6 +412,12 @@ impl From<niri_ipc::Action> for Action {
             niri_ipc::Action::PowerOffMonitors {} => Self::PowerOffMonitors,
             niri_ipc::Action::PowerOnMonitors {} => Self::PowerOnMonitors,
             niri_ipc::Action::Spawn { command } => Self::Spawn(command),
+            niri_ipc::Action::SpawnWithKeyboardFocus {
+                command,
+                namespace,
+                timeout_ms,
+                wait_for_ready,
+            } => Self::SpawnWithKeyboardFocus(command, namespace, timeout_ms, wait_for_ready),
             niri_ipc::Action::SpawnSh { command } => Self::SpawnSh(command),
             niri_ipc::Action::DoScreenTransition { delay_ms } => Self::DoScreenTransition(delay_ms),
             niri_ipc::Action::Screenshot { show_pointer, path } => {

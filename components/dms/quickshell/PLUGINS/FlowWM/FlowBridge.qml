@@ -18,6 +18,15 @@ Scope {
     property bool selectionInProgress: false
     property var barGeometries: ({})
     readonly property bool launcherOpen: popoutService?.dankLauncherV2Modal?.spotlightOpen ?? false
+    readonly property bool launcherInputReady: popoutService?.dankLauncherV2Modal?.inputReady ?? false
+    onLauncherInputReadyChanged: {
+        if (launcherInputReady)
+            Qt.callLater(root.acknowledgeLauncherFocus);
+    }
+    function acknowledgeLauncherFocus() {
+        if (launcherInputReady)
+            NiriService.acknowledgeKeyboardFocus("dms:spotlight");
+    }
 
     function command(args) {
         Quickshell.execDetached(["flowwm"].concat(args));
@@ -105,7 +114,7 @@ Scope {
             onConnectionStateChanged: {
                 if (root.channel && root.channel !== socket) return;
                 if (connected) {
-                    write('{"op":"subscribe"}\n');
+                    write('{"op":"subscribe","launcher":true}\n');
                     flush();
                     return;
                 }
@@ -120,6 +129,13 @@ Scope {
                     if (root.channel && root.channel !== socket) return;
                     try {
                         const value = JSON.parse(line);
+                        if (value.launcher) {
+                            if (value.launcher.query === null)
+                                root.popoutService?.toggleDankLauncherV2();
+                            else
+                                root.popoutService?.openDankLauncherV2WithQuery(value.launcher.query);
+                            return;
+                        }
                         if (value.version !== 1)
                             return;
                         root.catalog = value;

@@ -45,11 +45,28 @@ def native_bindings(bindings, launcher):
     return '\n'.join([*rows, '}'])
 
 
+def launcher_focus_bindings(text, launcher):
+    commands = '|'.join(re.escape(json.dumps(command)) for command in ('flowwm', str(launcher.with_name('flowwm'))))
+    pattern = re.compile(r'\bspawn\s+(' + commands + r')\s+("(?:new|launcher|search)")(?=\s*[;}])')
+    return '\n'.join(
+        line if line.lstrip().startswith('//') else pattern.sub(r'spawn-with-keyboard-focus \1 \2 namespace="dms:spotlight" wait-for-ready=true', line)
+        for line in text.split('\n')
+    )
+
+
 def migrate(config, state, defaults, launcher, atomic_text):
     """Preserve the originals before inlining known legacy files; never overwrite edits on reinstall."""
     main = config / 'config.kdl'
     legacy = [config / name for name in ('keybindings.json', 'keybindings.kdl', 'local.kdl', 'environment.json') if (config / name).is_file()]
     if main.exists() and not legacy:
+        original = main.read_text()
+        upgraded = launcher_focus_bindings(original, launcher)
+        if original != upgraded:
+            backup = state / 'config-backups/before-launcher-input/config.kdl'
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            if not backup.exists():
+                shutil.copy2(main, backup)
+            atomic_text(main, upgraded, mode=main.stat().st_mode & 0o777)
         return
     text = main.read_text() if main.exists() else defaults
     if main.exists():
@@ -85,6 +102,7 @@ def migrate(config, state, defaults, launcher, atomic_text):
     if not re.search(r'(?m)^flow\s*\{', text):
         text += '\n' + re.search(r'(?ms)^flow \{.*?^\}', defaults).group() + '\n'
     text = text.replace('niri/dms/', 'dms/')
+    text = launcher_focus_bindings(text, launcher)
     text = text.replace('// FlowWM compositor preferences. The shortcut registry generates keybindings.kdl.', '// FlowWM settings: compositor, environment, global bindings, and native graph.')
     mode = main.stat().st_mode & 0o777 if main.exists() else 0o644
     for path in legacy:

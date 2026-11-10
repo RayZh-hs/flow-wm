@@ -348,6 +348,7 @@ pub struct Niri {
     pub suppressed_buttons: HashSet<u32>,
     pub bind_cooldown_timers: HashMap<Key, RegistrationToken>,
     pub bind_repeat_timer: Option<RegistrationToken>,
+    pub keyboard_handoff: Option<crate::input::KeyboardHandoff>,
     pub keyboard_focus: KeyboardFocus,
     pub layer_shell_on_demand_focus: Option<LayerSurface>,
     pub idle_inhibiting_surfaces: HashSet<WlSurface>,
@@ -1500,6 +1501,7 @@ impl State {
             // FIXME: can be more granular.
             self.niri.queue_redraw_all();
         }
+        self.complete_keyboard_handoff();
     }
 
     /// Loads the xkb keymap from a file config setting.
@@ -2714,6 +2716,7 @@ impl Niri {
             suppressed_buttons: HashSet::new(),
             bind_cooldown_timers: HashMap::new(),
             bind_repeat_timer: Option::default(),
+            keyboard_handoff: None,
             presentation_state,
             security_context_state,
             gamma_control_manager_state,

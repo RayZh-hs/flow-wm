@@ -12,6 +12,8 @@ The bar uses a compact Nodes pill with attention/running status and a single cre
 
 The bridge maintains one Unix socket subscription to `$XDG_RUNTIME_DIR/flowwm.sock`. It does no polling while connected and receives no node output or activity logs. After a disconnect it retries at 100 ms, backing off to two seconds while the service remains offline.
 
+The same subscription accepts launcher events, avoiding a new CLI process for each opening. Once the initialized search field has active focus, the bridge acknowledges the compositor's keyboard handoff over Dux's existing niri socket. Early typing stays ordered across loading, mapping, and rapid reopening. The native shell retains its CLI fallback when no bridge is connected.
+
 In the integrated FlowWM checkout, this plugin lives under `components/dms/quickshell/PLUGINS/FlowWM`. Run `python3 scripts/install.py` from the FlowWM repository root to install and configure it. Enable the `flowwm` plugin and add the `flowwm` widget to a bar. Its service starts with `flowwm start --dms --background`.
 
 The shared FlowWM shortcut registry configures Super+Tab for Nodes/Windows, Super+Space for creation, Super+Shift+Space for lookup, and Super+? for help. Ctrl+F and / search and frame the graph; Ctrl+P arranges it. Tab opens output selection and filters compatible targets, skipping the output layer when only one output exists. Ambiguous target inputs open another layer in the same search. A read-only hint under the field shows the source type. The generic launcher protocol supports `{keepOpen: true, query: "…"}` to retain focus while traversing layers.
