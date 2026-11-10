@@ -87,6 +87,11 @@ pub enum Request {
     },
     /// Inspect native node rows without treating their canvases as application windows.
     NodeRows,
+    /// Settle the hidden scrolling layout and return the destination of a node-to-window morph.
+    PrepareNodeRowExit {
+        /// Stable workspace ID, including a canvas still waiting for its first commit.
+        workspace_id: u64,
+    },
     /// Acknowledge that a launcher has initialized its field for a keyboard handoff.
     KeyboardFocusReady {
         /// Exact layer-shell namespace receiving the input.
@@ -173,6 +178,8 @@ pub enum Response {
     },
     /// Stable IDs of workspaces currently presenting nodes.
     NodeRows(Vec<u64>),
+    /// Normal window rectangles relative to the node canvas after settling its hidden layout.
+    NodeRowExit(node_row::NodeRowScene),
     /// Information about the keyboard layout.
     KeyboardLayouts(KeyboardLayouts),
     /// Information about the focused output.

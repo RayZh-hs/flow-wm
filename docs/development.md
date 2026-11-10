@@ -250,6 +250,21 @@ opacity until that null commit so preview geometry and chrome reach the endpoint
 together.
 Node-only rows retain their workspace and leave an empty trailing row available.
 
+Native previews publish a continuous `NodeWindow.presentation` value separately
+from `expanded`, which controls application input. During a morph, the compositor
+fades the node blur and dimming over the normal window background effect. The
+xray path blends its cached blur textures. Before returning to Windows, FlowWM
+focuses the destination window and calls `PrepareNodeRowExit` once to settle the
+hidden scrolling layout and obtain its exact rectangles relative to the canvas.
+The animation therefore ends at the new focused view, including at fractional
+scale, without a second scroll after unmapping. Preparing a destination also
+works during a reversal before the canvas's first buffer commit.
+
+Accent border fades retain their current opacity when retargeted. Windows use
+window focus, while Nodes use the row's saved selection; changing window focus
+does not overwrite that selection. Both view changes and selection changes use
+`flow { motion-ms ...; }`, with no animation when the border state stays the same.
+
 The IPC crate defines `NodeRowSupport`, `SetNodeRow`, and `NodeRows`. Scene updates
 contain native window IDs, preview rectangles, expanded-client input flags, and
 shell insets. Niri validates the geometry, stages the latest update, and latches it

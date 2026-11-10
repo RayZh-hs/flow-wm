@@ -2409,6 +2409,11 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         self.column_x(self.active_column_idx) + self.view_offset.target()
     }
 
+    /// A node morph owns the visible movement; settle its hidden destination first.
+    pub(crate) fn finish_view_offset(&mut self) {
+        self.view_offset = ViewOffset::Static(self.view_offset.target());
+    }
+
     // HACK: pass a self.data iterator in manually as a workaround for the lack of method partial
     // borrowing. Note that this method's return value does not borrow the entire &Self!
     fn column_xs(&self, data: impl Iterator<Item = ColumnData>) -> impl Iterator<Item = f64> {

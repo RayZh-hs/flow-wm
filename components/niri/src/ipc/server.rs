@@ -317,6 +317,14 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
             rx.recv().await.map_err(|e| e.to_string())??;
             Response::Handled
         }
+        Request::PrepareNodeRowExit { workspace_id } => {
+            let (tx, rx) = async_channel::bounded(1);
+            ctx.event_loop.insert_idle(move |state| {
+                let result = state.niri.prepare_node_row_exit(workspace_id);
+                let _ = tx.try_send(result);
+            });
+            Response::NodeRowExit(rx.recv().await.map_err(|e| e.to_string())??)
+        }
         Request::KeyboardFocusReady { namespace } => {
             let (tx, rx) = async_channel::bounded(1);
             ctx.event_loop.insert_idle(move |state| {

@@ -62,6 +62,7 @@ fn node_rows_wayland_scenes_latch_chunks_only_on_the_matching_canvas_commit() {
                 bounds: (id as f64 + 0.25, 30.5, 200., 120.),
                 expanded: false,
                 opacity: 1.,
+                presentation: None,
             })
             .collect(),
         insets: [32, 0, 0, 0],
@@ -315,6 +316,7 @@ fn egl_node_rows_replace_windows_and_follow_swipes_overview_and_lifecycle() {
                     bounds: (100., 100., 200., 150.),
                     expanded: false,
                     opacity: 1.,
+                    presentation: None,
                 }],
                 insets: [0; 4],
             },
@@ -344,6 +346,7 @@ fn egl_node_rows_replace_windows_and_follow_swipes_overview_and_lifecycle() {
                     bounds: (100., 100., 800., 600.),
                     expanded: true,
                     opacity: 1.,
+                    presentation: None,
                 }],
                 insets: [0; 4],
             },
@@ -389,6 +392,7 @@ fn egl_node_rows_replace_windows_and_follow_swipes_overview_and_lifecycle() {
                         bounds: (101.25, 102.5, width, height),
                         expanded: true,
                         opacity: 1.,
+                        presentation: None,
                     }],
                     insets: [0; 4],
                 },
@@ -424,6 +428,7 @@ fn egl_node_rows_replace_windows_and_follow_swipes_overview_and_lifecycle() {
                     bounds: (100., 100., 200., 150.),
                     expanded: false,
                     opacity: 1.,
+                    presentation: None,
                 }],
                 insets: [0; 4],
             },
@@ -633,4 +638,173 @@ fn node_rows_keep_an_empty_trailing_row_and_follow_output_removal() {
     assert!(ws.nodes_visible());
     assert_eq!(ws.node_canvas_geometry().size.w, 160.);
     assert_eq!(ws.node_canvas_geometry().size.h, 720.);
+}
+
+#[test]
+fn node_rows_exit_targets_the_settled_focused_view_before_unmapping() {
+    for centering in ["never", "always"] {
+        let mut f = Fixture::with_config(Config::parse_mem(&format!(
+            "layout {{ center-focused-column \"{centering}\"; }}\noutput \"headless-1\" {{ scale 1.5; }}"
+        )).unwrap());
+        f.add_output(1, (2880, 1620));
+        let client = f.add_client();
+        for _ in 0..5 {
+            let win = f.client(client).create_window();
+            let surface = win.surface.clone();
+            win.commit();
+            f.double_roundtrip(client);
+            let win = f.client(client).window(&surface);
+            win.attach_new_buffer();
+            win.set_size(800, 600);
+            win.ack_last_and_commit();
+            f.double_roundtrip(client);
+        }
+        f.niri_complete_animations();
+        let ws = f.niri().layout.active_workspace().unwrap();
+        let workspace = ws.id().get();
+        let mut windows: Vec<_> = ws
+            .tiles_with_ipc_layouts()
+            .map(|(tile, layout)| (tile.window().id(), layout.pos_in_scrolling_layout.unwrap()))
+            .collect();
+        windows.sort_by_key(|(_, pos)| *pos);
+        let first = windows[0].0;
+        let last = windows.last().unwrap().0;
+        let first_window = f
+            .niri()
+            .layout
+            .windows()
+            .find(|(_, w)| w.id() == first)
+            .unwrap()
+            .1
+            .window
+            .clone();
+        let last_window = f
+            .niri()
+            .layout
+            .windows()
+            .find(|(_, w)| w.id() == last)
+            .unwrap()
+            .1
+            .window
+            .clone();
+        f.niri().layout.activate_window(&first_window);
+        f.niri_complete_animations();
+        let before_mapping = f.niri().prepare_node_row_exit(workspace).unwrap();
+        assert_eq!(
+            before_mapping.windows.len(),
+            5,
+            "rapid reversals can prepare a canvas that has not mapped yet"
+        );
+        let (_, canvas_surface) = canvas(&mut f, client, workspace);
+        let old_x = f
+            .niri()
+            .layout
+            .active_workspace()
+            .unwrap()
+            .tiles_with_ipc_layouts()
+            .find(|(tile, _)| tile.window().id() == last)
+            .unwrap()
+            .1
+            .tile_pos_in_workspace_view
+            .unwrap()
+            .0;
+        assert!(
+            old_x > 1920.,
+            "the selected window starts outside the old view"
+        );
+        f.niri().layout.activate_window(&last_window);
+        let destination = f.niri().prepare_node_row_exit(workspace).unwrap();
+        let target = destination
+            .windows
+            .iter()
+            .find(|w| w.id == last.get())
+            .unwrap();
+        assert!(
+            target.bounds.0 >= 0. && target.bounds.0 + target.bounds.2 <= 1920.,
+            "{centering}: {target:?}"
+        );
+        let tile = f
+            .niri()
+            .layout
+            .active_workspace()
+            .unwrap()
+            .node_tile
+            .as_ref()
+            .unwrap();
+        assert!(
+            tile.mapped,
+            "preparing the endpoint must leave the node scene visible"
+        );
+        assert_eq!(
+            tile.canvas.toplevel().unwrap().wl_surface(),
+            &canvas_surface
+        );
+        f.niri_complete_animations();
+        let settled = f.niri().prepare_node_row_exit(workspace).unwrap();
+        assert_eq!(
+            destination, settled,
+            "no scroll remains after the morph endpoint is captured"
+        );
+    }
+}
+
+#[test]
+fn egl_node_rows_blend_backdrops_independently_of_expanded_input() {
+    let mut f = Fixture::new();
+    f.niri_state().backend.headless().add_renderer().unwrap();
+    f.add_output(1, (1920, 1080));
+    let client = f.add_client();
+    let win = f.client(client).create_window();
+    let surface = win.surface.clone();
+    win.commit();
+    f.double_roundtrip(client);
+    let win = f.client(client).window(&surface);
+    win.attach_new_buffer();
+    win.set_size(800, 600);
+    win.ack_last_and_commit();
+    f.double_roundtrip(client);
+    f.niri_complete_animations();
+    let id = f.niri().layout.windows().next().unwrap().1.id().get();
+    let workspace = f.niri().layout.active_workspace().unwrap().id().get();
+    let (canvas, _) = canvas(&mut f, client, workspace);
+    for t in [0., 0.25, 0.5, 0.75, 1.] {
+        f.niri()
+            .stage_node_row(
+                workspace,
+                NodeRowScene {
+                    windows: vec![NodeWindow {
+                        id,
+                        bounds: (100., 100., 200., 150.),
+                        expanded: false,
+                        opacity: 0.8,
+                        presentation: Some(t),
+                    }],
+                    insets: [0; 4],
+                },
+            )
+            .unwrap();
+        f.client(client).window(&canvas).commit();
+        f.double_roundtrip(client);
+        let elements = render_opacity(&mut f);
+        assert!(
+            elements
+                .iter()
+                .any(|(_, alpha)| (*alpha - 0.8).abs() < 1e-6),
+            "the live client opacity stays constant"
+        );
+        if t > 0. {
+            assert!(
+                elements
+                    .iter()
+                    .any(|(_, alpha)| (*alpha - 0.12 * 0.8 * t).abs() < 1e-6),
+                "the backdrop follows continuous presentation: {t}, {elements:?}"
+            );
+        } else {
+            assert_eq!(
+                elements.len(),
+                2,
+                "the node backdrop reaches zero before input ownership changes"
+            );
+        }
+    }
 }

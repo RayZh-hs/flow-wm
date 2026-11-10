@@ -341,6 +341,9 @@ impl Shell {
                 saved.chrome = 1.0;
                 saved.morphing = false;
                 saved.presentations.clear();
+                saved.border_opacities.clear();
+                saved.border_fades.clear();
+                saved.window_borders = false;
                 saved.live_fade = 0.0;
                 if mixed {
                     let scoped = canvas::row_state(state, &group.id);
@@ -983,6 +986,11 @@ impl Shell {
         view.output_size = (geometry.width() as f64, geometry.height() as f64);
         view.transparent = !self.windowed;
         view.native_nodes = self.native_nodes;
+        view.focused_window = desktop
+            .workspaces
+            .iter()
+            .find(|w| w.is_focused)
+            .and_then(|w| w.active_window_id);
         view.desktop_rects = super::collapse::rectangles(
             &desktop,
             &self.engine.snapshot().state,
@@ -1100,7 +1108,62 @@ impl Shell {
                 .map(|n| (n.id.clone(), super::gpu::window_geometry(n, &view).1))
                 .collect()
         };
+        let border_from: HashMap<_, _> = {
+            let view = self.view.borrow();
+            state
+                .nodes
+                .iter()
+                .filter(|n| n.workspace == state.selected_workspace)
+                .map(|n| {
+                    (
+                        n.id.clone(),
+                        if was_mapped {
+                            super::gpu::border_opacity(n, &view)
+                        } else {
+                            f64::from(
+                                n.window_id.is_some() && n.window_id == self.return_window.get(),
+                            )
+                        },
+                    )
+                })
+                .collect()
+        };
         self.update_scene_geometry();
+        if !visible
+            && self.native_nodes
+            && let Some(row) = &state.workspace().row
+        {
+            match niri::request(niri_ipc::Request::PrepareNodeRowExit {
+                workspace_id: row.id,
+            }) {
+                Ok(niri_ipc::Response::NodeRowExit(scene)) => {
+                    let destinations: HashMap<_, _> =
+                        scene.windows.iter().map(|w| (w.id, w.bounds)).collect();
+                    let mut view = self.view.borrow_mut();
+                    for node in state
+                        .nodes
+                        .iter()
+                        .filter(|n| n.workspace == state.selected_workspace)
+                    {
+                        if let Some((x, y, width, height)) =
+                            node.window_id.and_then(|id| destinations.get(&id)).copied()
+                        {
+                            view.desktop_rects.insert(
+                                node.id.clone(),
+                                super::collapse::Rect {
+                                    x,
+                                    y,
+                                    width,
+                                    height,
+                                },
+                            );
+                        }
+                    }
+                }
+                Err(error) => self.show_error(&format!("Prepare window layout: {error:#}")),
+                _ => {}
+            }
+        }
         let mut from: HashMap<_, _> = state
             .nodes
             .iter()
@@ -1269,6 +1332,12 @@ impl Shell {
         {
             let mut view = self.view.borrow_mut();
             view.window_opacities = opacity_from.clone();
+            view.border_opacities = border_from;
+            view.border_fades.clear();
+            view.window_borders = !visible;
+            if !visible {
+                view.focused_window = self.return_window.get();
+            }
             view.presented_rects = from_rects.clone();
             for id in &fade_only {
                 if visible {
@@ -2264,6 +2333,9 @@ impl Shell {
                 let mut saved = self.view.borrow().clone();
                 if self.native_nodes {
                     saved.presentations.clear();
+                    saved.border_opacities.clear();
+                    saved.border_fades.clear();
+                    saved.window_borders = false;
                     saved.morphing = false;
                     saved.live_fade = 0.0;
                 }
@@ -2362,6 +2434,9 @@ impl Shell {
         {
             let mut view = self.view.borrow_mut();
             view.presentations.clear();
+            view.border_opacities.clear();
+            view.border_fades.clear();
+            view.window_borders = !visible;
             view.presented_positions.clear();
             view.morphing = false;
             view.chrome = if visible { 1.0 } else { 0.0 };

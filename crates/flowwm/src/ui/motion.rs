@@ -1,5 +1,41 @@
 use super::collapse::Rect;
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
+/// A retargetable fade always starts at its currently displayed value.
+#[derive(Clone)]
+pub struct Fade {
+    from: f64,
+    target: f64,
+    started: Instant,
+    duration: Duration,
+}
+impl Fade {
+    pub fn new(from: f64, target: f64, started: Instant, duration: Duration) -> Self {
+        Self {
+            from,
+            target,
+            started,
+            duration,
+        }
+    }
+    pub fn value(&self, now: Instant) -> f64 {
+        if self.duration.is_zero() {
+            return self.target;
+        }
+        let t =
+            now.saturating_duration_since(self.started).as_secs_f64() / self.duration.as_secs_f64();
+        self.from + (self.target - self.from) * ease_out(t)
+    }
+    pub fn retarget(&mut self, target: f64, now: Instant, duration: Duration) {
+        if target != self.target {
+            *self = Self::new(self.value(now), target, now, duration);
+        }
+    }
+    pub fn active(&self, now: Instant) -> bool {
+        self.from != self.target && now.saturating_duration_since(self.started) < self.duration
+    }
+}
 
 pub fn ease_out(t: f64) -> f64 {
     1. - (1. - t.clamp(0., 1.)).powi(3)
@@ -59,6 +95,34 @@ pub fn coast(velocity: (f64, f64), dt: f64, decay: f64) -> ((f64, f64), (f64, f6
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fades_preserve_unchanged_borders_and_retarget_without_a_jump() {
+        let start = Instant::now();
+        let duration = Duration::from_millis(200);
+        for from in [0., 1.] {
+            for to in [0., 1.] {
+                let mut fade = Fade::new(from, to, start, duration);
+                assert_eq!(fade.value(start), from);
+                assert_eq!(fade.value(start + duration), to);
+                for ms in [10, 50, 100, 150] {
+                    let value = fade.value(start + Duration::from_millis(ms));
+                    assert!((0. ..=1.).contains(&value));
+                    if from == to {
+                        assert_eq!(value, from);
+                        assert!(!fade.active(start));
+                    }
+                }
+                let middle = start + duration / 2;
+                let shown = fade.value(middle);
+                fade.retarget(from, middle, duration);
+                assert_eq!(fade.value(middle), shown);
+                assert_eq!(fade.value(middle + duration), from);
+            }
+        }
+        let disabled = Fade::new(0., 1., start, Duration::ZERO);
+        assert_eq!(disabled.value(start), 1.);
+        assert!(!disabled.active(start));
+    }
     #[test]
     fn finger_release_preserves_speed_and_stale_samples_do_not_fling() {
         let mut history = ScrollHistory::default();

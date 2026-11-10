@@ -81,6 +81,7 @@ pub struct XrayElement {
     saturation: f32,
     bg_color: Color32F,
     program: Option<GlesTexProgram>,
+    alpha: f32,
 }
 
 impl Xray {
@@ -201,6 +202,7 @@ impl Xray {
                     noise,
                     saturation,
                     bg_color: *bg_color,
+                    alpha: 1.,
                     program: program.clone(),
                 };
                 push(elem);
@@ -251,6 +253,7 @@ impl Xray {
                 noise,
                 saturation,
                 bg_color: self.backdrop_color,
+                alpha: 1.,
                 program: program.clone(),
             };
             push(elem);
@@ -259,6 +262,12 @@ impl Xray {
 }
 
 impl XrayElement {
+    /// Blend cached background textures without recalculating their blur.
+    pub fn with_alpha(mut self, alpha: f32) -> Self {
+        self.alpha = alpha;
+        self
+    }
+
     fn compute_uniforms(&self) -> [Uniform<'static>; 7] {
         [
             Uniform::new("niri_scale", self.scale),
@@ -273,6 +282,9 @@ impl XrayElement {
 }
 
 impl Element for XrayElement {
+    fn alpha(&self) -> f32 {
+        self.alpha
+    }
     fn id(&self) -> &Id {
         &self.id
     }
@@ -350,7 +362,7 @@ impl RenderElement<GlesRenderer> for XrayElement {
             // FIXME: opaque regions need to be filtered like damage.
             &[],
             Transform::Normal,
-            1.,
+            self.alpha,
             self.program.as_ref(),
             uniforms,
         )

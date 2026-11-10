@@ -32,6 +32,18 @@ pub struct NodeWindow {
     pub expanded: bool,
     /// Preview opacity, including graph search dimming.
     pub opacity: f32,
+    /// Blend from the normal window backdrop (0) to the node backdrop (1).
+    /// Older clients omit this and use the expanded flag to choose the endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<f32>,
+}
+
+impl NodeWindow {
+    /// Continuous backdrop presentation, independent of application input focus.
+    pub fn node_backdrop(&self) -> f32 {
+        self.presentation
+            .unwrap_or(if self.expanded { 0. } else { 1. })
+    }
 }
 
 /// Geometry committed with a native graph canvas buffer.
@@ -54,6 +66,8 @@ impl NodeRowScene {
                 let (x, y, width, height) = w.bounds;
                 w.opacity.is_finite()
                     && (0.0..=1.0).contains(&w.opacity)
+                    && w.presentation
+                        .is_none_or(|t| t.is_finite() && (0.0..=1.0).contains(&t))
                     && w.id != 0
                     && ids.insert(w.id)
                     && [x, y, width, height]
@@ -68,6 +82,29 @@ impl NodeRowScene {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backdrop_blending_is_validated_and_older_scenes_keep_their_endpoints() {
+        let mut scene: NodeRowScene = serde_json::from_str(
+            r#"{
+            "windows": [{"id": 1, "bounds": [0, 0, 200, 100], "expanded": false, "opacity": 1}],
+            "insets": [0, 0, 0, 0]
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(scene.windows[0].node_backdrop(), 1.);
+        scene.windows[0].expanded = true;
+        assert_eq!(scene.windows[0].node_backdrop(), 0.);
+        for t in [0., 0.25, 0.5, 1.] {
+            scene.windows[0].presentation = Some(t);
+            assert!(scene.validate());
+            assert_eq!(scene.windows[0].node_backdrop(), t);
+        }
+        for t in [-0.1, 1.1, f32::NAN, f32::INFINITY] {
+            scene.windows[0].presentation = Some(t);
+            assert!(!scene.validate());
+        }
+    }
 
     #[test]
     fn bindings_and_scenes_reject_invalid_ids_geometry_and_duplicate_elements() {
@@ -86,6 +123,7 @@ mod tests {
                 bounds: (-12.5, 9., 100., 80.),
                 expanded: false,
                 opacity: 1.,
+                presentation: None,
             }],
             insets: [28, 0, 0, 0],
         };

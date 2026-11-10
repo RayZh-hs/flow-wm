@@ -114,6 +114,26 @@ fn progress(view: &View, node: &Node) -> f64 {
         },
     )
 }
+
+pub(super) fn border_opacity(node: &Node, view: &View) -> f64 {
+    view.border_opacities
+        .get(&node.id)
+        .copied()
+        .unwrap_or_else(|| border_target(node, view))
+}
+
+pub(super) fn border_target(node: &Node, view: &View) -> f64 {
+    let window =
+        node.window_id.is_some() && (view.window_borders || node.column_mode == ColumnMode::Window);
+    let active = if window {
+        node.window_id == view.focused_window
+    } else {
+        view.selected.as_deref() == Some(&node.id) || view.selection.contains(&node.id)
+    };
+    f64::from(
+        active || (!window && !view.query.is_empty() && canvas::matches_query(node, &view.query)),
+    )
+}
 fn metadata<'a>(
     cache: &'a mut Cache,
     state: &State,
@@ -248,6 +268,7 @@ fn graph_key(width: i32, height: i32, state: &State, revision: u64, view: &View)
             p.x.to_bits(),
             p.y.to_bits(),
             view.selection.contains(&node.id),
+            border_opacity(node, view).to_bits(),
         )
             .hash(&mut h);
     }
@@ -340,6 +361,7 @@ pub fn native_windows(
                 id,
                 bounds: (content.x, content.y, content.width, content.height),
                 expanded: node.column_mode == ColumnMode::Window && t < 0.001,
+                presentation: Some(t as f32),
                 opacity: view.window_opacities.get(&node.id).copied().unwrap_or(1.) as f32
                     * if !view.query.is_empty() && !canvas::matches_query(node, &view.query) {
                         0.25
@@ -508,8 +530,6 @@ fn render_inner(
         {
             continue;
         }
-        let selected =
-            view.selected.as_deref() == Some(&node.id) || view.selection.contains(&node.id);
         let matching = canvas::matches_query(node, &view.query);
         let alpha = view.window_opacities.get(&node.id).copied().unwrap_or(1.)
             * if node.closed_window() {
@@ -538,12 +558,11 @@ fn render_inner(
             snapshot.scale(view.zoom as f32, view.zoom as f32);
             snapshot.append_node(metadata(cache, state, node, index, view));
             snapshot.restore();
-            if selected || (!view.query.is_empty() && matching) {
-                snapshot.append_border(
-                    &outline,
-                    &[2.0 * view.zoom as f32; 4],
-                    &[color(view.theme.primary); 4],
-                );
+            let border_alpha = border_opacity(node, view);
+            if border_alpha > 0. {
+                let mut accent = color(view.theme.primary);
+                accent.set_alpha(border_alpha as f32);
+                snapshot.append_border(&outline, &[2.0 * view.zoom as f32; 4], &[accent; 4]);
             }
             snapshot.pop();
             continue;
@@ -593,18 +612,8 @@ fn render_inner(
             );
             snapshot.pop();
         }
-        let accent = if selected || (!view.query.is_empty() && matching) {
-            view.theme.primary
-        } else {
-            view.theme.outline
-        };
-        let start = view.theme.primary;
-        let border = super::theme::Color(
-            start.0 + (accent.0 - start.0) * t,
-            start.1 + (accent.1 - start.1) * t,
-            start.2 + (accent.2 - start.2) * t,
-        );
-        let line = (2.0 * (1.0 - t) + view.zoom * (if selected { 2.0 } else { 1.0 }) * t) as f32;
+        let border_alpha = border_opacity(node, view);
+        let line = (2.0 * (1.0 - t) + 2.0 * view.zoom * t) as f32;
         if t > 0.6 {
             snapshot.save();
             snapshot.translate(&graphene::Point::new(rect.x as f32, rect.y as f32));
@@ -619,7 +628,12 @@ fn render_inner(
         }
         // Metadata contains its own card background and inactive border. Paint
         // the shared outline last so headers and footers cannot cover selection.
-        snapshot.append_border(&outline, &[line; 4], &[color(border); 4]);
+        let mut inactive = color(view.theme.outline);
+        inactive.set_alpha((0.5 * t) as f32);
+        snapshot.append_border(&outline, &[view.zoom as f32; 4], &[inactive; 4]);
+        let mut accent = color(view.theme.primary);
+        accent.set_alpha(border_alpha as f32);
+        snapshot.append_border(&outline, &[line; 4], &[accent; 4]);
         snapshot.pop();
     }
     // Selection and cut gestures must be above GPU window cards and previews.
@@ -731,6 +745,7 @@ mod tests {
         assert_eq!(window_geometry(&state.nodes[0], &view).1, actual);
         let native = native_windows(&state, &view, 1920, 1080);
         assert!(native[0].expanded);
+        assert_eq!(native[0].presentation, Some(0.));
         assert_eq!(
             native[0].bounds,
             (actual.x, actual.y, actual.width, actual.height)
@@ -751,6 +766,7 @@ mod tests {
             "reversal starts at the last displayed frame"
         );
         let native = native_windows(&state, &view, 1920, 1080);
+        assert_eq!(native[0].presentation, Some(0.45));
         assert!(
             !native[0].expanded,
             "input stays with the graph during a morph"

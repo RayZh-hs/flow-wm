@@ -173,6 +173,11 @@ pub struct View {
     pub presented_rects: HashMap<String, super::collapse::Rect>,
     pub presentations: HashMap<String, f64>,
     pub window_opacities: HashMap<String, f64>,
+    /// Rendered accent visibility, separate from node selection and window focus.
+    pub border_opacities: HashMap<String, f64>,
+    pub(super) border_fades: HashMap<String, super::motion::Fade>,
+    pub window_borders: bool,
+    pub focused_window: Option<u64>,
     pub live_fade: f64,
     pub chrome: f64,
     pub insets: [i32; 4],
@@ -214,6 +219,10 @@ impl Default for View {
             presented_rects: HashMap::new(),
             presentations: HashMap::new(),
             window_opacities: HashMap::new(),
+            border_opacities: HashMap::new(),
+            border_fades: HashMap::new(),
+            window_borders: false,
+            focused_window: None,
             live_fade: 0.0,
             chrome: 1.0,
             insets: [0; 4],
@@ -412,6 +421,32 @@ pub fn focus_node(
     animate_camera(area, view, &target);
 }
 impl View {
+    fn animate_borders(&mut self, state: &State, now: std::time::Instant) -> bool {
+        let duration = std::time::Duration::from_millis(self.theme.motion_ms.into());
+        let mut active = false;
+        let mut live = HashSet::new();
+        for node in ordered_nodes(state) {
+            let target = super::gpu::border_target(node, self);
+            let from = self
+                .border_opacities
+                .get(&node.id)
+                .copied()
+                .unwrap_or(target);
+            let fade = self
+                .border_fades
+                .entry(node.id.clone())
+                .or_insert_with(|| super::motion::Fade::new(from, target, now, duration));
+            fade.retarget(target, now, duration);
+            self.border_opacities
+                .insert(node.id.clone(), fade.value(now));
+            active |= fade.active(now);
+            live.insert(node.id.clone());
+        }
+        self.border_opacities.retain(|id, _| live.contains(id));
+        self.border_fades.retain(|id, _| live.contains(id));
+        active
+    }
+
     fn zoom_at(&mut self, factor: f64, anchor: (f64, f64)) {
         if !factor.is_finite() || factor <= 0. {
             return;
@@ -689,7 +724,10 @@ fn make_scoped(
         let started = std::time::Instant::now();
         let state = e.snapshot();
         let revision = state.revision;
-        let render = |state: &State, view: &View| {
+        let render = |state: &State, view: &mut View| {
+            if view.animate_borders(state, std::time::Instant::now()) {
+                area.animate();
+            }
             if view.native_nodes
                 && let Some(row) = &state.workspace().row
             {
@@ -735,7 +773,7 @@ fn make_scoped(
                     current.arrangement.update(state, width, height);
                     current.fit(state, width as f64, height as f64);
                 }
-                render(state, &current);
+                render(state, &mut current);
             } else {
                 let mut rows = rows.borrow_mut();
                 let saved = rows
@@ -754,7 +792,7 @@ fn make_scoped(
                 render(state, saved);
             }
         } else {
-            render(&state.state, &v.borrow());
+            render(&state.state, &mut v.borrow_mut());
         }
         e.performance.record("canvas_draw", started.elapsed());
     });
@@ -1800,11 +1838,11 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
         c.push_group();
         if node.closed_window() {
             c.translate(0.0, 48.0 * (1.0 - view.chrome));
-            draw_node(c, node, &p, selected, theme);
+            draw_node_with_border(c, node, &p, super::gpu::border_opacity(node, view), theme);
         } else if node.window_id.is_some() || node.desktop_window {
             draw_window_node(c, node, &p, visible_rect, progress, selected, view);
         } else {
-            draw_node(c, node, &p, selected, theme);
+            draw_node_with_border(c, node, &p, super::gpu::border_opacity(node, view), theme);
         }
         if !node.closed_window() {
             draw_pin_markers(c, state, node, &p, theme);
@@ -1943,11 +1981,6 @@ fn draw_window_node(
     rounded(c, rect.x, rect.y, rect.width, rect.height, radius);
     theme.node_background(n.status).alpha(c, t);
     let _ = c.fill_preserve();
-    let accent = if selected {
-        theme.primary
-    } else {
-        theme.outline
-    };
     c.new_path();
     let content = super::collapse::Rect {
         x: rect.x + 10.0 * t,
@@ -1991,14 +2024,22 @@ fn draw_window_node(
         let _ = c.restore();
     }
     rounded(c, rect.x, rect.y, rect.width, rect.height, radius);
-    c.set_source_rgb(
-        theme.primary.0 + (accent.0 - theme.primary.0) * t,
-        theme.primary.1 + (accent.1 - theme.primary.1) * t,
-        theme.primary.2 + (accent.2 - theme.primary.2) * t,
-    );
-    c.set_line_width(
-        (2.0 * (1.0 - t) + (if selected { 2.0 } else { 1.0 }) * view.zoom * t) / view.zoom,
-    );
+    theme.outline.alpha(c, 0.5 * t);
+    c.set_line_width(1.0);
+    let _ = c.stroke_preserve();
+    let border_alpha = view
+        .border_opacities
+        .get(&n.id)
+        .copied()
+        .unwrap_or_else(|| {
+            if t < 0.001 {
+                f64::from(n.window_id.is_some() && n.window_id == view.focused_window)
+            } else {
+                f64::from(selected)
+            }
+        });
+    theme.primary.alpha(c, border_alpha);
+    c.set_line_width((2.0 * (1.0 - t) + 2.0 * view.zoom * t) / view.zoom);
     let _ = c.stroke();
     if t < 0.001 {
         let _ = c.pop_group_to_source();
@@ -2068,6 +2109,9 @@ fn wire_cut(parent: &Node, node: &Node, points: &[(f64, f64)], view: &View) -> b
 }
 
 pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, theme: &Theme) {
+    draw_node_with_border(c, n, p, f64::from(selected), theme);
+}
+fn draw_node_with_border(c: &Context, n: &Node, p: &Position, selection: f64, theme: &Theme) {
     let (x, y) = (p.x, p.y);
     let height = node_height(n);
     let accent = if n.kind == NodeKind::Constant {
@@ -2075,9 +2119,9 @@ pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, the
     } else {
         theme.primary.rgb()
     };
-    if selected {
+    if selection > 0. {
         rounded(c, x - 4.0, y - 4.0, WIDTH + 8.0, height + 8.0, 13.0);
-        c.set_source_rgba(accent.0, accent.1, accent.2, 0.09);
+        c.set_source_rgba(accent.0, accent.1, accent.2, 0.09 * selection);
         let _ = c.fill();
     }
     rounded(c, x, y + 4.0, WIDTH, height, theme.radius);
@@ -2086,12 +2130,11 @@ pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, the
     rounded(c, x, y, WIDTH, height, theme.radius);
     theme.node_background(n.status).source(c);
     let _ = c.fill_preserve();
-    if selected {
-        theme.primary.source(c);
-    } else {
-        theme.outline.alpha(c, 0.5);
-    }
-    c.set_line_width(if selected { 2.0 } else { 1.0 });
+    theme.outline.alpha(c, 0.5);
+    c.set_line_width(1.0);
+    let _ = c.stroke_preserve();
+    theme.primary.alpha(c, selection);
+    c.set_line_width(2.0);
     let _ = c.stroke();
     rounded(c, x + 14.0, y + 16.0, 25.0, 23.0, 5.0);
     c.set_source_rgba(accent.0, accent.1, accent.2, 0.13);
@@ -2478,6 +2521,74 @@ fn ellipsize(s: &str, length: usize) -> String {
 #[cfg(test)]
 mod rendering_tests {
     use super::*;
+
+    #[test]
+    fn node_selection_and_window_focus_fade_independently_through_reversals() {
+        use std::time::{Duration, Instant};
+        let mut state = State::empty("/tmp".into());
+        for id in 1..=3 {
+            let mut node = Node::new(
+                &state.selected_workspace,
+                NodeKind::Window,
+                "/tmp".into(),
+                Position::default(),
+            );
+            node.window_id = Some(id);
+            node.column_mode = ColumnMode::Node;
+            state.nodes.push(node);
+        }
+        let ids: Vec<_> = state.nodes.iter().map(|n| n.id.clone()).collect();
+        let mut view = View {
+            focused_window: Some(1),
+            selected: Some(ids[1].clone()),
+            ..View::default()
+        };
+        view.theme.motion_ms = 200;
+        view.selection.extend([ids[1].clone(), ids[2].clone()]);
+        view.border_opacities = HashMap::from([
+            (ids[0].clone(), 1.),
+            (ids[1].clone(), 0.),
+            (ids[2].clone(), 0.),
+        ]);
+        let start = Instant::now();
+        assert!(view.animate_borders(&state, start));
+        assert_eq!(view.border_opacities[&ids[0]], 1.);
+        assert_eq!(view.border_opacities[&ids[1]], 0.);
+        let middle = start + Duration::from_millis(100);
+        view.animate_borders(&state, middle);
+        assert!(view.border_opacities[&ids[0]] < 1.);
+        assert!(view.border_opacities[&ids[1]] > 0.);
+        let shown = view.border_opacities.clone();
+        view.window_borders = true;
+        view.focused_window = Some(3);
+        view.animate_borders(&state, middle);
+        assert_eq!(
+            view.border_opacities, shown,
+            "reversing preserves every displayed border"
+        );
+        view.animate_borders(&state, middle + Duration::from_millis(200));
+        assert_eq!(view.border_opacities[&ids[0]], 0.);
+        assert_eq!(view.border_opacities[&ids[1]], 0.);
+        assert_eq!(view.border_opacities[&ids[2]], 1.);
+        assert_eq!(view.selected.as_deref(), Some(ids[1].as_str()));
+        assert_eq!(
+            view.selection,
+            HashSet::from([ids[1].clone(), ids[2].clone()])
+        );
+
+        // Selection changes while Nodes is open also start at the displayed alpha.
+        view.window_borders = false;
+        let now = middle + Duration::from_millis(300);
+        view.animate_borders(&state, now);
+        view.animate_borders(&state, now + Duration::from_millis(200));
+        let shown = view.border_opacities.clone();
+        view.selection.clear();
+        view.selected = None;
+        view.animate_borders(&state, now + Duration::from_millis(200));
+        assert_eq!(view.border_opacities, shown);
+        view.animate_borders(&state, now + Duration::from_millis(400));
+        assert!(view.border_opacities.values().all(|alpha| *alpha == 0.));
+    }
 
     #[test]
     fn trackpad_scroll_is_pixel_precise_and_zoom_preserves_its_anchor() {

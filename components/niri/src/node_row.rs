@@ -42,6 +42,7 @@ niri_render_elements! {
         Window = CropRenderElement<RelocateRenderElement<RescaleRenderElement<LayoutElementRenderElement<R>>>>,
         Popup = LayoutElementRenderElement<R>,
         Blur = crate::render_helpers::xray::XrayElement,
+        Background = crate::render_helpers::background_effect::BackgroundEffectElement,
         Dim = crate::render_helpers::solid_color::SolidColorRenderElement,
     }
 }
@@ -54,6 +55,38 @@ pub(crate) fn chrome_alpha(workspace_distance: f64, overview: f64) -> f32 {
 }
 
 impl<W: LayoutElement> Workspace<W> {
+    pub(crate) fn prepare_node_row_exit(&mut self) -> NodeRowScene {
+        // A rapid reversal may precede the canvas's first buffer commit.
+        self.scrolling_mut().finish_view_offset();
+        let origin = self.node_canvas_geometry().loc;
+        NodeRowScene {
+            windows: self
+                .tiles_with_ipc_layouts()
+                .filter_map(|(tile, layout)| {
+                    let id = tile.window().node_window_id()?;
+                    let (x, y) = layout.tile_pos_in_workspace_view?;
+                    Some(node_row::NodeWindow {
+                        id,
+                        bounds: (
+                            x + layout.window_offset_in_tile.0 - origin.x,
+                            y + layout.window_offset_in_tile.1 - origin.y,
+                            layout.window_size.0 as f64,
+                            layout.window_size.1 as f64,
+                        ),
+                        expanded: true,
+                        opacity: 1.,
+                        presentation: Some(0.),
+                    })
+                })
+                .collect(),
+            insets: self
+                .node_tile
+                .as_ref()
+                .map(|t| t.scene.insets)
+                .unwrap_or_default(),
+        }
+    }
+
     pub fn nodes_visible(&self) -> bool {
         self.node_tile.as_ref().is_some_and(|t| t.mapped)
     }
@@ -222,7 +255,8 @@ impl<W: LayoutElement> Workspace<W> {
                     }
                 },
             );
-            if !entry.expanded {
+            let node_backdrop = entry.node_backdrop();
+            if node_backdrop > 0. {
                 let mut backdrops = tile.backdrops.borrow_mut();
                 let dim = backdrops.entry(entry.id).or_default();
                 dim.update(clip.size, [0., 0., 0., 0.12]);
@@ -231,7 +265,7 @@ impl<W: LayoutElement> Workspace<W> {
                         crate::render_helpers::solid_color::SolidColorRenderElement::from_buffer(
                             dim,
                             clip.loc,
-                            entry.opacity,
+                            entry.opacity * node_backdrop,
                             Kind::Unspecified,
                         ),
                     )
@@ -250,15 +284,46 @@ impl<W: LayoutElement> Workspace<W> {
                         true,
                         0.,
                         1.,
-                        &mut |elem| push(NodeRenderElement::Blur(elem).into()),
+                        &mut |elem| {
+                            push(
+                                NodeRenderElement::Blur(
+                                    elem.with_alpha(entry.opacity * node_backdrop),
+                                )
+                                .into(),
+                            )
+                        },
                     );
                 }
+            }
+            // The preview backdrop fades over the normal window effect. Xray's
+            // blur buffers are cached, so the morph only blends existing textures.
+            // Keep the normal effect present up to the canvas's final null commit.
+            if node_backdrop < 1. {
+                window.render_background_effect(
+                    ctx.as_gles(),
+                    clip,
+                    self.scale().fractional_scale(),
+                    window.rules().clip_to_geometry == Some(true),
+                    (zoom, zoom).into(),
+                    window.geometry_corner_radius(),
+                    xray.offset(clip.loc),
+                    &mut |elem| push(NodeRenderElement::Background(elem).into()),
+                );
             }
         }
     }
 }
 
 impl Niri {
+    pub(crate) fn prepare_node_row_exit(&mut self, id: u64) -> Result<NodeRowScene, String> {
+        Ok(self
+            .layout
+            .workspaces_mut()
+            .find(|ws| ws.id().get() == id)
+            .ok_or_else(|| "node workspace no longer exists".to_owned())?
+            .prepare_node_row_exit())
+    }
+
     pub(crate) fn stage_node_row(&mut self, id: u64, scene: NodeRowScene) -> Result<(), String> {
         let ws = self
             .layout

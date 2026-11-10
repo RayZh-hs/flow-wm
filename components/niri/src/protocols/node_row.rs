@@ -111,6 +111,7 @@ mod tests {
                     bounds: (0., 0., 100., 100.),
                     expanded: false,
                     opacity: 1.,
+                    presentation: None,
                 })
                 .collect(),
             insets: [0; 4],

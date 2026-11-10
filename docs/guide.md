@@ -6,6 +6,10 @@ FlowWM is a Wayland desktop that puts application windows and executable workflo
 
 Press **Win+Tab** to move between windows and nodes. Windows become live previews in the graph; agents, commands, data, decisions, and notes sit alongside them. Each niri workspace row has its own graph, view mode, camera, and selection. Window buffers stay inside the compositor: integrated previews use neither screenshots nor screencasts.
 
+Node selection is remembered independently of window focus. Returning to Windows
+brings the selected window into view as part of the transition. Selection borders
+fade between their previous and next states; unchanged borders stay unchanged.
+
 FlowWM is under active development. Review commands in workflow nodes before running them. Shell, Vox, and Python nodes run locally as your user; Codex requires your own installation and authentication.
 
 ## Install
