@@ -384,33 +384,6 @@ impl State {
     pub fn node_mut(&mut self, id: &str) -> Option<&mut Node> {
         self.nodes.iter_mut().find(|n| n.id == id)
     }
-    pub fn ordered_nodes(&self, workspace: &str) -> Vec<&Node> {
-        let mut nodes: Vec<_> = self
-            .nodes
-            .iter()
-            .filter(|n| n.workspace == workspace)
-            .collect();
-        nodes.sort_by(|a, b| {
-            a.position
-                .x
-                .total_cmp(&b.position.x)
-                .then(a.position.y.total_cmp(&b.position.y))
-                .then(a.id.cmp(&b.id))
-        });
-        nodes
-    }
-    pub fn node_reference(&self, id: &str) -> Option<String> {
-        let node = self.node(id)?;
-        let index = self
-            .ordered_nodes(&node.workspace)
-            .iter()
-            .position(|n| n.id == id)?;
-        Some(if index < 10 {
-            ((index + 1) % 10).to_string()
-        } else {
-            node.id.clone()
-        })
-    }
     pub fn workspace(&self) -> &Workspace {
         self.workspaces
             .iter()

@@ -68,7 +68,6 @@ pub struct LookupOutput {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Lookup {
     pub node: String,
-    pub reference: String,
     pub title: String,
     pub outputs: Vec<LookupOutput>,
     pub selected: Option<String>,
@@ -151,7 +150,6 @@ impl Lookup {
             .collect();
         Some(Self {
             node: source.id.clone(),
-            reference: state.node_reference(id)?,
             title: source.title.clone(),
             outputs,
             selected: selected.map(str::to_string),

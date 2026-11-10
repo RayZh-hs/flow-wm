@@ -50,67 +50,6 @@ fn window_connection_search_lists_only_exit_with_an_unsigned_exit_code() {
 }
 
 #[test]
-fn connection_references_follow_alt_order_and_survive_title_changes() {
-    let mut state = State::empty("/tmp".into());
-    let workspace = state.selected_workspace.clone();
-    let mut ids = vec![];
-    for index in 0..11 {
-        let mut node = Node::new(
-            &workspace,
-            NodeKind::Window,
-            "/tmp".into(),
-            Position {
-                x: (index / 2) as f64 * 360.,
-                y: (index % 2) as f64 * 200.,
-            },
-        );
-        node.title = "Codex: a long prompt shared by multiple windows".repeat(10);
-        ids.push(node.id.clone());
-        state.nodes.push(node);
-    }
-    state.nodes.reverse();
-    let mut other = state.workspace().clone();
-    other.id = "other-row".into();
-    state.selected_workspace = other.id.clone();
-    state.nodes.push(Node::new(
-        &other.id,
-        NodeKind::Window,
-        "/tmp".into(),
-        Position { x: -360., y: 0. },
-    ));
-    state.workspaces.push(other);
-    let mut snapshot = flowwm::engine::Snapshot {
-        state: Arc::new(state),
-        revision: 1,
-        error: None,
-    };
-    for (index, id) in ids.iter().enumerate() {
-        let presentation = Presentation {
-            lookup_node: Some(id.clone()),
-            ..Default::default()
-        };
-        let before = Catalog::new(&snapshot, presentation.clone(), &[])
-            .lookup
-            .unwrap();
-        let expected = if index < 10 {
-            ((index + 1) % 10).to_string()
-        } else {
-            id.clone()
-        };
-        assert_eq!(before.reference, expected);
-        assert_eq!(before.node, *id);
-        Arc::make_mut(&mut snapshot.state)
-            .node_mut(id)
-            .unwrap()
-            .title = "Codex: the next prompt\nwith a different title".into();
-        let after = Catalog::new(&snapshot, presentation, &[]).lookup.unwrap();
-        assert_ne!(before.title, after.title);
-        assert_eq!(after.reference, before.reference);
-        assert_eq!(after.node, before.node);
-    }
-}
-
-#[test]
 fn launcher_catalog_contains_metadata_without_agent_output_or_logs() {
     let mut state = State::empty("/tmp".into());
     let mut node = Node::new(

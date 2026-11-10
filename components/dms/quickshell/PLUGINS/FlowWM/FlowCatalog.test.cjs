@@ -65,14 +65,14 @@ test('an empty catalog still provides a graph and creation entry', () => {
 
 const linked = {
     nodes: [{id:'display',title:'Read value'}], macros:[{id:'script',name:'Script'}],
-    lookup: {node:'source',reference:'3',title:'Source',outputs:[
+    lookup: {node:'source',title:'Source',outputs:[
         {name:'number',ty:'Int',targets:[{id:'display',input:'value',create:false},{id:'script',input:'a',create:true},{id:'script',input:'b',create:true}]},
         {name:'finished',ty:'Signal',targets:[]}
     ]}
 };
 const connections = (catalog, query='', output='', target='') => JSON.parse(JSON.stringify(context.connectionItems(catalog,query,output,target)));
 test('connection search traverses outputs, compatible nodes, and ambiguous inputs', () => {
-    assert.deepEqual(connections(linked,'3:').map(i=>i.name),['number','finished']);
+    assert.deepEqual(connections(linked,'source:').map(i=>i.name),['number','finished']);
     const nodes=connections(linked,'','number');
     assert.equal(nodes.find(i=>i.id==='macro:script').flowwmLayer.target,'macro:script');
     assert.equal(JSON.parse(nodes.find(i=>i.id==='node:display:value').flowwmArgs[1]).connection.target.pin,'value');
@@ -83,23 +83,25 @@ test('connection search traverses outputs, compatible nodes, and ambiguous input
     assert.equal(command.input,'b');
     assert.equal(command.action,'create_connected');
 });
-test('connection queries use the Alt reference through title changes and layer navigation', () => {
+test('connection queries use the internal ID through title changes and layer navigation', () => {
     const input = JSON.parse(JSON.stringify(linked));
     input.lookup.title = 'Codex: a long prompt\nwith changing details'.repeat(30);
-    assert.equal(context.connectionQuery(input.lookup, ''), '@ 3: ');
-    assert.deepEqual(connections(input, '3:').map(item => item.id), ['output:number', 'output:finished']);
+    assert.equal(context.connectionQuery(input.lookup, ''), '@ source: ');
+    assert.deepEqual(connections(input, 'source:').map(item => item.id), ['output:number', 'output:finished']);
     input.lookup.title = 'Codex: another prompt';
-    assert.deepEqual(connections(input, '3: fini').map(item => item.id), ['output:finished']);
+    assert.deepEqual(connections(input, 'source: fini').map(item => item.id), ['output:finished']);
     assert.equal(context.connectionQuery(input.lookup, 'number'), '@ ');
     const command = JSON.parse(connections(input, '', 'number').find(item => item.id === 'node:display:value').flowwmArgs[1]);
     assert.equal(command.connection.source.node, 'source');
-    assert.equal(context.connectionQuery(input.lookup, ''), '@ 3: ');
+    assert.equal(context.connectionQuery(input.lookup, ''), '@ source: ');
 });
-test('the tenth Alt reference and internal IDs beyond ten keep output filtering distinct', () => {
-    for (const reference of ['0', '8a862113-d5e7-4aa0-b74b-08a34ba2badb']) {
-        const input = {...linked, lookup: {...linked.lookup, reference}};
-        assert.equal(context.connectionQuery(input.lookup, ''), '@ ' + reference + ': ');
-        assert.deepEqual(connections(input, reference + ': numb').map(item => item.id), ['output:number']);
+test('every node uses its full internal ID for output filtering and connection endpoints', () => {
+    for (const node of ['8a862113-d5e7-4aa0-b74b-08a34ba2badb', 'b63b25a2-ab25-479e-8df2-f90d95ef7433']) {
+        const input = {...linked, lookup: {...linked.lookup, node}};
+        assert.equal(context.connectionQuery(input.lookup, ''), '@ ' + node + ': ');
+        assert.deepEqual(connections(input, node + ': numb').map(item => item.id), ['output:number']);
+        const command = JSON.parse(connections(input, '', 'number').find(item => item.id === 'node:display:value').flowwmArgs[1]);
+        assert.equal(command.connection.source.node, node);
     }
 });
 test('a single output skips output selection and incompatible nodes stay absent', () => {

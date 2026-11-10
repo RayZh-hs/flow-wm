@@ -22,22 +22,15 @@ TestCase {
         compare(result[0].flowwmArgs, ["focus", "window", "--open"]);
     }
 
-    function test_connection_reference_data() {
-        return [
-            {tag: "alt number", reference: "3"},
-            {tag: "tenth node", reference: "0"},
-            {tag: "beyond ten", reference: "8a862113-d5e7-4aa0-b74b-08a34ba2badb"}
-        ];
-    }
-
-    function test_connection_reference(data) {
-        const lookup = {node: "source", reference: data.reference, title: "Codex: a long prompt".repeat(30), outputs: [
+    function test_connection_internal_id() {
+        const node = "8a862113-d5e7-4aa0-b74b-08a34ba2badb";
+        const lookup = {node, title: "Codex: a long prompt".repeat(30), outputs: [
             {name: "number", ty: "Int", targets: []},
             {name: "finished", ty: "Signal", targets: []}
         ]};
-        compare(Catalog.connectionQuery(lookup, ""), "@ " + data.reference + ": ");
+        compare(Catalog.connectionQuery(lookup, ""), "@ " + node + ": ");
         lookup.title = "Codex: the next prompt";
-        const results = Catalog.connectionItems({lookup}, data.reference + ": fini");
+        const results = Catalog.connectionItems({lookup}, node + ": fini");
         compare(results.map(item => item.id), ["output:finished"]);
         compare(Catalog.connectionQuery(lookup, "number"), "@ ");
     }

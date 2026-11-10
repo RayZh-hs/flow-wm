@@ -1871,9 +1871,8 @@ impl Shell {
                     .as_deref()
                     .and_then(|id| state.node(id))
                     && crate::graph::pins(&state, node, true).len() > 1
-                    && let Some(reference) = state.node_reference(&node.id)
                 {
-                    return format!("@ {reference}: ");
+                    return format!("@ {}: ", node.id);
                 }
             }
             match mode {

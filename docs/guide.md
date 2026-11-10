@@ -125,7 +125,7 @@ Application window titles are kept out of ordinary search. Use `@ > title` to fi
 
 With a selected node, **Tab** starts a connection search:
 
-1. A node with multiple outputs opens `@ 1:` and lists its output pins, using the same number shown when holding Alt (1–9, then 0). Nodes beyond those ten use their internal ID.
+1. A node with multiple outputs opens `@ <node-id>:` and lists its output pins. Every node uses its internal ID in Dux search.
 2. Choose an output. A node with one output skips this step.
 3. Search compatible existing nodes or node types under `@`.
 4. If a target accepts the output on multiple inputs, choose the input in another search layer.

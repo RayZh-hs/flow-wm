@@ -2015,7 +2015,19 @@ pub fn matches_query(node: &Node, query: &str) -> bool {
         .all(|word| text.contains(word))
 }
 pub fn ordered_nodes(state: &State) -> Vec<&Node> {
-    state.ordered_nodes(&state.selected_workspace)
+    let mut nodes: Vec<_> = state
+        .nodes
+        .iter()
+        .filter(|n| n.workspace == state.selected_workspace)
+        .collect();
+    nodes.sort_by(|a, b| {
+        a.position
+            .x
+            .total_cmp(&b.position.x)
+            .then(a.position.y.total_cmp(&b.position.y))
+            .then(a.id.cmp(&b.id))
+    });
+    nodes
 }
 
 /// Use the same indices as Alt+number and the canvas, regardless of selection order.

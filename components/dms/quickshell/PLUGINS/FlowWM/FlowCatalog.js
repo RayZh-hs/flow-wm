@@ -94,7 +94,7 @@ function items(catalog, query, labels) {
 }
 
 function connectionQuery(lookup, outputName) {
-    return "@ " + (!outputName && lookup.outputs.length > 1 ? lookup.reference + ": " : "");
+    return "@ " + (!outputName && lookup.outputs.length > 1 ? lookup.node + ": " : "");
 }
 
 function connectionItems(catalog, query, outputName, targetKey) {
@@ -104,7 +104,7 @@ function connectionItems(catalog, query, outputName, targetKey) {
     var outputs = lookup.outputs || [];
     if (!outputName && lookup.selected) outputName = lookup.selected;
     if (!outputName && outputs.length === 1) outputName = outputs[0].name;
-    var prefix = lookup.reference + ":";
+    var prefix = lookup.node + ":";
     if (query.indexOf(prefix) === 0) query = query.substring(prefix.length).trim();
     function item(id, name, comment, layer, command) {
         return { id: id, name: name, comment: comment, icon: "material:account_tree", flowwmLayer: layer, flowwmArgs: command,
