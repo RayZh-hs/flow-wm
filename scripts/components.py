@@ -48,7 +48,7 @@ def main():
             child.add_argument("--ref", help="override the configured source branch or tag")
     args = parser.parse_args()
     if args.command == "bootstrap":
-        git("submodule", "update", "--init", "--", "components/dms/dux-qml-common")
+        git("submodule", "update", "--init", "--", "components/dms/dux-qml-common", "components/dms/dux-qt-base")
         return
     if args.command == "status":
         for name, source in SOURCES.items():
