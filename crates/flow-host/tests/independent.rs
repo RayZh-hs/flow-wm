@@ -350,9 +350,215 @@ fn cross_host_handoff_preserves_real_execution_and_forwards_interrupt_and_result
                 .unwrap()
                 .contains("origin-interrupted")
         );
+        // The old desktop can still operate the workflow, but new work belongs to b.
+        a.request(Control::Run {
+            id: "worker".into(),
+            downstream: false,
+        })
+        .unwrap();
+        let next = call(&a, Command::Snapshot, None)["executions"]
+            .as_object()
+            .unwrap()
+            .values()
+            .find(|e| e["node"] == "worker" && e["host"] == "b")
+            .unwrap()
+            .clone();
+        let next_id = next["id"].as_str().unwrap();
+        assert_eq!(next["status"], "running");
+        a.request(Control::Interrupt {
+            id: "worker".into(),
+        })
+        .unwrap();
+        until(|| {
+            call(&a, Command::Snapshot, None)["executions"][next_id]["status"] == "interrupted"
+        });
         a.shutdown();
         b.shutdown();
     }
+}
+
+#[test]
+fn create_in_a_remote_workspace_hands_off_authority_and_graph_edits_reach_desktop_execution() {
+    let (a, ad, _) = named_host("a");
+    let owner = a.snapshot().state.selected_workspace.clone();
+    let (b, _bd, bsock) = named_host("b");
+    a.request(Control::ConnectHost {
+        host: "b".into(),
+        remote: flow_host::remote::Remote::Unix { socket: bsock },
+    })
+    .unwrap();
+    let graph = |command: &str| FlowNet {
+        nodes: vec![NodeSpec {
+            id: "remote-created-node".into(),
+            type_id: "local.shell".into(),
+            flow: flow_core::graph::Flow {
+                properties: std::collections::BTreeMap::from([
+                    ("command".into(), json!(command)),
+                    ("cwd".into(), json!(ad.path())),
+                ]),
+                ..Default::default()
+            },
+        }],
+        ..Default::default()
+    };
+    call(
+        &a,
+        Command::Create {
+            workflow: Workflow {
+                id: "remote-created".into(),
+                name: "Remote creation".into(),
+                workspace: Some("b:user".into()),
+                visibility: Visibility::Private,
+                owner: Some(owner.clone().into()),
+                references: Default::default(),
+                graph: graph("printf old"),
+                authority: "b".into(),
+                transfer: None,
+            },
+        },
+        Some(&owner),
+    );
+    assert_eq!(
+        call(&b, Command::Snapshot, Some(&owner))["workflows"]["remote-created"]["authority"],
+        "b"
+    );
+    call(
+        &a,
+        Command::ReplaceGraph {
+            workflow: "remote-created".into(),
+            graph: graph("printf new"),
+        },
+        Some(&owner),
+    );
+    assert!(
+        call(&b, Command::Snapshot, None)["workflows"]
+            .get("remote-created")
+            .is_none()
+    );
+    a.request(Control::Run {
+        id: "remote-created-node".into(),
+        downstream: false,
+    })
+    .unwrap();
+    until(|| {
+        b.snapshot()
+            .state
+            .node("remote-created-node")
+            .unwrap()
+            .status
+            == Status::Done
+    });
+    assert!(
+        b.snapshot()
+            .state
+            .node("remote-created-node")
+            .unwrap()
+            .output
+            .contains("new")
+    );
+    until(|| {
+        a.snapshot()
+            .state
+            .node("remote-created-node")
+            .unwrap()
+            .status
+            == Status::Done
+    });
+    assert!(
+        a.snapshot()
+            .state
+            .node("remote-created-node")
+            .unwrap()
+            .output
+            .contains("new")
+    );
+    a.shutdown();
+    b.shutdown();
+}
+
+#[test]
+fn a_stalled_peer_refresh_does_not_block_local_runtime_commands() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        sync::mpsc,
+    };
+    let (a, dir) = fixture();
+    let socket = dir.path().join("slow-peer.sock");
+    let listener = ipc::bind(&socket).unwrap();
+    let mut peer = RuntimeState::local();
+    peer.bind_host("slow".into()).unwrap();
+    peer.workspaces
+        .activate(&"slow:user".into(), &"local".into(), "user".into())
+        .unwrap();
+    peer.create(Workflow {
+        id: "slow-work".into(),
+        name: "Slow peer".into(),
+        workspace: Some("slow:user".into()),
+        visibility: Visibility::Public,
+        owner: None,
+        references: Default::default(),
+        authority: "slow".into(),
+        transfer: None,
+        graph: FlowNet {
+            nodes: vec![NodeSpec {
+                id: "slow-node".into(),
+                type_id: "local.shell".into(),
+                flow: Default::default(),
+            }],
+            ..Default::default()
+        },
+    })
+    .unwrap();
+    peer.executions.insert(
+        "slow-job".into(),
+        Execution {
+            id: "slow-job".into(),
+            workflow: "slow-work".into(),
+            node: "slow-node".into(),
+            generation: 1,
+            host: "slow".into(),
+            provider: "local".into(),
+            handle: "slow-job".into(),
+            status: ExecutionStatus::Running,
+            result: Value::Null,
+        },
+    );
+    let (entered, started) = mpsc::channel();
+    let (release, gate) = mpsc::channel();
+    let server = thread::spawn(move || {
+        for index in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let request: Request = serde_json::from_str(&line).unwrap();
+            if index == 1 {
+                entered.send(()).unwrap();
+                gate.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            let reply = flow_core::protocol::Reply {
+                protocol: 2,
+                id: request.id,
+                revision: peer.revision,
+                result: Some(serde_json::to_value(&peer).unwrap()),
+                error: None,
+            };
+            let _ = writeln!(stream, "{}", json!({"ok":reply}));
+        }
+    });
+    a.request(Control::ConnectHost {
+        host: "slow".into(),
+        remote: flow_host::remote::Remote::Unix { socket },
+    })
+    .unwrap();
+    started.recv_timeout(Duration::from_secs(5)).unwrap();
+    let start = Instant::now();
+    a.request(Control::Status).unwrap();
+    assert!(start.elapsed() < Duration::from_millis(500));
+    a.shutdown();
+    release.send(()).unwrap();
+    server.join().unwrap();
 }
 
 #[test]

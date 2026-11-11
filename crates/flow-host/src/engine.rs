@@ -291,6 +291,7 @@ struct Request {
     reply: Option<mpsc::Sender<std::result::Result<Value, String>>>,
 }
 enum Message {
+    Network(NetworkResult),
     Completion(flow_core::providers::Completion),
     WindowProcessExited {
         token: u64,
@@ -304,6 +305,13 @@ enum Message {
     Request(Request),
     Output(flow_core::providers::Output),
 }
+struct NetworkResult {
+    snapshots: Vec<(String, flow_core::domain::RuntimeState)>,
+    staged: Vec<flow_core::domain::TransferId>,
+    committed: Vec<flow_core::domain::TransferId>,
+    forwarding: usize,
+    pending: usize,
+}
 struct Run {
     generation: u64,
     cancel: Arc<AtomicBool>,
@@ -311,12 +319,14 @@ struct Run {
     writer: bool,
     process: bool,
     invocation: Option<flow_core::domain::InvocationId>,
+    provider: Option<flow_core::domain::ProviderId>,
 }
 impl Run {
     fn interrupt(&self, registry: &flow_core::providers::Registry) {
         self.cancel.store(true, Ordering::Release);
         if let Some(id) = &self.invocation
-            && let Ok(provider) = registry.provider(&"local".into())
+            && let Some(owner) = &self.provider
+            && let Ok(provider) = registry.provider(owner)
         {
             let _ = provider.interrupt(&id.0);
         }
@@ -390,11 +400,19 @@ impl Engine {
             {
                 runtime.bind_host(host).expect("Configured host identity");
             }
-            let _ = runtime.workspaces.activate(
-                &format!("{}:user", runtime.host_id.0).into(),
-                &"local".into(),
+            let systemd = crate::config::runtime_limits()
+                .unwrap_or_default()
+                .systemd_workspace
+                .then(|| std::env::var("INVOCATION_ID").ok())
+                .flatten();
+            flow_builtins::sessions::LocalSessions::new(
+                runtime.host_id.clone(),
                 crate::model::id(),
-            );
+                systemd,
+            )
+            .expect("Validated local session identity")
+            .activate(&mut runtime.workspaces)
+            .expect("Local session registration");
         }
         let (tx, rx) = mpsc::channel();
         let (ui_tx, ui_messages) = mpsc::channel::<UiCommand>();
@@ -435,6 +453,8 @@ impl Engine {
             Runtime {
                 remotes: crate::remote::configured().unwrap_or_default(),
                 network_due: Instant::now(),
+                network_busy: false,
+                peer_revisions: Default::default(),
                 session_watches: HashSet::new(),
                 desktop_rows: HashMap::new(),
                 limits: crate::config::runtime_limits().unwrap_or_default(),

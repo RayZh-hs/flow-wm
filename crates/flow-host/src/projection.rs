@@ -33,21 +33,46 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
                 graph_arranged: false,
                 view: RowView::default(),
             });
-            for (index, spec) in workflow.graph.nodes.iter().enumerate() {
-                let kind = match spec.type_id.as_str() {
-                    "local.shell" => NodeKind::Shell,
-                    "local.constant" => NodeKind::Constant,
-                    "local.python" => NodeKind::Python,
-                    "local.agent" => NodeKind::Agent,
-                    _ => NodeKind::Extension,
-                };
-                let cwd = spec
-                    .flow
-                    .properties
-                    .get("cwd")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(".");
-                let mut node = Node::new(
+        }
+        let nodes: BTreeSet<_> = workflow
+            .graph
+            .nodes
+            .iter()
+            .map(|n| n.id.0.as_str())
+            .collect();
+        state
+            .nodes
+            .retain(|n| n.workspace != workflow.id.0 || nodes.contains(n.id.as_str()));
+        for (index, spec) in workflow.graph.nodes.iter().enumerate() {
+            let kind = match spec.type_id.as_str() {
+                "local.shell" => NodeKind::Shell,
+                "local.constant" => NodeKind::Constant,
+                "local.python" => NodeKind::Python,
+                "local.agent" => NodeKind::Agent,
+                "local.metric" => NodeKind::Metric,
+                "local.human" => NodeKind::Human,
+                "local.gate" => NodeKind::Gate,
+                "local.window" | "local.application" => NodeKind::Window,
+                "local.display" => NodeKind::Display,
+                "local.alert" => NodeKind::Alert,
+                "local.vox" => NodeKind::Vox,
+                "local.conditional" => NodeKind::Conditional,
+                "local.break_signal" => NodeKind::BreakSignal,
+                "local.merge_signal" => NodeKind::MergeSignal,
+                _ => NodeKind::Extension,
+            };
+            let cwd = spec
+                .flow
+                .properties
+                .get("cwd")
+                .and_then(|v| v.as_str())
+                .unwrap_or(".");
+            let existing = state
+                .nodes
+                .iter()
+                .position(|n| n.id == spec.id.0 && n.workspace == workflow.id.0);
+            let mut node = existing.map(|i| state.nodes[i].clone()).unwrap_or_else(|| {
+                Node::new(
                     &workflow.id.0,
                     kind,
                     cwd.into(),
@@ -55,37 +80,54 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
                         x: 100. + index as f64 * 360.,
                         y: 80.,
                     },
-                );
-                node.id = spec.id.0.clone();
-                node.flow = spec.flow.clone();
-                if kind == NodeKind::Extension {
-                    node.flow.node_type = spec.type_id.clone();
-                }
-                if let Some(command) = spec.flow.properties.get("command").and_then(|v| v.as_str())
-                {
-                    node.command = command.into();
-                }
+                )
+            });
+            node.id = spec.id.0.clone();
+            node.kind = kind;
+            node.cwd = cwd.into();
+            node.flow = spec.flow.clone();
+            if let Some(value) = node
+                .flow
+                .properties
+                .get(flow_core::migration::LEGACY_NODE_PROPERTY)
+                && let Ok(legacy) =
+                    serde_json::from_value::<flow_core::migration::LegacyNode>(value.clone())
+            {
+                legacy.apply(&mut node);
+            }
+            if kind == NodeKind::Extension {
+                node.flow.node_type = spec.type_id.clone();
+            }
+            if let Some(command) = spec.flow.properties.get("command").and_then(|v| v.as_str()) {
+                node.command = command.into();
+            }
+            if let Some(index) = existing {
+                state.nodes[index] = node;
+            } else {
                 state.nodes.push(node);
             }
-            state.connections.extend(workflow.graph.connections.clone());
-            for definition in &workflow.graph.node_types {
-                if !state.node_types.iter().any(|d| d.id == definition.id) {
-                    state.node_types.push(definition.clone());
-                }
+        }
+        state.connections.retain(|edge| {
+            !nodes.contains(edge.source.node.as_str()) && !nodes.contains(edge.target.node.as_str())
+        });
+        state.connections.extend(workflow.graph.connections.clone());
+        for definition in &workflow.graph.node_types {
+            if !state.node_types.iter().any(|d| d.id == definition.id) {
+                state.node_types.push(definition.clone());
             }
-            for definition in &workflow.graph.types {
-                if !state.types.iter().any(|d| d.name == definition.name) {
-                    state.types.push(definition.clone());
-                }
+        }
+        for definition in &workflow.graph.types {
+            if !state.types.iter().any(|d| d.name == definition.name) {
+                state.types.push(definition.clone());
             }
-            for definition in &workflow.graph.casts {
-                if !state
-                    .casts
-                    .iter()
-                    .any(|d| d.from == definition.from && d.to == definition.to)
-                {
-                    state.casts.push(definition.clone());
-                }
+        }
+        for definition in &workflow.graph.casts {
+            if !state
+                .casts
+                .iter()
+                .any(|d| d.from == definition.from && d.to == definition.to)
+            {
+                state.casts.push(definition.clone());
             }
         }
         if let Some(row) = state.workspaces.iter_mut().find(|w| w.id == workflow.id.0) {
@@ -93,7 +135,7 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
             if workflow
                 .workspace
                 .as_ref()
-                .is_some_and(|w| w.0 != "local:desktop")
+                .is_some_and(|w| w.0 != format!("{}:desktop", runtime.host_id.0))
             {
                 row.row = None;
             }

@@ -10,6 +10,10 @@ currently published source URLs are recorded in `components.json`.
   definitions, session incarnations, ownership, typed delivery, transfer records,
   provider contracts, protocol types, and the existing Vox graph evaluator.
   It has no GTK, niri, Wayland, systemd, socket, or process dependency.
+  `scheduler::evaluate` runs provider-aware delivery frames through the existing
+  Vox traversal. `Orchestrator::invoke_activation` accepts the resolved data and
+  property inputs without changing the graph's saved local properties. Lazy
+  providers implement `read`; invoked work implements `invoke`.
 - `flow-builtins` supplies Linux execution, Python bindings, evaluator workers,
   limits, and registered shell, constant, agent, metric-sample, application-launch,
   human-task and decision providers. Owned process supervision is shared by desktop
@@ -87,6 +91,10 @@ by providers; there is no workspace create/delete operation in protocol v2.
 The local registry includes `desktop`, `user`, and `systemd` definitions, with
 availability announced separately. A definition alone does not imply that its
 session is active. A stale session token cannot end a replacement session.
+The user environment is supplied by the local session provider. The systemd
+environment activates when the runtime is launched with a valid service invocation
+token; `systemd_workspace: false` disables it. Desktop availability follows the
+compositor connection and is independent of either GTK or the service invocation.
 
 Create a public workflow, an owned private child, or reference an existing public
 workflow. Private children are omitted from public catalogs. Destroying a parent
@@ -101,6 +109,15 @@ preview scene, and Open switches to the application's actual row without moving
 the connected branch. Moving a workflow between local
 workspaces changes its assignment while keeping execution handles at their
 origin. Applications still depend on their original compositor connection.
+
+Desktop runtime actions follow a moved workflow's authoritative host, including
+graph edits, decisions and interruption. Creating directly in a remote workspace
+uses the same recoverable handoff as Move. Legacy barrier/review/metric metadata
+travels in the reserved `flowwm.compatibility.v1` node property; desktop handles
+and positions are excluded. This keeps old pipelines usable after a handoff.
+Background forwarding and peer refresh run outside the runtime actor, with
+configurable retry interval, timeout and batch size. They stop refreshing remote
+execution state once the tracked invocations reach a terminal status.
 
 Desktop reconciliation preserves connected workflow branches when a native
 window changes rows. Unconnected automatically observed application windows can
@@ -180,11 +197,17 @@ existing niri-style `config.kdl` and `extensions/` directory:
   "host_id": "workstation",
   "max_concurrent": 8,
   "execution_timeout_secs": 3600,
+  "metric_timeout_secs": 20,
   "evaluator_timeout_secs": 60,
   "interrupt_grace_ms": 1000,
   "terminate_grace_ms": 1000,
   "signal_queue_capacity": 4096,
   "replay_capacity": 65536,
+  "serialize_working_directories": true,
+  "systemd_workspace": true,
+  "remote_retry_secs": 2,
+  "remote_timeout_secs": 10,
+  "remote_batch_size": 4,
   "desktop_branches_follow_rows": false,
   "hosts": {
     "builder": {

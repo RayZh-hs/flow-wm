@@ -5,6 +5,8 @@ use super::*;
 pub(super) struct Runtime {
     pub(super) remotes: std::collections::BTreeMap<String, crate::remote::Remote>,
     pub(super) network_due: Instant,
+    pub(super) network_busy: bool,
+    pub(super) peer_revisions: std::collections::BTreeMap<String, u64>,
     pub(super) session_watches: HashSet<String>,
     pub(super) desktop_rows: HashMap<u64, Option<u64>>,
     pub(super) limits: flow_builtins::local::Limits,
@@ -36,7 +38,13 @@ pub(super) struct Runtime {
 impl Runtime {
     pub(super) fn work(mut self, rx: mpsc::Receiver<Message>, shared: Arc<Mutex<Snapshot>>) {
         loop {
-            let network_pending = !self.orchestrator.state.forwarding.is_empty()
+            let network_pending = self
+                .orchestrator
+                .state
+                .executions
+                .values()
+                .any(|e| e.active() && e.host != self.orchestrator.state.host_id)
+                || !self.orchestrator.state.forwarding.is_empty()
                 || !self.orchestrator.state.pending_remote.is_empty()
                 || self.orchestrator.state.transfers.values().any(|t| {
                     t.source == self.orchestrator.state.host_id
@@ -66,6 +74,43 @@ impl Runtime {
                 next_metric
             };
             match rx.recv_timeout(timeout) {
+                Ok(Message::Network(result)) => {
+                    self.network_busy = false;
+                    for (host, snapshot) in result.snapshots {
+                        let _ = self.merge_peer(&host, snapshot);
+                    }
+                    for transfer in result.staged {
+                        if self
+                            .orchestrator
+                            .state
+                            .transfers
+                            .get(&transfer)
+                            .is_some_and(|t| t.phase == flow_core::domain::TransferPhase::Prepared)
+                            && self.orchestrator.state.workflows.contains_key(
+                                &self.orchestrator.state.transfers[&transfer].workflow,
+                            )
+                        {
+                            let _ = self.orchestrator.state.commit_outgoing(&transfer);
+                        }
+                    }
+                    self.orchestrator
+                        .state
+                        .transfer_acks
+                        .extend(result.committed);
+                    self.orchestrator
+                        .state
+                        .forwarding
+                        .drain(..result.forwarding);
+                    self.orchestrator
+                        .state
+                        .pending_remote
+                        .drain(..result.pending);
+                    crate::projection::apply(&mut self.state, &self.orchestrator.state);
+                    if let Err(error) = self.checkpoint() {
+                        self.error = Some(format!("Save network progress: {error:#}"));
+                    }
+                    self.dirty = true;
+                }
                 Ok(Message::Completion(completion)) => {
                     let invocation = completion.invocation.clone();
                     let accepted = self.orchestrator.state.complete(
@@ -411,7 +456,8 @@ impl Runtime {
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if network_pending && Instant::now() >= self.network_due {
                         self.reconcile_network();
-                        self.network_due = Instant::now() + Duration::from_secs(2);
+                        self.network_due =
+                            Instant::now() + Duration::from_secs(self.limits.remote_retry_secs);
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
@@ -638,10 +684,35 @@ impl Runtime {
             crate::model::id(),
         )?;
         let remote: flow_core::domain::RuntimeState = serde_json::from_value(value)?;
+        self.merge_peer(host, remote)
+    }
+    fn refresh_workflow(
+        &mut self,
+        host: &str,
+        workflow: flow_core::domain::WorkflowId,
+    ) -> Result<()> {
+        let value = self.remote_request(
+            host,
+            flow_core::protocol::Command::Snapshot,
+            Some(workflow),
+            crate::model::id(),
+        )?;
+        self.merge_peer(host, serde_json::from_value(value)?)
+    }
+    fn merge_peer(&mut self, host: &str, remote: flow_core::domain::RuntimeState) -> Result<()> {
         ensure!(
             remote.host_id.0 == host,
             "Configured host ID differs from peer identity"
         );
+        if self
+            .peer_revisions
+            .get(host)
+            .is_some_and(|revision| *revision > remote.revision)
+        {
+            return Ok(());
+        }
+        self.peer_revisions.insert(host.into(), remote.revision);
+
         for definition in remote.workspaces.definitions() {
             self.orchestrator
                 .state
@@ -657,17 +728,60 @@ impl Runtime {
                     &definition.provider,
                     available.incarnation.clone(),
                 )?;
+            } else if let Some(old) = self
+                .orchestrator
+                .state
+                .workspaces
+                .availability(&definition.id)
+                .cloned()
+            {
+                self.orchestrator
+                    .state
+                    .workspaces
+                    .end(&definition.id, &old.incarnation)?;
+            }
+        }
+        let foreign: HashSet<_> = remote
+            .workflows
+            .values()
+            .filter(|w| w.authority.0 == host)
+            .map(|w| w.id.clone())
+            .collect();
+        for execution in remote
+            .executions
+            .into_values()
+            .filter(|e| foreign.contains(&e.workflow))
+        {
+            let replace = self
+                .orchestrator
+                .state
+                .executions
+                .get(&execution.id)
+                .is_none_or(|old| {
+                    old.generation < execution.generation
+                        || (old.generation == execution.generation && old.active())
+                });
+            if replace {
+                self.orchestrator
+                    .state
+                    .executions
+                    .insert(execution.id.clone(), execution);
             }
         }
         for (id, workflow) in remote.workflows {
-            if workflow.authority.0 == host && !self.orchestrator.state.destroyed.contains(&id) {
-                self.orchestrator
+            if workflow.authority.0 == host
+                && !self.orchestrator.state.destroyed.contains(&id)
+                && self
+                    .orchestrator
                     .state
                     .workflows
-                    .entry(id)
-                    .or_insert(workflow);
+                    .get(&id)
+                    .is_none_or(|old| old.authority.0 == host)
+            {
+                self.orchestrator.state.workflows.insert(id, workflow);
             }
         }
+        self.orchestrator.state.revision += 1;
         self.state.orchestration = Some(self.orchestrator.state.clone());
         Ok(())
     }
@@ -706,7 +820,20 @@ impl Runtime {
         Ok(())
     }
     fn reconcile_network(&mut self) {
+        if self.network_busy {
+            return;
+        }
         use flow_core::{domain::TransferPhase, protocol::Command};
+        let hosts: HashSet<_> = self
+            .orchestrator
+            .state
+            .executions
+            .values()
+            .filter(|e| e.active())
+            .filter_map(|e| self.orchestrator.state.workflows.get(&e.workflow))
+            .filter(|w| w.authority != self.orchestrator.state.host_id)
+            .map(|w| (w.authority.0.clone(), w.id.clone()))
+            .collect();
         let transfers: Vec<_> = self
             .orchestrator
             .state
@@ -718,54 +845,161 @@ impl Runtime {
                     && !self.orchestrator.state.transfer_acks.contains(&t.id)
                     && self.orchestrator.state.workflows.contains_key(&t.workflow)
             })
-            .map(|t| t.id.clone())
-            .take(4)
+            .take(self.limits.remote_batch_size)
+            .filter_map(|t| self.orchestrator.state.transfer_bundle(&t.id).ok())
             .collect();
-        for transfer in transfers {
-            let _ = self.continue_transfer(&transfer);
+        let forwarding: Vec<_> = self
+            .orchestrator
+            .state
+            .forwarding
+            .iter()
+            .take(self.limits.remote_batch_size)
+            .cloned()
+            .collect();
+        let pending: Vec<_> = self
+            .orchestrator
+            .state
+            .pending_remote
+            .iter()
+            .take(self.limits.remote_batch_size)
+            .cloned()
+            .collect();
+        if hosts.is_empty() && transfers.is_empty() && forwarding.is_empty() && pending.is_empty() {
+            return;
         }
-        for _ in 0..4 {
-            let Some(pending) = self.orchestrator.state.forwarding.front().cloned() else {
-                break;
+        self.network_busy = true;
+        let remotes = self.remotes.clone();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let request = |host: &str, command, caller, id| -> Result<Value> {
+                remotes
+                    .get(host)
+                    .context("Remote host is disconnected or not configured")?
+                    .request(&flow_core::protocol::Request {
+                        protocol: 2,
+                        id,
+                        expected_revision: None,
+                        caller,
+                        command,
+                    })
             };
-            if self
-                .remote_request(
+            let mut result = NetworkResult {
+                snapshots: vec![],
+                staged: vec![],
+                committed: vec![],
+                forwarding: 0,
+                pending: 0,
+            };
+            // A slow or disconnected peer must not stall runtime commands or incoming events.
+            for (host, workflow) in hosts {
+                if let Ok(value) =
+                    request(&host, Command::Snapshot, Some(workflow), crate::model::id())
+                    && let Ok(snapshot) = serde_json::from_value(value)
+                {
+                    result.snapshots.push((host, snapshot));
+                }
+            }
+            for bundle in transfers {
+                let transfer = bundle.transfer.clone();
+                let staged = transfer.phase == TransferPhase::Prepared;
+                let command = if staged {
+                    Command::StageTransfer { bundle }
+                } else {
+                    Command::CommitTransfer { bundle }
+                };
+                if request(
+                    transfer.destination.host(),
+                    command,
+                    None,
+                    transfer.id.0.clone(),
+                )
+                .is_ok()
+                {
+                    if staged {
+                        result.staged.push(transfer.id);
+                    } else {
+                        result.committed.push(transfer.id);
+                    }
+                }
+            }
+            for pending in forwarding {
+                if request(
                     &pending.destination.0,
                     Command::ForwardCompletion {
                         execution: pending.execution.clone(),
                     },
                     None,
-                    pending.execution.id.0.clone(),
+                    pending.execution.id.0,
                 )
                 .is_err()
-            {
-                break;
+                {
+                    break;
+                }
+                result.forwarding += 1;
             }
-            self.orchestrator.state.forwarding.pop_front();
-            let _ = self.checkpoint();
-        }
-        for _ in 0..4 {
-            let Some(pending) = self.orchestrator.state.pending_remote.front().cloned() else {
-                break;
-            };
-            if self
-                .remote_request(
+            for pending in pending {
+                if request(
                     &pending.host.0,
                     pending.command,
                     pending.caller,
                     crate::model::id(),
                 )
                 .is_err()
-            {
-                break;
+                {
+                    break;
+                }
+                result.pending += 1;
             }
-            self.orchestrator.state.pending_remote.pop_front();
-            let _ = self.checkpoint();
-        }
-        self.dirty = true;
+            let _ = tx.send(Message::Network(result));
+        });
     }
     fn apply(&mut self, control: Control) -> Result<Value> {
         self.error = None;
+        let target = match &control {
+            Control::Create { node } => Some(node.workspace.as_str()),
+            Control::Update { node } => self.state.node(&node.id).map(|n| n.workspace.as_str()),
+            Control::Run { id, .. }
+            | Control::Stop { id }
+            | Control::Interrupt { id }
+            | Control::Approve { id, .. }
+            | Control::Reject { id }
+            | Control::Delete { id }
+            | Control::Evaluate { id }
+            | Control::Activate { id, .. }
+            | Control::HumanProgress { id, .. }
+            | Control::PublishProperties { id, .. }
+            | Control::ExposeOutput { id, .. }
+            | Control::Chat { id, .. } => self.state.node(id).map(|n| n.workspace.as_str()),
+            Control::Emit { .. } | Control::Connect { .. } | Control::Disconnect { .. } => {
+                let id = match &control {
+                    Control::Emit { source, .. } => &source.node,
+                    Control::Connect { source, .. } | Control::Disconnect { source, .. } => source,
+                    _ => unreachable!(),
+                };
+                self.state.node(id).map(|n| n.workspace.as_str())
+            }
+            Control::ConnectPins { connection } | Control::DisconnectPins { connection } => self
+                .state
+                .node(&connection.source.node)
+                .map(|n| n.workspace.as_str()),
+            _ => None,
+        };
+        if let Some(workflow) =
+            target.and_then(|id| self.orchestrator.state.workflows.get(&id.into()))
+            && workflow.authority != self.orchestrator.state.host_id
+        {
+            let host = workflow.authority.0.clone();
+            let workflow_id = workflow.id.clone();
+            let result = self
+                .remotes
+                .get(&host)
+                .context("Workflow host is disconnected or not configured")?
+                .control(&control)?;
+            self.refresh_workflow(&host, workflow_id)?;
+            crate::projection::apply(&mut self.state, &self.orchestrator.state);
+            self.dirty = true;
+            return Ok(result);
+        }
         if self.graph_active {
             ensure!(
                 !matches!(
@@ -841,6 +1075,72 @@ impl Runtime {
                 self.orchestrator.state = envelope.runtime;
 
                 use flow_core::protocol::Command as CoreCommand;
+                if let CoreCommand::Create { workflow } = &request.command
+                    && let Some(destination) = workflow
+                        .workspace
+                        .as_ref()
+                        .filter(|w| w.host() != self.orchestrator.state.host_id.0)
+                        .cloned()
+                {
+                    let transfer: flow_core::domain::TransferId = request.id.clone().into();
+                    self.discover_host(destination.host())?;
+                    if !self.orchestrator.state.transfers.contains_key(&transfer) {
+                        let mut local = workflow.clone();
+                        local.authority = self.orchestrator.state.host_id.clone();
+                        local.workspace = None;
+                        self.orchestrator.execute(
+                            CoreCommand::Create { workflow: local },
+                            request.caller.as_ref(),
+                            Arc::new(|_| {}),
+                        )?;
+                        self.orchestrator.state.prepare_transfer(
+                            transfer.clone(),
+                            &workflow.id,
+                            destination,
+                        )?;
+                        self.checkpoint()?;
+                    }
+                    let result = self.continue_transfer(&transfer);
+                    crate::projection::apply(&mut self.state, &self.orchestrator.state);
+                    self.checkpoint()?;
+                    return Ok(serde_json::to_value(flow_core::protocol::Reply {
+                        protocol: 2,
+                        id: request.id,
+                        revision: self.orchestrator.state.revision,
+                        result: result
+                            .as_ref()
+                            .ok()
+                            .map(|_| json!({"workflow":workflow.id})),
+                        error: result.err().map(|e| flow_core::protocol::Error {
+                            code: "handoff_pending".into(),
+                            message: e.to_string(),
+                            retryable: true,
+                        }),
+                    })?);
+                }
+                if let CoreCommand::Resolve { invocation, .. } = &request.command
+                    && let Some(execution) = self.orchestrator.state.executions.get(invocation)
+                    && execution.host != self.orchestrator.state.host_id
+                {
+                    let host = execution.host.0.clone();
+                    let workflow_id = execution.workflow.clone();
+                    let result = self.remote_request(
+                        &host,
+                        request.command,
+                        request.caller,
+                        request.id.clone(),
+                    )?;
+                    self.refresh_workflow(&host, workflow_id)?;
+                    crate::projection::apply(&mut self.state, &self.orchestrator.state);
+                    self.checkpoint()?;
+                    return Ok(serde_json::to_value(flow_core::protocol::Reply {
+                        protocol: 2,
+                        id: request.id,
+                        revision: self.orchestrator.state.revision,
+                        result: Some(result),
+                        error: None,
+                    })?);
+                }
                 if let CoreCommand::Move {
                     workflow,
                     workspace,
@@ -891,12 +1191,16 @@ impl Runtime {
                     && workflow.authority != self.orchestrator.state.host_id
                 {
                     let host = workflow.authority.0.clone();
+                    let workflow_id = workflow.id.clone();
                     let value = self.remote_request(
                         &host,
                         request.command,
                         request.caller,
                         request.id.clone(),
                     )?;
+                    self.refresh_workflow(&host, workflow_id)?;
+                    crate::projection::apply(&mut self.state, &self.orchestrator.state);
+                    self.checkpoint()?;
                     return Ok(serde_json::to_value(flow_core::protocol::Reply {
                         protocol: 2,
                         id: request.id,
@@ -1603,6 +1907,22 @@ impl Runtime {
             node.kind != NodeKind::Window,
             "This application provider does not support process-safe interruption; close its window separately"
         );
+        let workflow: flow_core::domain::WorkflowId = node.workspace.clone().into();
+        let invocations: Vec<_> = self
+            .orchestrator
+            .state
+            .executions
+            .values()
+            .filter(|e| e.node.0 == id && e.workflow.0 == node.workspace && e.active())
+            .map(|e| e.id.clone())
+            .collect();
+        for invocation in invocations {
+            self.orchestrator.execute(
+                flow_core::protocol::Command::Interrupt { invocation },
+                Some(&workflow),
+                Arc::new(|_| {}),
+            )?;
+        }
         self.graph_pending.retain(|(root, _)| root != id);
         self.signal_pending.remove(id);
         self.signal_args.remove(id);
@@ -1761,6 +2081,7 @@ impl Runtime {
                     writer: true,
                     process: true,
                     invocation: None,
+                    provider: None,
                 },
             );
             if let Some(node) = self.state.node_mut(&id).filter(|n| n.kind.primitive()) {
@@ -1871,7 +2192,21 @@ impl Runtime {
         }
     }
     fn launch(&mut self, id: &str) -> Result<()> {
-        if self.state.node(id).is_some_and(|n| n.kind.primitive()) {
+        let registered = self
+            .state
+            .node(id)
+            .filter(|n| !n.flow.node_type.is_empty())
+            .and_then(|n| {
+                self.orchestrator
+                    .registry
+                    .definition(&n.flow.node_type)
+                    .ok()
+            })
+            .cloned();
+        let invoked = registered
+            .as_ref()
+            .is_some_and(|d| d.behavior == flow_core::providers::Behavior::Invoked);
+        if self.state.node(id).is_some_and(|n| n.kind.primitive()) && !invoked {
             self.graph_pending.push_back((id.into(), None));
             self.state.node_mut(id).unwrap().status = Status::Idle;
             return Ok(());
@@ -1926,7 +2261,9 @@ impl Runtime {
         } else {
             json!({})
         };
-        let type_id = if node.kind == NodeKind::Window {
+        let type_id = if let Some(definition) = registered {
+            definition.id
+        } else if node.kind == NodeKind::Window {
             "local.application".into()
         } else {
             format!(
@@ -1942,15 +2279,20 @@ impl Runtime {
         self.generation = (self.generation + 1).max(self.orchestrator.state.revision + 1);
         let generation = self.generation;
         let invocation: flow_core::domain::InvocationId = crate::model::id().into();
-        let provider = self.orchestrator.registry.provider(&"local".into())?;
-        self.orchestrator.registry.definition(&type_id)?;
+        let owner = self
+            .orchestrator
+            .registry
+            .definition(&type_id)?
+            .owner
+            .clone();
+        let provider = self.orchestrator.registry.provider(&owner)?;
         let execution = flow_core::domain::Execution {
             id: invocation.clone(),
             workflow: workflow.into(),
             node: id.into(),
             generation,
             host: self.orchestrator.state.host_id.clone(),
-            provider: "local".into(),
+            provider: owner.clone(),
             handle: invocation.0.clone(),
             status: flow_core::domain::ExecutionStatus::Running,
             result: Value::Null,
@@ -2012,6 +2354,7 @@ impl Runtime {
                     NodeKind::Human | NodeKind::Gate
                 ),
                 invocation: Some(invocation),
+                provider: Some(owner),
             },
         );
         self.state
@@ -2175,6 +2518,7 @@ impl Runtime {
                 writer: false,
                 process: false,
                 invocation: None,
+                provider: None,
             },
         );
         let mut targets = vec![];

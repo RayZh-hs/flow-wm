@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
 use std::{
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     os::unix::{
         fs::{FileTypeExt, MetadataExt, PermissionsExt},
         net::{UnixListener, UnixStream},
@@ -213,16 +213,30 @@ fn serve_client(mut stream: UnixStream, engine: Engine, macros: &[Macro]) {
     let _ = writeln!(stream, "{reply}");
 }
 pub fn send(path: &Path, command: &impl serde::Serialize) -> Result<Value> {
+    send_timeout(path, command, Duration::from_secs(6))
+}
+pub fn send_timeout(
+    path: &Path,
+    command: &impl serde::Serialize,
+    timeout: Duration,
+) -> Result<Value> {
     let mut stream = UnixStream::connect(path).with_context(|| {
         format!(
             "FlowWM is not running. Start `flowwm start` first (socket: {}).",
             path.display()
         )
     })?;
-    stream.set_read_timeout(Some(Duration::from_secs(6)))?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))?;
     writeln!(stream, "{}", serde_json::to_string(command)?)?;
     let mut reply = String::new();
-    BufReader::new(stream).read_line(&mut reply)?;
+    BufReader::new(stream)
+        .take(32 * 1024 * 1024 + 1)
+        .read_line(&mut reply)?;
+    ensure!(
+        reply.len() <= 32 * 1024 * 1024,
+        "Runtime response is too large"
+    );
     let mut value: Value = serde_json::from_str(&reply)?;
     if let Some(error) = value.get("error").and_then(Value::as_str) {
         bail!("{error}");

@@ -41,8 +41,22 @@ pub fn configured() -> Result<BTreeMap<String, Remote>> {
 }
 impl Remote {
     pub fn request(&self, request: &flow_core::protocol::Request) -> Result<Value> {
+        let reply = self.exchange(request)?;
+        if !reply["error"].is_null() {
+            anyhow::bail!("Remote host: {}", reply["error"]["message"]);
+        }
+        Ok(reply["result"].clone())
+    }
+    pub fn control(&self, control: &crate::engine::Control) -> Result<Value> {
+        self.exchange(control)
+    }
+    fn exchange(&self, request: &impl Serialize) -> Result<Value> {
         let reply = match self {
-            Self::Unix { socket } => crate::ipc::send(socket, request)?,
+            Self::Unix { socket } => crate::ipc::send_timeout(
+                socket,
+                request,
+                Duration::from_secs(crate::config::runtime_limits()?.remote_timeout_secs),
+            )?,
             Self::Ssh {
                 destination,
                 command,
@@ -92,11 +106,13 @@ impl Remote {
                     bytes
                 });
                 let start = Instant::now();
+                let timeout =
+                    Duration::from_secs(crate::config::runtime_limits()?.remote_timeout_secs);
                 let status = loop {
                     if let Some(status) = child.try_wait()? {
                         break status;
                     }
-                    if start.elapsed() > Duration::from_secs(10) {
+                    if start.elapsed() > timeout {
                         unsafe {
                             libc::kill(-(child.id() as i32), libc::SIGKILL);
                         }
@@ -123,10 +139,7 @@ impl Remote {
                 envelope["ok"].clone()
             }
         };
-        if !reply["error"].is_null() {
-            anyhow::bail!("Remote host: {}", reply["error"]["message"]);
-        }
-        Ok(reply["result"].clone())
+        Ok(reply)
     }
 }
 pub fn call(
