@@ -320,6 +320,11 @@ fn native_canvas_region(state: &State, view: &View, width: i32, height: i32) -> 
         if node.window_id.is_none() && !node.desktop_window {
             continue;
         }
+        // Off-screen windows fade at their stationary graph positions. Once
+        // invisible, their chrome must stop masking the live window beneath it.
+        if view.window_opacities.get(&node.id).copied().unwrap_or(1.) <= 0. {
+            continue;
+        }
         let (_, rect, t) = window_geometry(node, view);
         // A later card's labels and ports must cover previews belonging to earlier cards.
         let cover = Rect {
@@ -573,7 +578,9 @@ fn render_inner(
             continue;
         }
         snapshot.push_rounded_clip(&outline);
-        if t < 0.001 {
+        // Native clients and their backdrops are rendered by the compositor.
+        // An opaque fallback here leaks through the mask around fading peers.
+        if t < 0.001 && !view.native_nodes {
             if let Some(texture) = &view.wallpaper_texture {
                 let (ow, oh) = view.output_size;
                 let scale = (ow / texture.width() as f64).max(oh / texture.height() as f64);
@@ -651,6 +658,107 @@ fn render_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[allow(clippy::field_reassign_with_default)]
+    fn expanded_window_with_fading_peers(opacity: f64) -> (State, View) {
+        let mut state = State::empty("/tmp".into());
+        let mut view = View::default();
+        view.native_nodes = true;
+        view.zoom = 1.;
+        view.pan_x = 0.;
+        view.pan_y = 0.;
+        view.chrome = 0.;
+        for index in 0..3 {
+            let mut node = Node::new(
+                &state.selected_workspace,
+                NodeKind::Window,
+                "/tmp".into(),
+                Position {
+                    x: index as f64 * 320.,
+                    y: 150.,
+                },
+            );
+            node.window_id = Some(index + 1);
+            node.column_mode = if index == 0 {
+                ColumnMode::Window
+            } else {
+                ColumnMode::Node
+            };
+            view.presentations
+                .insert(node.id.clone(), f64::from(index != 0));
+            view.presented_rects.insert(
+                node.id.clone(),
+                if index == 0 {
+                    Rect {
+                        x: 0.,
+                        y: 0.,
+                        width: 1000.,
+                        height: 600.,
+                    }
+                } else {
+                    Rect {
+                        x: index as f64 * 320.,
+                        y: 150.,
+                        width: WIDTH,
+                        height: node_height(&node),
+                    }
+                },
+            );
+            view.window_opacities
+                .insert(node.id.clone(), if index == 0 { 1. } else { opacity });
+            state.nodes.push(node);
+        }
+        (state, view)
+    }
+
+    #[test]
+    fn invisible_stationary_previews_do_not_mask_the_expanded_window() {
+        let (state, view) = expanded_window_with_fading_peers(0.);
+        let region = native_canvas_region(&state, &view, 1000, 600);
+        for x in [340, 660] {
+            assert!(
+                !region.contains_point(x, 180),
+                "a faded off-screen window must not cover the live client below it"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a GTK display; run explicitly inside Niri or Xvfb"]
+    fn native_morphs_do_not_paint_opaque_boxes_behind_stationary_previews() {
+        gtk::init().unwrap();
+        for opacity in [0., 0.001, 0.1, 0.5, 1.] {
+            let (state, mut view) = expanded_window_with_fading_peers(opacity);
+            // The shared outline has its own opacity; inspect the interior only.
+            view.border_opacities
+                .extend(state.nodes.iter().map(|n| (n.id.clone(), 0.)));
+            let snapshot = gtk::Snapshot::new();
+            render(
+                &snapshot,
+                1000,
+                600,
+                &state,
+                1,
+                &view,
+                &mut Cache::default(),
+            );
+            let mut image =
+                gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 1000, 600).unwrap();
+            let context = gtk::cairo::Context::new(&image).unwrap();
+            snapshot.to_node().unwrap().draw(&context);
+            drop(context);
+            let stride = image.stride() as usize;
+            let pixels = image.data().unwrap();
+            for x in [315, 635] {
+                let offset = 140 * stride + x * 4;
+                assert_eq!(
+                    &pixels[offset..offset + 4],
+                    &[0; 4],
+                    "the mask padding around a stationary preview must stay transparent at opacity {opacity}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn interrupted_camera_morphs_never_publish_degenerate_preview_bounds() {
