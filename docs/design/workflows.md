@@ -1,0 +1,11 @@
+# Workflows
+
+A workflow is a graph that utilizes nodes to conduct automation. Each workflow is represented by a row in flow-wm. Each workflow is mounted to a workspace, which governs the lifetime of the workflow.
+
+An ordinary WM's session can be seen as a workflow hosted in `local:desktop`, and the windows it hosts are bound by the lifetime of that desktop session. In contrast, flow-wm allows users to mount workflows in multiple workspaces, and move workflows between workspaces. Any network-accessible flow-core instance can be used to host a workflow. Nodes available in a workspace can vary.
+
+Formally, a workspace comprises of two components: a host and a session. In `local:desktop`, the host is `local` and the session id is `desktop`. Common sessions include also `user` (user session), `systemd` (persistent systemd session).
+
+Each row has an owning workspace. Signals pass among workflows using the Flow Signal Protocol, as described in more detail in [Nodes and Windows](nodes-and-windows.md). Connections are a shortcut to bind signals in a single workflow, and for cross-workflow/cross-workspace message passing, use the builtin Broadcast and Receive nodes.
+
+For convenience, in each row you can reference or own other workflows in any other workspace. Such is depicted as a colored region in the workflow graph. Owned workflows are private to the workflow owning it and cannot be accessed by other workflows. Furthermore, its lifetime is bound by the owning workflow, i.e. when the owning workflow is destroyed, so are its owned workflows. In contrast, you can reference any public workflow in any workspace, and its lifetime is independent of the referencing workflow. These two types show the header `&host:session` and `host:session` respectively. The user can "publicize" an owned workflow by right-clicking on the region and selecting "Make Public", in which case the workflow will be moved to a newly created public workspace and the old workflow will now reference it.
