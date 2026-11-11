@@ -163,12 +163,14 @@ def run(state_file=None):
             first_toggle = capture("first-toggle-existing-node.png")
             assert card_pixels(first_toggle) > 5000, "the first toggle must fit the graph before rendering existing nodes"
             request(flow_socket, {"op":"ui", "command":{"action":"select", "id":seed}})
+            idle = settled_capture("idle-node.png")
             key("super+Return")
             status = lambda: next(n['status'] for n in request(flow_socket, {"op":"status"})['nodes'] if n['id'] == seed)
             wait(lambda: status() == 'running', compositor)
             running = settled_capture("running-node.png")
-            green = sum(g > 150 and g > r * 1.3 and g > b * 1.15 for r,g,b in running.get_flattened_data())
-            assert green > 80, "running nodes must have a visible green sideline"
+            green = sum(g > ig + 5 and g-r > ig-ir + 3 and g-b > ig-ib + 3
+                        for (r,g,b),(ir,ig,ib) in zip(running.get_flattened_data(), idle.get_flattened_data()))
+            assert green > 80, "running nodes must show the configured green tint"
             key("super+q")
             wait(lambda: status() == 'stopped', compositor)
             request(flow_socket, {"op":"delete", "id":seed})
@@ -311,7 +313,7 @@ def run(state_file=None):
             log.flush()
             errors = (artifacts / "session.log").read_text()
             assert "drawing failure" not in errors and "Cross-workspace connection" not in errors, errors[-4000:]
-            print("Desktop smoke passed: first-toggle framing on existing and newly allocated rows, Win+Enter/Win+Q run/stop, green running sidelines, animated deletion, search shortcuts, static wallpaper, connected creation, compact parameters with Enter-to-save, editable live windows with Shift+Tab, pin search in both directions, key-binding search, and application selection at 2x scale.")
+            print("Desktop smoke passed: first-toggle framing on existing and newly allocated rows, Win+Enter/Win+Q run/stop, configured running tint, animated deletion, search shortcuts, static wallpaper, connected creation, compact parameters with Enter-to-save, editable live windows with Shift+Tab, pin search in both directions, key-binding search, and application selection at 2x scale.")
         finally:
             for child in reversed(children):
                 if child.poll() is None:

@@ -34,6 +34,8 @@ def main():
     test.add_argument("component", choices=["flowwm", "niri", "dms", "all"], default="all", nargs="?")
     nested = commands.add_parser("nested")
     nested.add_argument("--release", action="store_true")
+    nested.add_argument("--flowwm", type=Path, help="test a saved FlowWM build")
+    nested.add_argument("--compositor", type=Path, help="test a saved compositor build")
     nested.add_argument("--smoke", action="store_true", help="run the real GTK/compositor integration smoke test and exit")
     args = parser.parse_args()
     if args.command in ("build", "test"):
@@ -57,8 +59,8 @@ def main():
                 run("node", "--test", "components/dms/quickshell/PLUGINS/FlowWM/FlowCatalog.test.cjs")
         return
     profile = "release" if args.release else "debug"
-    compositor = ROOT / f"target/niri/{profile}/niri"
-    app = ROOT / f"target/{profile}/flowwm"
+    compositor = (args.compositor or ROOT / f"target/niri/{profile}/niri").resolve()
+    app = (args.flowwm or ROOT / f"target/{profile}/flowwm").resolve()
     if not compositor.is_file() or not app.is_file():
         parser.error(f"Build niri and FlowWM first: python3 scripts/dev.py build all{' --release' if args.release else ''}")
     environment = os.environ.copy()
@@ -70,6 +72,8 @@ def main():
     environment["PATH"] = str(app.parent) + os.pathsep + environment.get("PATH", "")
     with tempfile.TemporaryDirectory(prefix="flowwm-nested-", dir=parent_runtime) as temporary:
         environment["XDG_RUNTIME_DIR"] = temporary
+        if args.smoke:
+            environment["FLOWWM_CONFIG_DIR"] = str(Path(temporary) / "config")
         data = Path(temporary) / "data" if args.smoke else ROOT / "artifacts/nested/data"
         command = [str(compositor), "--config", str(ROOT / "config/nested.kdl")]
         shell = None

@@ -78,7 +78,13 @@ def run():
                 background_environment = environment | {"LD_PRELOAD": ctypes.util.find_library("gtk4-layer-shell")}
                 children.append(subprocess.Popen([sys.executable, __file__, "--wallpaper"], env=background_environment, stdout=log, stderr=log))
                 wait(lambda: any(layer["layer"] == "Background" for layer in request(niri_socket, "Layers")["Layers"]), compositor)
-                children.append(subprocess.Popen([str(ROOT / "target/debug/flowwm"), "--data-dir", str(runtime / "data"), "start", "--dms", "--background"], env=environment, stdout=log, stderr=log))
+                shell_command = [str(ROOT / "target/debug/flowwm"), "--data-dir", str(runtime / "data"), "start", "--dms", "--background"]
+                if "--independent-host" in sys.argv:
+                    host_socket = runtime / "flow-core.sock"
+                    children.append(subprocess.Popen([str(ROOT / "target/debug/flow-core"), "--socket", str(host_socket), "--data-dir", str(runtime / "data")], env=environment, stdout=log, stderr=log))
+                    wait(lambda: request(host_socket, {"op":"status"}), compositor)
+                    shell_command.extend(["--host-socket",str(host_socket)])
+                children.append(subprocess.Popen(shell_command, env=environment, stdout=log, stderr=log))
                 flow_socket = runtime / "flowwm.sock"
                 catalog = lambda: request(flow_socket, {"op": "catalog"})
                 wait(lambda: len(catalog()["workspaces"]) >= 2, compositor)
@@ -114,9 +120,8 @@ def run():
                 ui("bar_geometry", output="winit", insets=[0, 0, 0, 0])
                 ui("nodes")
                 constant = create("constant", "Constant input probe")
-                preview = create("human", "Tall preview probe")
-                ui("open", id=preview)
-                wait(lambda: node(preview).get("window_id"), compositor)
+                children.append(subprocess.Popen([sys.executable, str(ROOT / "scripts/preview_fixture.py"), "Tall preview probe"], env=environment, stdout=log, stderr=log))
+                preview = wait(lambda: next((n["id"] for n in state()["nodes"] if n["title"] == "Tall preview probe" and n.get("window_id")), None), compositor)
                 ui("nodes")
                 request(flow_socket, {"op": "arrange", "positions": [(constant, {"x": 100, "y": 100}), (preview, {"x": 500, "y": 100})]})
                 ui("select", id=constant)
@@ -195,7 +200,31 @@ def run():
                 input_command("mouseup", "1")
                 wait(lambda: node(preview)["position"] == {"x": 540., "y": 120.}, compositor)
                 capture("window-dragged.png")
-                print("Interaction smoke passed: blurred/dimmed preview gaps, visible inline editor, keyboard editing and saving, Escape dismissal, constant and window dragging, persistent release positions, deselection, and row-switch recovery.")
+                ordinary = create("human", "No default interface")
+                ui("open", id=ordinary)
+                wait(lambda: any(layer["namespace"] == "flowwm-dialog" for layer in request(niri_socket, "Layers")["Layers"]), compositor)
+                assert not any(w["title"] == "No default interface" for w in request(niri_socket, "Windows")["Windows"])
+                ui("dismiss")
+                definition = json.loads((ROOT / "examples/extension-window.json").read_text())["nodes"][0]
+                request(flow_socket, {"op":"register_node", "definition":definition})
+                optional = create("vox", "Counter interface")
+                extension_node = node(optional)
+                extension_node.update(kind="extension", command=definition["source"], flow={"node_type":definition["id"],"properties":{"start":41}})
+                request(flow_socket,{"op":"update","node":extension_node})
+                ui("open",id=optional)
+                interface_window = wait(lambda: next((w for w in request(niri_socket,"Windows")["Windows"] if (w.get("app_id") or "").startswith("dev.flowwm.interface.v1.")),None),compositor)
+                assert interface_window["is_floating"], "an extension interface should retain its compact preferred size"
+                time.sleep(0.3)
+                layout=interface_window["layout"]
+                left,top=layout["tile_pos_in_workspace_view"]
+                width,height=layout["window_size"]
+                click(left+width-70,top+height-42)
+                wait(lambda: node(optional)["flow"]["values"].get("value")==42,compositor)
+                capture("optional-extension-interface.png")
+                request(niri_socket,{"Action":{"CloseWindow":{"id":interface_window["id"]}}})
+                wait(lambda: not any(w["id"]==interface_window["id"] for w in request(niri_socket,"Windows")["Windows"]),compositor)
+                assert node(optional), "closing an interface must keep its node"
+                print("Interaction smoke passed: blurred/dimmed preview gaps, visible inline editor, keyboard editing and saving, Escape dismissal, constant and window dragging, persistent release positions, deselection, and row-switch recovery; extension-only compact windows, working actions, and close-without-destroy.")
         finally:
             for child in reversed(children):
                 if child.poll() is None:

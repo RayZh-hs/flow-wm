@@ -1,5 +1,6 @@
 """Exercise the GTK client against the fork in an isolated nested session."""
 import json
+import sys
 from pathlib import Path
 import socket
 import shutil
@@ -112,8 +113,8 @@ def run(root, runtime, process, application, environment):
     assert rows() == [second["row"]["id"]]
     ui("nodes")
     wait(lambda: len(rows()) == 2, process)
-    output_node = create("Live native preview")
-    ui("open", id=output_node)
+    ui("windows")
+    subprocess.Popen([sys.executable,str(root / "scripts/preview_fixture.py"),"Live native preview"],env=environment | {"GDK_BACKEND":"wayland"})
     live_window = wait(lambda: next((w for w in request(niri_socket, "Windows")["Windows"] if w["title"] == "Live native preview"), None), process)
     ui("nodes")
     wait(lambda: len(rows()) == 2, process)
@@ -121,7 +122,11 @@ def run(root, runtime, process, application, environment):
     capture_still(directory / "live-preview-canvas.png")
     window_node = wait(lambda: next((n for n in catalog()["nodes"] if n["window_id"] == live_window["id"]), None), process)
     ui("open", id=window_node["id"])
-    wait(lambda: any(w["id"] == live_window["id"] and w["is_focused"] for w in request(niri_socket, "Windows")["Windows"]), process)
+    try:
+        wait(lambda: any(w["id"] == live_window["id"] and w["is_focused"] for w in request(niri_socket, "Windows")["Windows"]), process)
+    except TimeoutError:
+        print(json.dumps({"windows":request(niri_socket,"Windows"),"catalog":catalog(),"state":request(flow_socket,{"op":"status"}),"performance":request(flow_socket,{"op":"performance"})},indent=2),flush=True)
+        raise
     assert len(rows()) == 2, "expanding a client must preserve its native Nodes row"
     ui("toggle")
     wait(lambda: any(n["id"] == window_node["id"] and n["column_mode"] == "node" for n in catalog()["nodes"]), process)
@@ -137,8 +142,8 @@ def run(root, runtime, process, application, environment):
             subprocess.run(["grim", "-o", "winit", str(directory / name)], env=environment, check=True)
     compositor_capture("native-live-preview.png")
     activate(second)
-    window_row_node = create("Native window row")
-    ui("open", id=window_row_node)
+    ui("windows")
+    subprocess.Popen([sys.executable,str(root / "scripts/preview_fixture.py"),"Native window row"],env=environment | {"GDK_BACKEND":"wayland"})
     try:
         wait(lambda: any(w["title"] == "Native window row" and w["workspace_id"] == second["row"]["id"] for w in request(niri_socket, "Windows")["Windows"]) and rows() == [first["row"]["id"]], process)
     except TimeoutError:

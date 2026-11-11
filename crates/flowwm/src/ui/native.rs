@@ -32,6 +32,22 @@ pub fn bind(window: &gtk::ApplicationWindow, workspace: u64) {
     });
 }
 
+pub fn interface(window: &gtk::ApplicationWindow, node: &str) {
+    let id = CString::new(format!("dev.flowwm.interface.v1.{node}"))
+        .expect("Node ID cannot contain NUL");
+    window.connect_local("map", true, move |values| {
+        let window = values[0].get::<gtk::ApplicationWindow>().unwrap();
+        if let Some(surface) = window.surface()
+            && surface.display().type_().name().contains("Wayland")
+        {
+            unsafe {
+                gdk_wayland_toplevel_set_application_id(surface.to_glib_none().0, id.as_ptr());
+            }
+        }
+        None
+    });
+}
+
 mod protocol {
     #![allow(dead_code, non_camel_case_types, unused_unsafe, unused_variables)]
     #![allow(non_upper_case_globals, non_snake_case, unused_imports)]

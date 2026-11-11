@@ -39,9 +39,6 @@ separator { background: @flow_outline; margin: 12px 8px; min-width: 1px; min-hei
 .output-tabs tab label { font-size: 11px; }
 textview, textview text { background: @flow_surface_low; color: @flow_muted; }
 .output-view { padding: 20px; font-family: monospace; font-size: 11px; line-height: 1.7; }
-.node-window .panel-summary { padding: 28px; }
-.node-window .panel-title { font-size: 23px; }
-.node-window .output-view { font-size: 13px; padding: 28px; }
 .flow-dialog { background: @flow_surface; border-radius: 28px; border: 1px solid alpha(@flow_outline, 0.5); }
 .dialog-body { padding: 28px; background: @flow_surface; border-radius: 28px; }
 .dialog-title { font-size: 22px; font-weight: 550; color: @flow_text; margin-bottom: 5px; }
@@ -83,3 +80,6 @@ dropdown button { border: 1px solid @flow_outline; background: @flow_surface_hig
 .binding-row { padding: 12px 0; }
 .keycap { font-family: monospace; font-size: 11px; color: @flow_primary; background: @flow_surface_high; border: 1px solid alpha(@flow_outline, 0.65); border-radius: 6px; padding: 4px 8px; }
 .binding-scope { font-size: 10px; color: alpha(@flow_muted, 0.7); padding-top: 5px; }
+.extension-body { padding: 24px; }
+.extension-output { padding: 14px; border-radius: __RADIUS__; border: 1px solid alpha(@flow_outline, 0.5); }
+entry.error { border-color: @flow_error; }

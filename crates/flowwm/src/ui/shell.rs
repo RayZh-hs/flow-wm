@@ -106,7 +106,7 @@ pub fn run(
 
 struct NodeWindow {
     window: gtk::ApplicationWindow,
-    panel: NodePanel,
+    panel: ExtensionPanel,
 }
 
 #[derive(Clone)]
@@ -160,7 +160,6 @@ struct Shell {
     fallback_canvas: super::surface::Surface,
     view: Rc<RefCell<View>>,
     inspector: gtk::Box,
-    panel: RefCell<Option<(String, NodePanel)>>,
     workspace_label: gtk::Label,
     workspace_path: gtk::Label,
     footer: gtk::Label,
@@ -579,7 +578,6 @@ impl Shell {
                 fallback_canvas: canvas,
                 view,
                 inspector,
-                panel: RefCell::new(None),
                 workspace_label,
                 workspace_path,
                 footer,
@@ -659,6 +657,7 @@ impl Shell {
     }
     fn canvas_action(&self, action: CanvasAction) {
         match action {
+            CanvasAction::Workflow(id) => self.control(UiCommand::Workspace { id }),
             CanvasAction::Select(id) => self.select(id),
             CanvasAction::Open(id) => self.open(&id),
             CanvasAction::Add => self.palette(),
@@ -837,7 +836,6 @@ impl Shell {
         // Selection never resizes the canvas. Settings are explicitly opened with Shift+Enter.
         clear(&self.inspector);
         self.inspector.set_visible(false);
-        *self.panel.borrow_mut() = None;
         if !self.windowed && !self.native_nodes && self.graph_visible.get() {
             let state = self.engine.snapshot().state;
             let mixed = state.nodes.iter().any(|n| {
@@ -1755,8 +1753,11 @@ impl Shell {
             return;
         }
         self.hide_graph(true);
-        if let Some(node) = selected.filter(|n| n.window_id.is_none() && n.kind != NodeKind::Window)
-        {
+        if let Some(node) = selected.filter(|n| {
+            n.window_id.is_none()
+                && n.kind != NodeKind::Window
+                && window_interface(&state, n).is_some()
+        }) {
             self.open(&node.id);
         }
     }
@@ -2050,6 +2051,7 @@ impl Shell {
     }
     fn control(&self, command: UiCommand) {
         match command {
+            UiCommand::Workflows => self.workspace_dialog(),
             UiCommand::RunSelected | UiCommand::StopSelected => {
                 let run = matches!(command, UiCommand::RunSelected);
                 if !run
@@ -2378,14 +2380,8 @@ impl Shell {
         }
         *self.displayed_row.borrow_mut() = state.workspace().row.clone();
         let selected = self.view.borrow().selected.clone();
-        if let Some(id) = selected {
-            if let Some(node) = state.node(&id) {
-                if let Some((_, panel)) = &*self.panel.borrow() {
-                    panel.refresh(node, state);
-                }
-            } else {
-                self.select(None);
-            }
+        if selected.as_ref().is_some_and(|id| state.node(id).is_none()) {
+            self.select(None);
         }
         let missing: Vec<_> = self
             .windows
@@ -2691,6 +2687,11 @@ impl Shell {
             }
             return;
         }
+        let interface = window_interface(&state, node);
+        let Some(interface) = interface else {
+            self.edit(id);
+            return;
+        };
         if !self.windowed
             && let Err(error) = if self.integrated {
                 self.activate_group(&node.workspace)
@@ -2713,13 +2714,14 @@ impl Shell {
             window.window.present();
             return;
         }
-        let panel = NodePanel::new(self, node, true);
+        let panel = ExtensionPanel::new(self, node, interface);
         let window = gtk::ApplicationWindow::builder()
             .application(&self.app)
             .title(&node.title)
-            .default_width(720)
-            .default_height(850)
+            .default_width(560)
+            .default_height(-1)
             .build();
+        super::native::interface(&window, &node.id);
         window.add_css_class("node-window");
         window.set_child(Some(&panel.root));
         let w = self.weak.clone();
@@ -3289,6 +3291,10 @@ impl Shell {
         let Some(node) = state.node(id).cloned() else {
             return;
         };
+        if node.kind == NodeKind::Metric && node.status.active() {
+            self.watcher(id);
+            return;
+        }
         if node.status.active() && node.kind != NodeKind::Window && !node.desktop_window {
             self.show_error("Stop this node before changing its parameters.");
             return;
@@ -3366,6 +3372,15 @@ impl Shell {
         if node.kind == NodeKind::Metric {
             field(&root, "Sample every (seconds)", &interval);
             field(&root, "Unit", &unit);
+            let watchers = gtk::Button::with_label("Manage watchers");
+            let weak = self.weak.clone();
+            let id = node.id.clone();
+            watchers.connect_clicked(move |_| {
+                if let Some(shell) = weak.upgrade() {
+                    shell.watcher(&id);
+                }
+            });
+            root.append(&watchers);
         }
         if let Some(application) = node
             .flow
@@ -3455,7 +3470,6 @@ impl Shell {
     }
     fn rebuild_panel(&self) {
         let selected = self.view.borrow().selected.clone();
-        *self.panel.borrow_mut() = None;
         self.select(selected);
     }
     fn notes(&self) {
@@ -3490,59 +3504,216 @@ impl Shell {
         dialog.set_child(Some(&root));
         dialog.present();
     }
+    fn orchestrate(
+        &self,
+        command: flow_core::protocol::Command,
+        caller: Option<String>,
+    ) -> Result<serde_json::Value> {
+        let reply = self.engine.request(Control::Orchestrate {
+            request: Box::new(flow_core::protocol::Request {
+                protocol: 2,
+                id: crate::model::id(),
+                expected_revision: None,
+                caller: caller.map(Into::into),
+                command,
+            }),
+        })?;
+        if let Some(error) = reply.get("error").filter(|e| !e.is_null()) {
+            bail!(
+                "{}",
+                error["message"]
+                    .as_str()
+                    .unwrap_or("Workflow command failed")
+            );
+        }
+        Ok(reply["result"].clone())
+    }
     fn workspace_dialog(&self) {
+        use flow_core::{domain::*, protocol::Command};
+        let value = match self.orchestrate(
+            Command::Snapshot,
+            Some(self.engine.snapshot().state.selected_workspace.clone()),
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                self.show_error(&error.to_string());
+                return;
+            }
+        };
+        let Ok(runtime) = serde_json::from_value::<RuntimeState>(value) else {
+            return;
+        };
         let state = self.engine.snapshot().state;
-        let dialog = self.dialog("Workspaces", 520, 460);
-        let root = column(14);
+        let current = WorkflowId(state.selected_workspace.clone());
+        let dialog = self.dialog("Workflows", 560, 520);
+        let root = column(16);
         root.add_css_class("dialog-body");
-        root.append(&label("Workspaces", "dialog-title"));
-        for workspace in &state.workspaces {
-            let button = gtk::Button::with_label(&format!(
-                "{}  {}",
-                if workspace.id == state.selected_workspace {
-                    "●"
-                } else {
-                    "○"
-                },
-                workspace.name
-            ));
+        root.append(&label("Workflows", "dialog-title"));
+        for workflow in runtime
+            .workflows
+            .values()
+            .filter(|w| runtime.visible(&w.id, Some(&current)))
+        {
+            let item = row(8);
+            let button = gtk::Button::with_label(&workflow.name);
+            button.set_hexpand(true);
+            button.set_halign(gtk::Align::Fill);
             button.add_css_class("workspace-choice");
-            let e = self.engine.clone();
-            let id = workspace.id.clone();
+            let weak = self.weak.clone();
+            let id = workflow.id.0.clone();
             let d = dialog.clone();
             button.connect_clicked(move |_| {
-                e.dispatch(Control::SelectWorkspace { id: id.clone() });
-                d.close();
+                if let Some(shell) = weak.upgrade() {
+                    shell.control(UiCommand::Workspace { id: id.clone() });
+                    d.close();
+                }
             });
-            root.append(&button);
-        }
-        root.append(&separator());
-        let name = entry("");
-        name.set_placeholder_text(Some("New workspace name"));
-        root.append(&name);
-        let cwd = entry(&state.workspace().cwd.to_string_lossy());
-        field(&root, "Working directory", &cwd);
-        let create = gtk::Button::with_label("Create workspace");
-        create.add_css_class("accent");
-        root.append(&create);
-        let e = self.engine.clone();
-        let d = dialog.clone();
-        let w = self.weak.clone();
-        create.connect_clicked(move |_| {
-            match e.request(Control::CreateWorkspace {
-                name: name.text().to_string(),
-                cwd: PathBuf::from(cwd.text().as_str()),
-            }) {
-                Ok(_) => d.close(),
-                Err(error) => {
-                    if let Some(s) = w.upgrade() {
-                        s.show_error(&error.to_string());
+            item.append(&button);
+            let assignment = workflow
+                .workspace
+                .as_ref()
+                .map(|w| w.0.as_str())
+                .unwrap_or("Unassigned");
+            item.append(&label(assignment, "muted"));
+            if workflow.owner.as_ref() == Some(&current) {
+                let public = gtk::Button::with_label("Make public");
+                let weak = self.weak.clone();
+                let child = workflow.id.clone();
+                let parent = current.0.clone();
+                let d = dialog.clone();
+                public.connect_clicked(move |_| {
+                    if let Some(shell) = weak.upgrade() {
+                        match shell.orchestrate(
+                            Command::MakePublic {
+                                workflow: child.clone(),
+                            },
+                            Some(parent.clone()),
+                        ) {
+                            Ok(_) => d.close(),
+                            Err(e) => shell.show_error(&e.to_string()),
+                        }
                     }
+                });
+                item.append(&public);
+            } else if workflow.id != current {
+                let reference = gtk::Button::with_label("Reference");
+                let weak = self.weak.clone();
+                let target = workflow.id.clone();
+                let parent = current.clone();
+                let d = dialog.clone();
+                reference.connect_clicked(move |_| {
+                    if let Some(shell) = weak.upgrade() {
+                        match shell.orchestrate(
+                            Command::Reference {
+                                workflow: parent.clone(),
+                                target: target.clone(),
+                            },
+                            Some(parent.0.clone()),
+                        ) {
+                            Ok(_) => d.close(),
+                            Err(e) => shell.show_error(&e.to_string()),
+                        }
+                    }
+                });
+                item.append(&reference);
+            }
+            root.append(&item);
+        }
+        let workspaces: Vec<_> = runtime
+            .workspaces
+            .definitions()
+            .filter(|w| {
+                runtime
+                    .workspaces
+                    .availability(&w.id)
+                    .is_some_and(|a| a.active)
+            })
+            .map(|w| w.id.clone())
+            .collect();
+        let labels: Vec<_> = workspaces.iter().map(|w| w.0.as_str()).collect();
+        let workspace = gtk::DropDown::from_strings(&labels);
+        if let Some(assigned) = runtime
+            .workflows
+            .get(&current)
+            .and_then(|w| w.workspace.as_ref())
+            && let Some(index) = workspaces.iter().position(|w| w == assigned)
+        {
+            workspace.set_selected(index as u32);
+        }
+        let placement = row(8);
+        workspace.set_hexpand(true);
+        placement.append(&workspace);
+        let move_button = gtk::Button::with_label("Move current");
+        move_button.set_sensitive(!workspaces.is_empty());
+        placement.append(&move_button);
+        field(&root, "Workspace", &placement);
+        let weak = self.weak.clone();
+        let selected = workspace.clone();
+        let destinations = workspaces.clone();
+        let workflow = current.clone();
+        let d = dialog.clone();
+        move_button.connect_clicked(move |_| {
+            if let (Some(shell), Some(destination)) = (
+                weak.upgrade(),
+                destinations.get(selected.selected() as usize),
+            ) {
+                match shell.orchestrate(
+                    Command::Move {
+                        workflow: workflow.clone(),
+                        workspace: destination.clone(),
+                    },
+                    Some(workflow.0.clone()),
+                ) {
+                    Ok(_) => d.close(),
+                    Err(e) => shell.show_error(&e.to_string()),
                 }
             }
         });
-        let scroll = gtk::ScrolledWindow::builder().child(&root).build();
-        dialog.set_child(Some(&scroll));
+        root.append(&separator());
+        let name = entry("");
+        name.set_placeholder_text(Some("Workflow name"));
+        root.append(&name);
+        let private = gtk::CheckButton::with_label("Own privately in the current workflow");
+        root.append(&private);
+        let create = gtk::Button::with_label("Create workflow");
+        create.add_css_class("accent");
+        create.set_halign(gtk::Align::End);
+        create.set_sensitive(!workspaces.is_empty());
+        root.append(&create);
+        let weak = self.weak.clone();
+        let d = dialog.clone();
+        create.connect_clicked(move |_| {
+            let Some(shell) = weak.upgrade() else {
+                return;
+            };
+            let Some(destination) = workspaces.get(workspace.selected() as usize) else {
+                return;
+            };
+            if name.text().trim().is_empty() {
+                name.grab_focus();
+                return;
+            }
+            let workflow = Workflow {
+                id: crate::model::id().into(),
+                name: name.text().to_string(),
+                workspace: Some(destination.clone()),
+                visibility: if private.is_active() {
+                    Visibility::Private
+                } else {
+                    Visibility::Public
+                },
+                owner: private.is_active().then(|| current.clone()),
+                references: Default::default(),
+                graph: Default::default(),
+                authority: destination.host().into(),
+                transfer: None,
+            };
+            match shell.orchestrate(Command::Create { workflow }, Some(current.0.clone())) {
+                Ok(_) => d.close(),
+                Err(e) => shell.show_error(&e.to_string()),
+            }
+        });
+        dialog.set_child(Some(&gtk::ScrolledWindow::builder().child(&root).build()));
         dialog.present();
     }
     fn recipes(&self) {
@@ -3789,348 +3960,191 @@ struct ChatUi {
     scroll: gtk::ScrolledWindow,
 }
 
-struct NodePanel {
+fn window_interface<'a>(
+    state: &'a State,
+    node: &Node,
+) -> Option<&'a flow_core::providers::WindowInterface> {
+    state
+        .node_types
+        .iter()
+        .find(|definition| definition.id == crate::graph::type_id(node))
+        .and_then(|definition| definition.window.as_ref())
+}
+
+/// Only instantiated from an extension's explicit, validated window contract.
+struct ExtensionPanel {
     root: gtk::Box,
     status: gtk::Label,
-    title: gtk::Label,
-    directory: gtk::Label,
-    command: gtk::Label,
-    output: gtk::TextView,
-    logs: gtk::TextView,
-    actions: gtk::Box,
-    engine: Engine,
-    id: String,
-    handoff: gtk::Entry,
-    previous_status: Cell<Status>,
+    fields: Vec<(String, gtk::Entry)>,
+    output: Option<(String, gtk::TextView, gtk::Box)>,
 }
-impl NodePanel {
-    fn new(shell: &Shell, node: &Node, expanded: bool) -> Self {
-        let root = column(0);
-        root.add_css_class("node-panel");
-        root.set_vexpand(true);
-        let top = row(10);
-        top.add_css_class("panel-heading");
-        top.append(&label(
-            if expanded {
-                "NODE WINDOW"
-            } else {
-                "PARAMETERS"
-            },
-            "eyebrow",
-        ));
-        let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        spacer.set_hexpand(true);
-        top.append(&spacer);
-        if !expanded {
-            let close = gtk::Button::from_icon_name("window-close-symbolic");
-            close.add_css_class("flat");
-            let w = shell.weak.clone();
-            close.connect_clicked(move |_| {
-                if let Some(s) = w.upgrade() {
-                    s.select(None);
-                }
-            });
-            top.append(&close);
-        } else {
-            let graph = gtk::Button::with_label("↖  Graph");
-            graph.add_css_class("flat");
-            let w = shell.weak.clone();
-            graph.connect_clicked(move |_| {
-                if let Some(s) = w.upgrade() {
-                    s.show_nodes();
-                }
-            });
-            top.append(&graph);
-        }
-        root.append(&top);
-        let summary = column(12);
-        summary.add_css_class("panel-summary");
-        let title = label(&node.title, "panel-title");
-        title.set_max_width_chars(if expanded { 64 } else { 27 });
-        title.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        summary.append(&title);
+impl ExtensionPanel {
+    fn new(shell: &Shell, node: &Node, interface: &flow_core::providers::WindowInterface) -> Self {
+        let root = column(16);
+        root.add_css_class("extension-body");
+        let heading = row(12);
+        let titles = column(4);
+        titles.set_hexpand(true);
+        titles.append(&label(&interface.title, "panel-title"));
         let status = label(node.status.label(), "status");
-        status.set_xalign(0.0);
-        summary.append(&status);
-        let directory = label(&node.cwd.to_string_lossy(), "path");
-        directory.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-        directory.set_width_chars(1);
-        directory.set_xalign(0.0);
-        summary.append(&directory);
-        let command = label(&node.command, "command-preview");
-        command.set_wrap(true);
-        command.set_max_width_chars(if expanded { 100 } else { 34 });
-        command.set_xalign(0.0);
-        command.set_lines(5);
-        command.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        if !(expanded && node.kind == NodeKind::Human) {
-            summary.append(&command);
-        }
-        let tools = row(8);
-        let edit = gtk::Button::with_label("Edit parameters");
-        edit.add_css_class("quiet");
-        let w = shell.weak.clone();
-        let id = node.id.clone();
-        edit.connect_clicked(move |_| {
-            if let Some(s) = w.upgrade() {
-                s.edit(&id);
+        titles.append(&status);
+        heading.append(&titles);
+        let graph = gtk::Button::from_icon_name("view-grid-symbolic");
+        graph.set_tooltip_text(Some("Return to graph"));
+        graph.set_valign(gtk::Align::Start);
+        let weak = shell.weak.clone();
+        graph.connect_clicked(move |_| {
+            if let Some(shell) = weak.upgrade() {
+                shell.show_nodes();
             }
         });
-        if !node.desktop_window {
-            tools.append(&edit);
+        heading.append(&graph);
+        root.append(&heading);
+        if !interface.description.is_empty() {
+            let description = label(&interface.description, "field-label");
+            description.set_wrap(true);
+            description.set_max_width_chars(64);
+            root.append(&description);
         }
-        if !expanded {
-            let open = gtk::Button::from_icon_name("view-fullscreen-symbolic");
-            open.add_css_class("quiet");
-            open.set_tooltip_text(Some("Expand as a native window"));
-            let w = shell.weak.clone();
-            let id = node.id.clone();
-            open.connect_clicked(move |_| {
-                if let Some(s) = w.upgrade() {
-                    s.open(&id);
-                }
-            });
-            tools.append(&open);
-        }
-        if !node.chat.is_empty() {
-            let chat = gtk::Button::with_label("Continue conversation");
-            chat.add_css_class("quiet");
-            let w = shell.weak.clone();
-            let id = node.id.clone();
-            chat.connect_clicked(move |_| {
-                if let Some(s) = w.upgrade() {
-                    s.show_nodes();
-                    s.show_chat(Some(id.clone()));
-                }
-            });
-            tools.append(&chat);
-        }
-        summary.append(&tools);
-        if node.kind == NodeKind::Metric {
-            let watch = gtk::Button::with_label("⌁  Add or manage watcher");
-            watch.add_css_class("quiet");
-            let w = shell.weak.clone();
-            let id = node.id.clone();
-            watch.connect_clicked(move |_| {
-                if let Some(s) = w.upgrade() {
-                    s.watcher(&id);
-                }
-            });
-            summary.append(&watch);
-        }
-        root.append(&summary);
-        let actions = row(8);
-        actions.add_css_class("node-actions");
-        root.append(&actions);
-        let handoff = entry("");
-        handoff.set_placeholder_text(Some("Handoff note (optional)"));
-        handoff.set_margin_start(20);
-        handoff.set_margin_end(20);
-        handoff.set_margin_bottom(14);
-        handoff.set_visible(matches!(node.kind, NodeKind::Human | NodeKind::Gate));
-        root.append(&handoff);
-        let notebook = gtk::Notebook::new();
-        notebook.set_vexpand(true);
-        notebook.add_css_class("output-tabs");
-        let output = output_view();
-        if node.kind == NodeKind::Human {
-            output.set_editable(true);
-            output.set_cursor_visible(true);
-            let engine = shell.engine.clone();
-            let id = node.id.clone();
-            output.buffer().connect_changed(move |buffer| {
-                engine.dispatch(Control::HumanProgress {
-                    id: id.clone(),
-                    text: buffer
-                        .text(&buffer.start_iter(), &buffer.end_iter(), true)
-                        .to_string(),
+        let mut fields = vec![];
+        for spec in &interface.fields {
+            let control = entry("");
+            control.set_editable(spec.editable);
+            if spec.editable {
+                let engine = shell.engine.clone();
+                let id = node.id.clone();
+                let property = spec.property.clone();
+                control.connect_activate(move |entry| {
+                    let state = engine.snapshot().state;
+                    if let Some(node) = state.node(&id) {
+                        let mut node = node.clone();
+                        let text = entry.text();
+                        let value = if node
+                            .flow
+                            .properties
+                            .get(&property)
+                            .is_some_and(serde_json::Value::is_string)
+                        {
+                            serde_json::Value::String(text.to_string())
+                        } else {
+                            match serde_json::from_str(text.as_str()) {
+                                Ok(value) => value,
+                                Err(_) => {
+                                    entry.add_css_class("error");
+                                    return;
+                                }
+                            }
+                        };
+                        entry.remove_css_class("error");
+                        node.flow.properties.insert(property.clone(), value);
+                        engine.dispatch(Control::Update {
+                            node: Box::new(node),
+                        });
+                    }
                 });
-            });
+            }
+            let group = column(6);
+            field(&group, &spec.label, &control);
+            root.append(&group);
+            fields.push((spec.property.clone(), control));
         }
-        let activity = output_view();
-        notebook.append_page(
-            &gtk::ScrolledWindow::builder()
-                .child(&output)
-                .vexpand(true)
-                .build(),
-            Some(&label("Output", "")),
-        );
-        notebook.append_page(
-            &gtk::ScrolledWindow::builder()
-                .child(&activity)
-                .vexpand(true)
-                .build(),
-            Some(&label("Activity", "")),
-        );
-        root.append(&notebook);
-        let footer = label(
-            if node.kind == NodeKind::Human {
-                "Your work is a parallel branch of the workflow."
-            } else {
-                "Closing this window keeps the work running."
-            },
-            "panel-hint",
-        );
-        footer.set_wrap(true);
-        footer.set_max_width_chars(if expanded { 100 } else { 36 });
-        root.append(&footer);
+        let output = interface.output.as_ref().map(|property| {
+            let group = column(6);
+            group.append(&label("Result", "field-label"));
+            let view = output_view();
+            view.add_css_class("extension-output");
+            group.append(
+                &gtk::ScrolledWindow::builder()
+                    .child(&view)
+                    .min_content_height(64)
+                    .max_content_height(240)
+                    .propagate_natural_height(true)
+                    .build(),
+            );
+            root.append(&group);
+            (property.clone(), view, group)
+        });
+        if !interface.actions.is_empty() {
+            let actions = row(8);
+            actions.set_halign(gtk::Align::End);
+            for (index, action) in interface.actions.iter().enumerate() {
+                let button = gtk::Button::with_label(&action.label);
+                button.add_css_class(if index == 0 { "accent" } else { "quiet" });
+                let engine = shell.engine.clone();
+                let id = node.id.clone();
+                let operation = action.operation.clone();
+                button.connect_clicked(move |_| {
+                    use flow_core::providers::InterfaceOperation;
+                    engine.dispatch(match &operation {
+                        InterfaceOperation::Activate => Control::Activate {
+                            id: id.clone(),
+                            args: serde_json::json!({}),
+                        },
+                        InterfaceOperation::Interrupt => Control::Stop { id: id.clone() },
+                        InterfaceOperation::Emit { pin, args } => Control::Emit {
+                            source: crate::graph::Endpoint {
+                                node: id.clone(),
+                                pin: pin.clone(),
+                            },
+                            args: args.clone(),
+                        },
+                    });
+                });
+                actions.append(&button);
+            }
+            root.append(&actions);
+        }
         let panel = Self {
             root,
             status,
-            title,
-            directory,
-            command,
+            fields,
             output,
-            logs: activity,
-            actions,
-            engine: shell.engine.clone(),
-            id: node.id.clone(),
-            handoff,
-            previous_status: Cell::new(Status::Stopped),
         };
         panel.refresh(node, &shell.engine.snapshot().state);
         panel
     }
-    fn refresh(&self, node: &Node, state: &State) {
-        self.title.set_text(&node.title);
-        self.directory.set_text(&node.cwd.to_string_lossy());
-        self.command.set_text(&node.command);
-        self.status.set_text(&format!(
-            "{}  ·  {}",
-            node.kind.label(),
-            node.status.label()
-        ));
-        let output = if node.kind == NodeKind::Human {
-            node.output.clone()
-        } else if node.desktop_window {
-            if node.window_id.is_some() { "This application is an active node on its Niri row.\n\nPress Enter to return to its window. Super+Tab collapses the row into the graph without stopping any work." } else { "This application window has closed. Its node remains in the graph." }.into()
-        } else if node.output.trim().is_empty() {
-            if node.status == Status::Queued
-                && node
-                    .dependencies
-                    .iter()
-                    .filter_map(|id| state.node(id))
-                    .any(|n| n.status == Status::Failed)
-                && node.run_when == RunWhen::Success
-            {
-                "An upstream node raised an issue. This branch is paused until it is resolved."
-                    .to_string()
-            } else if node.status == Status::Review {
-                let inputs: Vec<_> = node
-                    .dependencies
-                    .iter()
-                    .filter_map(|id| state.node(id))
-                    .map(|n| format!("{}\n{}", n.title, n.output))
-                    .collect();
-                format!("Waiting for your decision.\n\n{}", inputs.join("\n\n"))
-            } else if node.kind == NodeKind::Human {
-                node.command.clone()
-            } else {
-                "Output will appear here when this node runs.".into()
+    fn refresh(&self, node: &Node, _state: &State) {
+        self.status.set_text(node.status.label());
+        for (property, entry) in &self.fields {
+            if entry.has_focus() {
+                continue;
             }
-        } else if node.kind == NodeKind::Agent && !node.chat.is_empty() {
-            node.chat
-                .iter()
-                .map(|m| format!("{}\n{}", m.role, m.text))
-                .collect::<Vec<_>>()
-                .join("\n\n")
-        } else if node.kind == NodeKind::Agent {
-            crate::engine::agent_result(&node.output)
-                .map(|result| format!("{}\n\n{}", result.summary, result.artifacts.join("\n")))
-                .unwrap_or_else(|_| node.output.clone())
-        } else {
-            node.output.clone()
-        };
-        if node.kind != NodeKind::Human || !self.output.has_focus() {
-            set_buffer(&self.output, &output);
-        }
-        let activity: String = node
-            .logs
-            .iter()
-            .map(|l| format!("[{}] {}\n{}\n\n", l.time % 86400, l.kind, l.text))
-            .collect();
-        set_buffer(&self.logs, &activity);
-        if self.previous_status.get() == node.status && self.actions.first_child().is_some() {
-            return;
-        }
-        self.previous_status.set(node.status);
-        clear(&self.actions);
-        if node.desktop_window {
-            if node.window_id.is_none() {
-                self.actions.append(&label("Window closed", "muted"));
-                return;
+            let value = node
+                .flow
+                .values
+                .get(property)
+                .or_else(|| node.flow.properties.get(property));
+            let text = value
+                .map(|v| {
+                    v.as_str()
+                        .map(String::from)
+                        .unwrap_or_else(|| v.to_string())
+                })
+                .unwrap_or_default();
+            if entry.text() != text {
+                entry.set_text(&text);
             }
-            let open = gtk::Button::with_label("Return to window");
-            open.add_css_class("accent");
-            let engine = self.engine.clone();
-            let id = self.id.clone();
-            open.connect_clicked(move |_| {
-                engine.dispatch(Control::Ui {
-                    command: UiCommand::Open { id: id.clone() },
-                })
-            });
-            self.actions.append(&open);
-            return;
         }
-        if node.status == Status::Review
-            || (matches!(node.kind, NodeKind::Human | NodeKind::Window)
-                && node.status == Status::Running)
-        {
-            let approve = gtk::Button::with_label(if node.kind == NodeKind::Human {
-                "✓  Mark done"
-            } else {
-                "✓  Approve & continue"
-            });
-            approve.add_css_class("accent");
-            let e = self.engine.clone();
-            let id = self.id.clone();
-            let handoff = self.handoff.clone();
-            approve.connect_clicked(move |_| {
-                let text = handoff.text().to_string();
-                e.dispatch(Control::Approve {
-                    id: id.clone(),
-                    output: (!text.is_empty()).then_some(text),
-                });
-            });
-            self.actions.append(&approve);
-            if node.status == Status::Review {
-                let reject = gtk::Button::with_label("Reject");
-                reject.add_css_class("quiet");
-                let e = self.engine.clone();
-                let id = self.id.clone();
-                reject.connect_clicked(move |_| e.dispatch(Control::Reject { id: id.clone() }));
-                self.actions.append(&reject);
-            }
-        } else if node.status.active() {
-            let stop = gtk::Button::with_label("□  Stop");
-            stop.add_css_class("quiet");
-            let e = self.engine.clone();
-            let id = self.id.clone();
-            stop.connect_clicked(move |_| e.dispatch(Control::Stop { id: id.clone() }));
-            self.actions.append(&stop);
-        } else {
-            let run = gtk::Button::with_label("▷  Run node");
-            run.add_css_class("accent");
-            let e = self.engine.clone();
-            let id = self.id.clone();
-            run.connect_clicked(move |_| {
-                e.dispatch(Control::Run {
-                    id: id.clone(),
-                    downstream: false,
+        if let Some((property, view, group)) = &self.output {
+            group.set_visible(
+                node.flow
+                    .values
+                    .get(property)
+                    .or_else(|| node.flow.properties.get(property))
+                    .is_some_and(|v| !v.is_null()),
+            );
+            let text = node
+                .flow
+                .values
+                .get(property)
+                .or_else(|| node.flow.properties.get(property))
+                .map(|v| {
+                    v.as_str()
+                        .map(String::from)
+                        .unwrap_or_else(|| serde_json::to_string_pretty(v).unwrap_or_default())
                 })
-            });
-            self.actions.append(&run);
-            let branch = gtk::Button::with_label("Run branch");
-            branch.add_css_class("quiet");
-            let e = self.engine.clone();
-            let id = self.id.clone();
-            branch.connect_clicked(move |_| {
-                e.dispatch(Control::Run {
-                    id: id.clone(),
-                    downstream: true,
-                })
-            });
-            self.actions.append(&branch);
+                .unwrap_or_default();
+            set_buffer(view, &text);
         }
     }
 }

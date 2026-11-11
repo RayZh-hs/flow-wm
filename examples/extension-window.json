@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "nodes": [{
+    "id": "example.counter",
+    "name": "Counter",
+    "inputs": [{"name":"in", "ty":{"kind":"signal","args":{},"open":true}}],
+    "outputs": [{"name":"value", "ty":{"kind":"int"}}],
+    "properties": {"start":{"ty":{"kind":"int"},"default":0}},
+    "source": "{ value = properties.start + 1, }",
+    "window": {
+      "title": "Counter",
+      "description": "Choose a starting value and calculate the next one.",
+      "fields": [{"label":"Starting value","property":"start","editable":true}],
+      "output": "value",
+      "actions": [{"label":"Calculate","operation":{"op":"activate"}}]
+    }
+  }]
+}

@@ -114,6 +114,7 @@ fn zoomed_out_grid_replays_without_cairo_allocation_errors() {
 type Callback = Rc<dyn Fn(CanvasAction)>;
 #[derive(Clone)]
 pub enum CanvasAction {
+    Workflow(String),
     Select(Option<String>),
     Open(String),
     Add,
@@ -546,28 +547,35 @@ impl View {
             .iter()
             .filter(|n| n.workspace == state.selected_workspace)
             .collect();
-        if nodes.is_empty() {
+        let regions = super::regions::layout(state, self);
+        if nodes.is_empty() && regions.is_empty() {
             self.zoom = 1.0;
             self.pan_x = 60.0;
             self.pan_y = 60.0;
             return;
         }
-        let min_x = nodes
+        let mut min_x = nodes
             .iter()
             .map(|n| self.arrangement.position(n).x)
             .fold(f64::INFINITY, f64::min);
-        let min_y = nodes
+        let mut min_y = nodes
             .iter()
             .map(|n| self.arrangement.position(n).y)
             .fold(f64::INFINITY, f64::min);
-        let max_x = nodes
+        let mut max_x = nodes
             .iter()
             .map(|n| self.arrangement.position(n).x + WIDTH)
             .fold(f64::NEG_INFINITY, f64::max);
-        let max_y = nodes
+        let mut max_y = nodes
             .iter()
             .map(|n| self.arrangement.position(n).y + node_height(n))
             .fold(f64::NEG_INFINITY, f64::max);
+        for r in &regions {
+            min_x = min_x.min(r.rect.x);
+            min_y = min_y.min(r.rect.y);
+            max_x = max_x.max(r.rect.x + r.rect.width);
+            max_y = max_y.max(r.rect.y + r.rect.height);
+        }
         self.zoom = ((width - FIT_PADDING) / (max_x - min_x))
             .min((height - FIT_PADDING) / (max_y - min_y))
             .clamp(0.000001, 1.2);
@@ -666,7 +674,32 @@ fn canvas_node(node: &Node) -> Node {
 
 pub(super) fn row_state(state: &State, workspace: &str) -> State {
     State {
-        orchestration: None,
+        orchestration: state.orchestration.as_ref().map(|runtime| {
+            let mut compact = runtime.clone();
+            compact.executions.clear();
+            compact.deliveries.clear();
+            compact.transfers.clear();
+            compact.acknowledged.clear();
+            let id = flow_core::domain::WorkflowId(workspace.into());
+            let references = compact
+                .workflows
+                .get(&id)
+                .map(|w| w.references.clone())
+                .unwrap_or_default();
+            compact.workflows.retain(|key, w| {
+                key == &id || w.owner.as_ref() == Some(&id) || references.contains(key)
+            });
+            for workflow in compact.workflows.values_mut() {
+                for node in &mut workflow.graph.nodes {
+                    node.flow = Default::default();
+                }
+                workflow.graph.connections.clear();
+                workflow.graph.node_types.clear();
+                workflow.graph.types.clear();
+                workflow.graph.casts.clear();
+            }
+            compact
+        }),
         connections: state
             .connections
             .iter()
@@ -825,6 +858,14 @@ fn make_scoped(
         }
         let screen = (x, y);
         let (x, y) = view.world(x, y);
+        if count == 2
+            && let Some(target) = super::regions::hit(&state, &view, x, y)
+        {
+            drop(view);
+            cb(CanvasAction::Workflow(target));
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            return;
+        }
         let hit = state.nodes.iter().rev().find(|n| {
             n.workspace == state.selected_workspace && contains(n, &view.position(n), x, y)
         });
@@ -1611,6 +1652,19 @@ fn contains(node: &Node, p: &Position, x: f64, y: f64) -> bool {
     x >= p.x && x <= p.x + WIDTH && y >= p.y - 8.0 && y <= p.y + node_height(node) + 8.0
 }
 fn workspace_empty(state: &State) -> bool {
+    if state.orchestration.as_ref().is_some_and(|runtime| {
+        let id = flow_core::domain::WorkflowId(state.selected_workspace.clone());
+        runtime
+            .workflows
+            .get(&id)
+            .is_some_and(|w| !w.references.is_empty())
+            || runtime
+                .workflows
+                .values()
+                .any(|w| w.owner.as_ref() == Some(&id))
+    }) {
+        return false;
+    }
     !state
         .nodes
         .iter()
@@ -1655,6 +1709,7 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
     let _ = c.save();
     c.translate(view.pan_x, view.pan_y);
     c.scale(view.zoom, view.zoom);
+    super::regions::draw(c, state, view);
     let nodes: Vec<_> = state
         .nodes
         .iter()

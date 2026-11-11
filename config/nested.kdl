@@ -18,3 +18,9 @@ binds {
     Mod+Page_Up { focus-workspace-up; }
     Mod+Shift+E { quit skip-confirmation=true; }
 }
+
+// Extension interfaces open at their preferred size; ordinary nodes have no window.
+window-rule {
+    match app-id="^dev\\.flowwm\\.interface\\.v1\\."
+    open-floating true
+}
