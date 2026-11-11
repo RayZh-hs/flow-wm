@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"os"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/duxlabs-dev/dux-shell/core/internal/deps"
 	"github.com/duxlabs-dev/dux-shell/core/internal/distros"
 )
@@ -17,17 +19,35 @@ func immutableFedoraModel(dependencies []deps.Dependency) Model {
 }
 
 func TestImmutableHostStopsAtLayerScreen(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", "")
 	m := immutableFedoraModel([]deps.Dependency{
 		{Name: dmsDepName, Status: deps.StatusMissing, Required: true},
 		{Name: "niri", Status: deps.StatusInstalled, Required: true},
 	})
+	m.width = 80
 	next, _ := m.continueOnImmutable()
-	if got := next.(Model).state; got != StateLayerPackages {
-		t.Fatalf("state = %v, want StateLayerPackages", got)
+	layered := next.(Model)
+	if layered.state != StateLayerPackages {
+		t.Fatalf("state = %v, want StateLayerPackages", layered.state)
 	}
-	view := next.(Model).viewLayerPackages()
-	if !strings.Contains(view, "sudo rpm-ostree install dms") || !strings.Contains(view, "bootc switch") {
+	script, err := os.ReadFile(layered.layerScript)
+	if err != nil {
+		t.Fatalf("layer script not written: %v", err)
+	}
+	for _, cmd := range layered.layerCommands() {
+		if !strings.Contains(string(script), "\n"+cmd+"\n") {
+			t.Fatalf("layer script missing %q:\n%s", cmd, script)
+		}
+	}
+	view := layered.viewLayerPackages()
+	if !strings.Contains(view, "sh ~/.local/state/duxinstall/layer.sh") {
 		t.Fatalf("layer screen missing commands:\n%s", view)
+	}
+	for line := range strings.SplitSeq(view, "\n") {
+		if w := lipgloss.Width(line); w > m.width {
+			t.Fatalf("line is %d wide on an %d column terminal and gets cut: %q", w, m.width, line)
+		}
 	}
 }
 
@@ -50,12 +70,12 @@ func TestImmutableSecondRunResumesPastReview(t *testing.T) {
 
 	first := immutableFedoraModel([]deps.Dependency{
 		{Name: dmsDepName, Status: deps.StatusMissing, Required: true},
-		{Name: "danksearch", Status: deps.StatusMissing},
-		{Name: "dankcalendar", Status: deps.StatusMissing},
+		{Name: "dux-search", Status: deps.StatusMissing},
+		{Name: "dux-calendar", Status: deps.StatusMissing},
 	})
 	first.selectedWM, first.selectedTerminal = 0, 1 // niri, kitty
-	first.disabledItems["danksearch"] = false
-	first.disabledItems["dankcalendar"] = true
+	first.disabledItems["dux-search"] = false
+	first.disabledItems["dux-calendar"] = true
 	if next, _ := first.continueOnImmutable(); next.(Model).state != StateLayerPackages {
 		t.Fatal("first run should stop at the layer screen")
 	}
@@ -73,15 +93,25 @@ func TestImmutableSecondRunResumesPastReview(t *testing.T) {
 
 	updated, _ := second.Update(depsDetectedMsg{deps: []deps.Dependency{
 		{Name: dmsDepName, Status: deps.StatusInstalled, Required: true},
-		{Name: "danksearch", Status: deps.StatusInstalled},
-		{Name: "dankcalendar", Status: deps.StatusInstalled},
+		{Name: "dux-search", Status: deps.StatusInstalled},
+		{Name: "dux-calendar", Status: deps.StatusInstalled},
 	}})
 	second = updated.(Model)
 	if second.state != StateConfigConfirmation {
 		t.Fatalf("state = %v, want StateConfigConfirmation without a review stop", second.state)
 	}
-	if second.disabledItems["danksearch"] || !second.disabledItems["dankcalendar"] {
+	if second.disabledItems["dux-search"] || !second.disabledItems["dux-calendar"] {
 		t.Fatalf("resume must restore the optional selection: %v", second.disabledItems)
+	}
+}
+
+func TestResumeFromOlderInstallerUsesCurrentNames(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if err := saveLayerResume(layerResume{WindowManager: "niri", Terminal: "kitty", Selected: []string{"danksearch", "dms-greeter"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(loadLayerResume().Selected, ","); got != "dux-search,dux-greeter" {
+		t.Fatalf("Selected = %q, want dux-search,dux-greeter", got)
 	}
 }
 
@@ -106,12 +136,12 @@ func TestImmutableStartOverClearsResume(t *testing.T) {
 func TestImmutableEnableInstalledOptionalIsNotPending(t *testing.T) {
 	m := immutableFedoraModel([]deps.Dependency{
 		{Name: dmsDepName, Status: deps.StatusInstalled, Required: true},
-		{Name: "dms-greeter", Status: deps.StatusInstalled},
+		{Name: "dux-greeter", Status: deps.StatusInstalled},
 	})
 	m.selectedDep = 1
-	m.disabledItems["dms-greeter"] = true
+	m.disabledItems["dux-greeter"] = true
 	m.toggleSelectedDependency()
-	if m.disabledItems["dms-greeter"] || m.reinstallItems["dms-greeter"] {
+	if m.disabledItems["dux-greeter"] || m.reinstallItems["dux-greeter"] {
 		t.Fatalf("enable on an image must not mark a reinstall: disabled=%v reinstall=%v", m.disabledItems, m.reinstallItems)
 	}
 	if pending := distros.PendingDependencies(m.dependencies, m.reinstallItems, m.disabledItems); len(pending) != 0 {

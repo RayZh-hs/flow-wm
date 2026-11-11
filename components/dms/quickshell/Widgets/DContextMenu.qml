@@ -1,7 +1,6 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import Quickshell
 import Quickshell.Wayland
 import qs.Common
 import qs.Services
@@ -23,9 +22,12 @@ Item {
     property real menuMargin: Theme.spacingS
     property real minMenuWidth: Theme.fieldDefaultWidth
     property real itemHeight: DCommon.Style.menuRowHeight
-    property real menuPadding: DCommon.Style.menuPadding
+    property real menuPadding: Theme.spacingXS
     property real itemIconSize: DCommon.Style.menuItemIconSize
     property real itemFontSize: Theme.fontSizeSmall
+    property real itemPadding: Theme.spacingM
+    property real itemSpacing: Theme.spacingM
+    property real itemRadius: Theme.cornerRadiusM
     property bool keyboardNavigable: false
     property var transientSurfaceTracker: null
     property var targetScreen: null
@@ -38,7 +40,17 @@ Item {
     property bool renderActive: false
     property int selectedMenuIndex: -1
     property bool keyboardNavigation: false
-    readonly property alias contextWindow: menuWindow
+    readonly property var surface: IdleSurfaces.surfaceFor("context-menu", targetScreen?.name ?? "")
+    readonly property bool attached: renderActive && !!surface
+    readonly property var contextWindow: attached ? surface : null
+    readonly property var blurRegion: menuBlur.effectiveRegion
+    readonly property int surfaceKeyboardFocus: {
+        if (!keyboardNavigable || !renderActive)
+            return WlrKeyboardFocus.None;
+        if (PopoutManager.screenshotActive || CompositorService.useHyprlandFocusGrab)
+            return WlrKeyboardFocus.None;
+        return WlrKeyboardFocus.Exclusive;
+    }
     readonly property alias customContentItem: customContentLoader.item
     readonly property bool blurActive: renderActive && openState && BlurService.enabled
 
@@ -54,7 +66,7 @@ Item {
         return longest;
     }
     readonly property bool hasTrailingIcons: menuItems.some(menuItem => !!menuItem.trailingIcon)
-    readonly property real naturalMenuWidth: customContent ? Math.max(minMenuWidth, customContentWidth) : Math.max(minMenuWidth, menuTextMetrics.width + Theme.iconSize + Theme.spacingS * 5 + (hasTrailingIcons ? itemIconSize + Theme.spacingS : 0))
+    readonly property real naturalMenuWidth: customContent ? Math.max(minMenuWidth, customContentWidth) : Math.max(minMenuWidth, menuTextMetrics.width + Theme.iconSize + menuPadding * 2 + itemPadding * 2 + itemSpacing + (hasTrailingIcons ? itemIconSize + itemSpacing : 0))
     readonly property real effectiveMenuWidth: Math.max(0, Math.min(maxMenuWidth, naturalMenuWidth))
     readonly property real naturalMenuHeight: (customContent ? customContentLoader.implicitHeight : menuItemsHeight()) + menuPadding * 2
     readonly property real effectiveMenuHeight: Math.min(maxMenuHeight, naturalMenuHeight)
@@ -62,9 +74,6 @@ Item {
     readonly property int visibleItemCount: menuItems.filter(menuItem => isSelectable(menuItem)).length
 
     signal backdropRightClicked(real x, real y)
-
-    onRenderActiveChanged: transientSurfaceTracker?.setActive(root, renderActive, contextWindow)
-    Component.onDestruction: transientSurfaceTracker?.unregister(root)
 
     Connections {
         target: root.transientSurfaceTracker
@@ -219,34 +228,20 @@ Item {
             activate(menuItems[index]);
     }
 
-    PanelWindow {
+    onRenderActiveChanged: transientSurfaceTracker?.setActive(root, renderActive, contextWindow)
+    Component.onDestruction: transientSurfaceTracker?.unregister(root)
+
+    Item {
         id: menuWindow
 
-        screen: root.targetScreen
-        visible: root.renderActive
-        color: "transparent"
-
-        WlrLayershell.namespace: root.layerNamespace
-        WlrLayershell.layer: WlrLayershell.Overlay
-        WlrLayershell.exclusiveZone: -1
-
-        WlrLayershell.keyboardFocus: {
-            if (!root.keyboardNavigable || !root.renderActive)
-                return WlrKeyboardFocus.None;
-            if (PopoutManager.screenshotActive || CompositorService.useHyprlandFocusGrab)
-                return WlrKeyboardFocus.None;
-            return WlrKeyboardFocus.Exclusive;
-        }
-
-        anchors {
-            top: true
-            left: true
-            right: true
-            bottom: true
-        }
+        readonly property var host: root
+        parent: root.attached ? root.surface.hostItem : root
+        anchors.fill: parent
 
         WindowBlur {
-            targetWindow: menuWindow
+            id: menuBlur
+            targetWindow: root.surface
+            applyToWindow: false
             surfaceColor: menuContainer.color
             blurX: root.blurActive ? menuContainer.x + openScaleTransform.origin.x * (1 - menuContainer.openScale) : 0
             blurY: root.blurActive ? menuContainer.y + openScaleTransform.origin.y * (1 - menuContainer.openScale) : 0
@@ -432,31 +427,33 @@ Item {
                                             return Theme.onSurface_38;
                                         if (destructive)
                                             return Theme.error;
-                                        return selected ? Theme.onSelectedContainer : Theme.onSurface;
+                                        return selected ? Theme.onTertiaryContainer : Theme.onSurface;
                                     }
+                                    readonly property color iconColor: itemEnabled && !destructive && !selected ? Theme.onSurfaceVariant : contentColor
                                     visible: !menuItemDelegate.isSeparator && !menuItemDelegate.isComponent
                                     anchors.fill: parent
-                                    radius: Theme.cornerRadiusS
+                                    anchors.leftMargin: menuItemDelegate.modelData?.indent ?? 0
+                                    radius: root.itemRadius
                                     color: {
                                         if (!itemEnabled)
                                             return "transparent";
                                         if (destructive)
                                             return selected ? Theme.errorSelected : itemMouseArea.containsMouse ? Theme.errorHover : "transparent";
-                                        return selected ? Theme.selectedContainer : itemMouseArea.pressed ? Theme.withAlpha(Theme.onSurface, Theme.stateLayerPressed) : itemMouseArea.containsMouse ? Theme.withAlpha(Theme.onSurface, Theme.stateLayerHover) : "transparent";
+                                        return selected ? Theme.tertiaryContainer : itemMouseArea.pressed ? Theme.withAlpha(Theme.onSurface, Theme.stateLayerPressed) : itemMouseArea.containsMouse ? Theme.withAlpha(Theme.onSurface, Theme.stateLayerHover) : "transparent";
                                     }
 
                                     Row {
                                         anchors.left: parent.left
-                                        anchors.leftMargin: Theme.spacingS
+                                        anchors.leftMargin: root.itemPadding
                                         anchors.right: parent.right
-                                        anchors.rightMargin: Theme.spacingS
+                                        anchors.rightMargin: root.itemPadding
                                         anchors.verticalCenter: parent.verticalCenter
-                                        spacing: Theme.spacingS
+                                        spacing: root.itemSpacing
 
                                         DIcon {
                                             name: menuItemDelegate.modelData?.icon ?? ""
                                             size: root.itemIconSize
-                                            color: menuRow.contentColor
+                                            color: menuRow.iconColor
                                             anchors.verticalCenter: parent.verticalCenter
                                         }
 
@@ -467,7 +464,7 @@ Item {
                                             font.weight: Theme.fontWeight
                                             anchors.verticalCenter: parent.verticalCenter
                                             elide: Text.ElideRight
-                                            width: parent.width - (root.itemIconSize + Theme.spacingS) * (trailingIcon.visible ? 2 : 1)
+                                            width: parent.width - (root.itemIconSize + root.itemSpacing) * (trailingIcon.visible ? 2 : 1)
                                         }
                                     }
 
@@ -476,16 +473,16 @@ Item {
                                         visible: name !== ""
                                         name: menuItemDelegate.modelData?.trailingIcon ?? ""
                                         size: root.itemIconSize
-                                        color: menuRow.contentColor
+                                        color: menuRow.iconColor
                                         anchors.right: parent.right
-                                        anchors.rightMargin: Theme.spacingS
+                                        anchors.rightMargin: root.itemPadding
                                         anchors.verticalCenter: parent.verticalCenter
                                     }
 
                                     DRipple {
                                         id: menuItemRipple
                                         rippleColor: menuRow.contentColor
-                                        cornerRadius: Theme.cornerRadiusS
+                                        cornerRadius: root.itemRadius
                                     }
 
                                     MouseArea {

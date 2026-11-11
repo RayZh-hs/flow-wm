@@ -114,6 +114,7 @@ Item {
     function activityName(activity) {
         const requested = (activity || "home").trim().toLowerCase();
         switch (requested) {
+        case "live":
         case "media":
         case "launcher":
         case "controlcenter":
@@ -140,6 +141,8 @@ Item {
 
     function openActivityOn(host, activityId, section) {
         switch (activityId) {
+        case "live":
+            return host.islandController.requestActivity("live", true, true);
         case "media":
             if (!host.islandController.mediaAvailable)
                 return host.islandController.requestActivity("home", true, true);
@@ -185,6 +188,17 @@ Item {
         let closed = false;
         for (const host of hosts()) {
             if (host?.islandController?.activeActivity !== activityId || !host.islandController.expanded)
+                continue;
+            host.islandController.requestCollapse();
+            closed = true;
+        }
+        return closed;
+    }
+
+    function closeDash(): bool {
+        let closed = false;
+        for (const host of hosts()) {
+            if (!host?.islandController?.dashFaceExpanded)
                 continue;
             host.islandController.requestCollapse();
             closed = true;
@@ -271,6 +285,13 @@ Item {
             "activity": host.islandController.activeActivity,
             "expanded": host.islandController.expanded,
             "mediaAvailable": host.islandController.mediaAvailable,
+            "pointerInside": host.islandController.pointerInside,
+            "hoverEnabled": host.islandController.hoverExpandEnabled,
+            "hoverOpenDelay": host.islandController.hoverOpenDelay,
+            "inputSuspended": host.islandController.inputSuspended,
+            "liveActivity": host.islandController.liveActive ? {source: host.islandController.liveEntry?.source, id: host.islandController.liveEntry?.id} : null,
+            "stableActivities": host.islandController.stableActivities.map(entry => ({source: entry.source, id: entry.id, position: entry.position})),
+            "queuedEvents": host.islandController.presentationSession?.queue.length ?? 0,
             "launcherAvailable": true,
             "controlCenterAvailable": true,
             "wallpaperAvailable": true,

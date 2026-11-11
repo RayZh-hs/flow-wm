@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-PPA_OWNER="avengemedia"
+PPA_OWNER="${PPA_OWNER:-duxlabs}"
 LAUNCHPAD_API="https://api.launchpad.net/1.0"
 SERIES_LIST=(resolute stonking)
 PACKAGE_FILTER="dms-git"
@@ -14,6 +14,8 @@ PACKAGES=(
     "dms:dms:release"
     "dms-git:dms-git:git"
 )
+# The legacy AvengeMedia PPAs are deprecated: stable dms only, dms-git stays frozen there
+[[ "$PPA_OWNER" == "avengemedia" ]] && PACKAGES=("dms:dms:release")
 
 while [[ $# -gt 0 ]]; do
     case "$1" in

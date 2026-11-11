@@ -31,7 +31,7 @@ DListItem {
     readonly property bool showDeleteAction: visibleEntryActions.includes("delete")
     readonly property bool showPreviewAction: ClipboardService.canPreviewEntry(entry)
     readonly property bool showPinnedIndicator: effectivePinned && !showPinAction
-    readonly property bool showAnyAction: entryType === "image" || showCopyAction || showPasteAction || showPinAction || showEditAction || showDeleteAction || showPinnedIndicator || showPreviewAction
+    readonly property bool showAnyAction: showCopyAction || showPasteAction || showPinAction || showEditAction || showDeleteAction || showPinnedIndicator || showPreviewAction
 
     keyForwardTargets: [modal.modalFocusScope]
     firstInGroup: itemIndex === 0
@@ -117,20 +117,6 @@ DListItem {
                 }
                 pinRequested(entry);
             }
-        }
-
-        DActionButton {
-            Keys.forwardTo: [root.modal.modalFocusScope]
-            objectName: "extractText"
-            iconName: ClipboardService.ocrEntryId === root.entry.id ? "hourglass_top" : "text_fields"
-            Accessible.name: I18n.tr("Extract text (OCR)")
-            iconSize: Theme.iconSizeSmall
-            iconColor: ClipboardService.ocrEntryId === root.entry.id ? root.colorForRole(Theme.primary) : root.contentColor
-            visible: root.entryType === "image"
-            enabled: !ClipboardService.ocrBusy
-            opacity: enabled || ClipboardService.ocrEntryId === root.entry.id ? 1 : 0.5
-            tooltipText: ClipboardService.ocrEntryId === root.entry.id ? I18n.tr("Extracting text…") : I18n.tr("Extract text (OCR) • Ctrl+O")
-            onClicked: ClipboardService.extractText(root.entry)
         }
 
         DActionButton {

@@ -440,10 +440,6 @@ printf 'uwsm=%s\nelogind=%s\nloginctl=%s\nsystemctl=%s\nusermgr=%s\nhibernate=%s
 
     function _logout() {
         if (SettingsData.customPowerActionLogout.length === 0) {
-            if (CompositorService.isAqueous) {
-                AqueousService.quit();
-                return;
-            }
             if (CompositorService.isNiri) {
                 NiriService.quit();
                 return;
@@ -460,7 +456,7 @@ printf 'uwsm=%s\nelogind=%s\nloginctl=%s\nsystemctl=%s\nusermgr=%s\nhibernate=%s
             }
 
             if (CompositorService.isUmbriel) {
-                UmbrielService.action("session-quit:skip-confirmation");
+                UmbrielService.action("session-quit", "skip-confirmation");
                 return;
             }
 
@@ -813,6 +809,7 @@ printf 'uwsm=%s\nelogind=%s\nloginctl=%s\nsystemctl=%s\nusermgr=%s\nhibernate=%s
             return;
         idleInhibited = enabled;
         inhibitorChanged();
+        syncKeepAwake();
     }
 
     // Both entry points are deliberate: the singletons are created lazily in no fixed order, so
@@ -871,6 +868,7 @@ printf 'uwsm=%s\nelogind=%s\nloginctl=%s\nsystemctl=%s\nusermgr=%s\nhibernate=%s
 
         function onCapabilitiesReceived() {
             syncSleepInhibitor();
+            syncKeepAwake();
         }
     }
 
@@ -914,6 +912,10 @@ printf 'uwsm=%s\nelogind=%s\nloginctl=%s\nsystemctl=%s\nusermgr=%s\nhibernate=%s
                 syncLockBeforeSuspend();
             }
             syncSleepInhibitor();
+        }
+
+        function onKeepAwakeBlocksSleepChanged() {
+            syncKeepAwake();
         }
     }
 
@@ -982,8 +984,20 @@ printf 'uwsm=%s\nelogind=%s\nloginctl=%s\nsystemctl=%s\nusermgr=%s\nhibernate=%s
     function handleLidPropertiesChanged(data) {
         if (data?.path !== "/org/freedesktop/UPower" || data.body?.[0] !== "org.freedesktop.UPower")
             return;
-        if (data.body?.[1]?.LidIsClosed === false)
+        const lidClosed = data.body?.[1]?.LidIsClosed;
+        if (lidClosed === false)
             lidOpened();
+        else if (lidClosed === true)
+            lockOnLidCloseWhileKeepingAwake();
+    }
+
+    // Keep Awake blocks the suspend that would have locked the session.
+    function lockOnLidCloseWhileKeepingAwake() {
+        if (!idleInhibited || !SettingsData.keepAwakeBlocksSleep || !SettingsData.lockBeforeSuspend || locked)
+            return;
+        if (Quickshell.screens.some(screen => !/^(eDP|LVDS|DSI)/.test(screen.name)))
+            return;
+        IdleService.lockRequested();
     }
 
     function ensurePrepareForSleepSubscription() {
@@ -1067,6 +1081,17 @@ printf 'uwsm=%s\nelogind=%s\nloginctl=%s\nsystemctl=%s\nusermgr=%s\nhibernate=%s
             } else {
                 log.debug("Synced sleep inhibitor:", SettingsData.loginctlLockIntegration);
             }
+        });
+    }
+
+    function syncKeepAwake() {
+        if (!loginctlAvailable)
+            return;
+        DMSService.sendRequest("loginctl.setKeepAwake", {
+            enabled: idleInhibited && SettingsData.keepAwakeBlocksSleep
+        }, response => {
+            if (response.error)
+                log.warn("Failed to sync keep awake:", response.error);
         });
     }
 

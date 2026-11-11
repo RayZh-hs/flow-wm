@@ -8,6 +8,7 @@ import qs.Widgets
 import qs.Services
 import qs.Modules.Lock
 import "../Common/WorkspaceModel.js" as WorkspaceModel
+import "../Common/WallpaperFormats.js" as WallpaperFormats
 
 Variants {
     id: variants
@@ -39,8 +40,6 @@ Variants {
 
         visible: root.contentReady && !root.surfaceBounce
 
-        updatesEnabled: root.renderActive || root._settleFrames > 0
-
         Region {
             id: emptyRegion
         }
@@ -71,6 +70,12 @@ Variants {
                 anchors.left: true
                 anchors.right: true
 
+                // Assigned, not bound: upstream quickshell has no inputOnly and a binding would fail the whole window.
+                Component.onCompleted: {
+                    if ("inputOnly" in this)
+                        inputOnly = true;
+                }
+
                 MouseArea {
                     anchors.fill: parent
                     acceptedButtons: Qt.RightButton
@@ -94,7 +99,13 @@ Variants {
                 return "file://" + path.split('/').map(s => encodeURIComponent(s)).join('/');
             }
 
-            property string source: SessionData.getMonitorWallpaper(modelData.name) || ""
+            property string wallpaperSource: SessionData.getMonitorWallpaper(modelData.name) || ""
+            readonly property bool isVideoSource: WallpaperFormats.isVideo(wallpaperSource)
+            // A video drives the image pipeline below with its still frame.
+            readonly property string resolvedSource: VideoWallpaperService.imageFor(wallpaperSource)
+            readonly property bool framePending: VideoWallpaperService.framePending(wallpaperSource)
+            // Holds the previous wallpaper while a new video's frame is still being extracted.
+            property string source: ""
             property bool isColorSource: source.startsWith("#")
             property string transitionType: SessionData.wallpaperTransition
             property string actualTransitionType: transitionType
@@ -117,8 +128,8 @@ Variants {
 
                 function onIsLightModeChanged() {
                     const newSource = SessionData.getMonitorWallpaper(modelData.name) || "";
-                    if (newSource !== root.source)
-                        root.source = newSource;
+                    if (newSource !== root.wallpaperSource)
+                        root.wallpaperSource = newSource;
                 }
             }
 
@@ -166,9 +177,6 @@ Variants {
             property bool useNextForEffect: false
             property string pendingWallpaper: ""
             property string _deferredSource: ""
-            // Held true from the moment a wallpaper change is initiated until it
-            // settles, so the paused render loop wakes and drives the async load
-            // and transition even when nothing else marks the window dirty.
             property bool changePending: false
             // Image is released after srcCurrent grabs it, only the texture stays resident
             property string currentSource: ""
@@ -177,18 +185,16 @@ Variants {
             readonly property bool overviewBlurActive: CompositorService.isNiri && SettingsData.blurWallpaperOnOverview && NiriService.inOverview && (currentSource !== "" || showsBackdrop)
             readonly property var backingWindow: Window.window
             readonly property bool showsBackdrop: !source || isColorSource || currentWallpaper.status === Image.Error
-            readonly property bool backdropBusy: showsBackdrop && !(backdropLoader.item?.ready ?? false)
-            readonly property bool renderActive: backdropBusy || effectActive || overviewBlurActive || pendingWallpaper !== "" || _deferredSource !== "" || changePending || _freezeWaitFrames > 0 || frameAnim.running || currentWallpaper.status === Image.Loading || nextWallpaper.status === Image.Loading || parallaxImage.status === Image.Loading || lockScrollSampler.busy
-            property int _settleFrames: 3
+
+            readonly property bool fullscreenOnScreen: isVideoSource && CompositorService.fullscreenToplevelOnScreen(modelData)
+            // Nothing decodes while the video cannot be seen.
+            readonly property bool videoShouldPlay: isVideoSource && wallpaperWindow.visible && !IdleService.isShellLocked && !IdleService.monitorsOff && !overviewBlurActive && !fullscreenOnScreen
+            readonly property bool videoRendering: videoLoader.item?.rendering ?? false
 
             function invalidate() {
-                _settleFrames = 3;
                 backingWindow?.update();
-                if (!_wedgeBounced)
-                    wedgeWatchdog.restart();
             }
 
-            onRenderActiveChanged: invalidate()
             onBackingWindowChanged: regenerate()
             onTextureWidthChanged: regenerate()
             onTextureHeightChanged: regenerate()
@@ -234,30 +240,9 @@ Variants {
                 Qt.callLater(() => root.changeWallpaper(pending));
             }
 
-            // No swap after a requested frame: dropped frame callback left the window
-            // unexposed (qtwayland mFrameCallbackTimedOut); only surface re-attach recovers.
-            property bool _wedgeBounced: false
-
-            Timer {
-                id: wedgeWatchdog
-                interval: 3000
-                repeat: false
-                onTriggered: {
-                    if (!root.backingWindow || !wallpaperWindow.visible || IdleService.isShellLocked)
-                        return;
-                    log.warn("no frame swapped on", modelData.name, "since last invalidate, re-attaching surface");
-                    root._wedgeBounced = true;
-                    surfaceReattach.restart();
-                }
-            }
-
             Connections {
                 target: root.backingWindow
                 function onFrameSwapped() {
-                    if (root._settleFrames > 0)
-                        root._settleFrames--;
-                    root._wedgeBounced = false;
-                    wedgeWatchdog.stop();
                     if (root._freezeWaitFrames === 0)
                         return;
                     if (--root._freezeWaitFrames === 0) {
@@ -549,9 +534,7 @@ Variants {
                     if (running) {
                         currentTime = Date.now() / 1000.0;
                     } else {
-                        root.publishScrollPosition();  // Animation settled
-                        // Hold the render loop open so the final settled frame
-                        // commits before updatesEnabled drops out from under us.
+                        root.publishScrollPosition();
                         root.invalidate();
                     }
                 }
@@ -575,7 +558,17 @@ Variants {
                 }
             }
 
+            // Switches once the frame exists, or once it never will (extraction failed, no ffmpeg).
+            function syncSource() {
+                if (resolvedSource || !framePending)
+                    source = resolvedSource;
+            }
+
+            onResolvedSourceChanged: syncSource()
+            onFramePendingChanged: syncSource()
+
             Component.onCompleted: {
+                source = resolvedSource;
                 isInitialized = true;
                 if (!source || isColorSource) {
                     contentReady = true;
@@ -1210,6 +1203,54 @@ Variants {
                     currentWallpaper.source = nextWallpaper.source;
                     if (root._freezeWaitFrames === 0 && currentWallpaper.status !== Image.Loading)
                         root.finishTransition();
+                }
+            }
+
+            Loader {
+                id: videoLoader
+                anchors.fill: parent
+                // Stays loaded until the outgoing video has faded off the still frame below.
+                active: root.isVideoSource || (item?.opacity ?? 0) > 0
+                // By url, so without QtMultimedia only this layer fails and the still frame stays.
+                source: "VideoWallpaperLayer.qml"
+                onStatusChanged: {
+                    if (status === Loader.Error)
+                        log.warn("QtMultimedia not available, video wallpapers show their still frame");
+                }
+
+                Binding {
+                    target: videoLoader.item
+                    property: "screenName"
+                    value: modelData.name
+                    when: videoLoader.item !== null
+                }
+
+                Binding {
+                    target: videoLoader.item
+                    property: "wantedSource"
+                    value: root.wallpaperSource
+                    when: videoLoader.item !== null
+                }
+
+                Binding {
+                    target: videoLoader.item
+                    property: "fillMode"
+                    value: SessionData.getMonitorWallpaperFillMode(modelData.name)
+                    when: videoLoader.item !== null
+                }
+
+                Binding {
+                    target: videoLoader.item
+                    property: "settled"
+                    value: !root.transitioning && !root.effectActive && !root.changePending
+                    when: videoLoader.item !== null
+                }
+
+                Binding {
+                    target: videoLoader.item
+                    property: "shouldPlay"
+                    value: root.videoShouldPlay
+                    when: videoLoader.item !== null
                 }
             }
 

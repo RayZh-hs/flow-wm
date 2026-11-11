@@ -28,7 +28,8 @@ test("island metrics clamp each setting and a default reservation follows the pi
     assert.deepEqual(plain(resolver.islandMetrics({ islandCompactThickness: 60 }, islandDefaults)), { reserve: 64, compact: 60, gap: 4, thickness: 64 });
     assert.deepEqual(plain(resolver.islandMetrics({ islandReserveThickness: 500, islandCompactThickness: 1, islandOuterGap: -3 }, islandDefaults)), { reserve: 128, compact: 24, gap: 0, thickness: 128 });
     assert.equal(resolver.islandThickness({ islandReserveThickness: 30, islandCompactThickness: 60, islandOuterGap: 10 }, islandDefaults), 70);
-    assert.deepEqual(plain(resolver.islandMetrics({ islandOuterGap: 10, islandNotch: true }, islandDefaults)), { reserve: 40, compact: 38, gap: 0, thickness: 40 });
+    assert.deepEqual(plain(resolver.islandMetrics({ islandOuterGap: 10, islandNotch: true }, islandDefaults)), { reserve: 38, compact: 38, gap: 0, thickness: 40 });
+    assert.deepEqual(plain(resolver.islandMetrics({ islandCompactThickness: 32, islandNotch: true }, islandDefaults)), { reserve: 32, compact: 32, gap: 0, thickness: 40 });
 });
 
 test("an island set to reserve less than its pill paints the full pill but reserves only what was set", () => {
@@ -253,4 +254,18 @@ test("a bar hosting the island widget keeps its band and joins the islands witho
     const overlay = resolve([hosted("overlay", 0, { useOverlayLayer: true })], { effectiveFrameEnabled: true, effectiveConnected: true });
     assert.equal(overlay.instances[0].kind, "bar");
     assert.equal(overlay.instances[0].hostsIsland, true);
+});
+
+const descriptor = vm.createContext({});
+vm.runInContext(readFileSync(new URL("../Common/ConnectedSurfaceDescriptor.js", import.meta.url), "utf8").replace(/^\.pragma.*$/m, ""), descriptor);
+
+test("each bar reports the spacing it floats off its edge by", () => {
+    const configs = [bar("float", 0, { spacing: 6 }), bar("flush", 2, { spacing: 6, attachToScreenEdge: true })];
+    assert.deepEqual(plain(resolve(configs).instances.map(instance => instance.spacing)), [6, 0]);
+    assert.deepEqual(plain(resolve(configs, { effectiveFrameEnabled: true }).instances.map(instance => instance.spacing)), [0, 0]);
+});
+
+test("a popout on another bar is a different descriptor", () => {
+    const body = { kind: "popout", screenName: "DP-1", visible: true, bodyRect: { x: 10, y: 40, width: 300, height: 200 } };
+    assert.equal(descriptor.same(descriptor.normalize({ ...body, barId: "a" }), descriptor.normalize({ ...body, barId: "b" })), false);
 });

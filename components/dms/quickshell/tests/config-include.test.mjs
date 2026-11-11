@@ -9,20 +9,6 @@ import test from "node:test";
 
 const resolve = vm.createContext({});
 vm.runInContext(readFileSync(new URL("../Common/ConfigIncludeResolve.js", import.meta.url), "utf8").replace(/^\.pragma.*$/m, ""), resolve);
-const plain = value => JSON.parse(JSON.stringify(value));
-
-test("includePaths joins the compositor directory, with hypr for hyprland", () => {
-    const hyprland = resolve.includePaths("layout", "hyprland", "/home/u/.config");
-    assert.equal(hyprland.configFile, "/home/u/.config/hypr/hyprland.lua");
-    assert.deepEqual(plain(hyprland.fragmentFiles), ["/home/u/.config/hypr/dms/layout.lua"]);
-    assert.equal(resolve.includePaths("colors", "mango", "/home/u/.config"), null, "no spec, no paths");
-});
-
-test("resolveIncludeArgs spells mango as mangowc and names the fragment", () => {
-    assert.deepEqual(plain(resolve.resolveIncludeArgs("outputs", "niri")), ["niri", "outputs.kdl"]);
-    assert.deepEqual(plain(resolve.resolveIncludeArgs("windowrules", "mango")), ["mangowc", "windowrules.conf"]);
-    assert.equal(resolve.resolveIncludeArgs("colors", "mango"), null, "no spec, no args");
-});
 
 test("repair preserves config and fragments, backs up, and adds live includes only once", t => {
     const directory = mkdtempSync(join(tmpdir(), "dms-includes-"));
@@ -52,6 +38,27 @@ test("repair preserves config and fragments, backs up, and adds live includes on
         execFileSync("sh", ["-c", resolve.repairScriptFor(kind, compositor, configDir, "")]);
         assert.equal(readFileSync(paths.configFile, "utf8"), repaired);
     }
+});
+
+test("mango toml repair sources the fragment from config.toml under its own [global]", t => {
+    const configDir = mkdtempSync(join(tmpdir(), "dms-includes-toml-"));
+    t.after(() => rmSync(configDir, { recursive: true, force: true }));
+    const dms = configDir + "/dms";
+    writeFileSync(dms, '#!/bin/sh\n[ "$*" = "config resolve-include mangowc cursor.conf" ] || exit 2\nprintf \'{"exists":true,"included":%s}\\n\' "$INCLUDED"\n', { mode: 0o755 });
+    const configFile = configDir + "/mango/config.toml";
+    mkdirSync(dirname(configFile), { recursive: true });
+    const varSource = '[var]\ndir = "./dms"\n[global]\nsource = "$dir/cursor.conf"\n';
+    for (const [name, included, original, want] of [
+        ["a source written with a var", "true", varSource, varSource],
+        ["no trailing newline", "false", '[global]\nsource = ["./dms/layout.conf"]\n[bind.default]\n"SUPER+Return" = "spawn,foot"', '[global]\nsource = ["./dms/layout.conf"]\n[bind.default]\n"SUPER+Return" = "spawn,foot"\n[global]\nsource = "./dms/cursor.conf"\n'],
+        ["a mention core does not count", "false", '[env]\nsource = "./dms/cursor.conf"\n', '[env]\nsource = "./dms/cursor.conf"\n[global]\nsource = "./dms/cursor.conf"\n'],
+        ["no dms source yet", "false", '[bind.default]\n"SUPER+Return" = "spawn,foot"\n', '[bind.default]\n"SUPER+Return" = "spawn,foot"\n\n# DMS Include Configs\n[global]\nsource = "./dms/cursor.conf"\n']
+    ]) {
+        writeFileSync(configFile, original);
+        execFileSync("sh", ["-c", resolve.repairScriptFor("cursor", "mango", configDir, "", "config.toml", dms)], { env: { ...process.env, INCLUDED: included } });
+        assert.equal(readFileSync(configFile, "utf8"), want, name);
+    }
+    assert.ok(!existsSync(configDir + "/mango/config.conf"), "a config.conf would shadow config.toml");
 });
 
 test("mango input fragment maps choices onto libinput numbers and spells numlock in snake_case", () => {

@@ -381,8 +381,6 @@ Item {
             if (position && bar.positionDash)
                 bar.positionDash(dash, position);
             dash.requestTab(tabId);
-            if (dash.updateSurfacePosition)
-                dash.updateSurfacePosition();
             return true;
         }
 
@@ -663,27 +661,14 @@ Item {
 
     IpcHandler {
         function toggle(provider: string): string {
-            if (!provider)
-                return "ERROR: No provider specified";
-
-            KeybindsService.loadCheatsheet(provider);
-            root.hyprKeybindsModalLoaderRef.active = true;
-
-            if (!root.hyprKeybindsModalLoaderRef.item)
-                return `KEYBINDS_TOGGLE_FAILED: ${provider}`;
-
-            if (root.hyprKeybindsModalLoaderRef.item.shouldBeVisible)
-                root.hyprKeybindsModalLoaderRef.item.close();
-            else
-                root.hyprKeybindsModalLoaderRef.item.open();
-            return `KEYBINDS_TOGGLE_SUCCESS: ${provider}`;
+            return toggleWithPath(provider, "");
         }
 
         function toggleWithPath(provider: string, path: string): string {
             if (!provider)
                 return "ERROR: No provider specified";
 
-            KeybindsService.loadCheatsheet(provider);
+            KeybindsService.loadCheatsheet(provider, path);
             root.hyprKeybindsModalLoaderRef.active = true;
 
             if (!root.hyprKeybindsModalLoaderRef.item)
@@ -693,35 +678,25 @@ Item {
                 root.hyprKeybindsModalLoaderRef.item.close();
             else
                 root.hyprKeybindsModalLoaderRef.item.open();
-            return `KEYBINDS_TOGGLE_SUCCESS: ${provider} (${path})`;
+            return path ? `KEYBINDS_TOGGLE_SUCCESS: ${provider} (${path})` : `KEYBINDS_TOGGLE_SUCCESS: ${provider}`;
         }
 
         function open(provider: string): string {
-            if (!provider)
-                return "ERROR: No provider specified";
-
-            KeybindsService.loadCheatsheet(provider);
-            root.hyprKeybindsModalLoaderRef.active = true;
-
-            if (!root.hyprKeybindsModalLoaderRef.item)
-                return `KEYBINDS_OPEN_FAILED: ${provider}`;
-
-            root.hyprKeybindsModalLoaderRef.item.open();
-            return `KEYBINDS_OPEN_SUCCESS: ${provider}`;
+            return openWithPath(provider, "");
         }
 
         function openWithPath(provider: string, path: string): string {
             if (!provider)
                 return "ERROR: No provider specified";
 
-            KeybindsService.loadCheatsheet(provider);
+            KeybindsService.loadCheatsheet(provider, path);
             root.hyprKeybindsModalLoaderRef.active = true;
 
             if (!root.hyprKeybindsModalLoaderRef.item)
                 return `KEYBINDS_OPEN_FAILED: ${provider}`;
 
             root.hyprKeybindsModalLoaderRef.item.open();
-            return `KEYBINDS_OPEN_SUCCESS: ${provider} (${path})`;
+            return path ? `KEYBINDS_OPEN_SUCCESS: ${provider} (${path})` : `KEYBINDS_OPEN_SUCCESS: ${provider}`;
         }
 
         function close(): string {
@@ -1490,19 +1465,6 @@ Item {
             return "CLIPBOARD_TOGGLE_SUCCESS";
         }
 
-        function extractText(entryId: int): string {
-            if (ClipboardService.ocrBusy)
-                return "OCR_BUSY";
-            if (entryId <= 0)
-                return "INVALID_ENTRY_ID";
-            ClipboardService.extractText({ id: entryId, isImage: true });
-            return "OCR_STARTED";
-        }
-
-        function ocrStatus(): string {
-            return JSON.stringify({busy: ClipboardService.ocrBusy, entryId: ClipboardService.ocrEntryId});
-        }
-
         target: "clipboard"
     }
 
@@ -1899,8 +1861,6 @@ Item {
         function open(): string {
             root.workspaceRenameModalLoaderRef.active = true;
             if (root.workspaceRenameModalLoaderRef.item) {
-                if (CompositorService.isAqueous)
-                    return root.workspaceRenameModalLoaderRef.item.show("") ? "WORKSPACE_RENAME_MODAL_OPENED" : "WORKSPACE_RENAME_UNAVAILABLE";
                 root.workspaceRenameModalLoaderRef.item.show(root.workspaceRenameModalLoaderRef.item.focusedWorkspaceName());
                 return "WORKSPACE_RENAME_MODAL_OPENED";
             }
@@ -1922,8 +1882,6 @@ Item {
                     root.workspaceRenameModalLoaderRef.item.hide();
                     return "WORKSPACE_RENAME_MODAL_CLOSED";
                 }
-                if (CompositorService.isAqueous)
-                    return root.workspaceRenameModalLoaderRef.item.show("") ? "WORKSPACE_RENAME_MODAL_OPENED" : "WORKSPACE_RENAME_UNAVAILABLE";
                 root.workspaceRenameModalLoaderRef.item.show(root.workspaceRenameModalLoaderRef.item.focusedWorkspaceName());
                 return "WORKSPACE_RENAME_MODAL_OPENED";
             }

@@ -46,10 +46,6 @@ Rectangle {
                     label: I18n.tr("Preview", "verb, clipboard entry action button tooltip", true)
                 },
                 {
-                    keys: ["Ctrl+O"],
-                    label: I18n.tr("Extract text (OCR)")
-                },
-                {
                     keys: ["Ctrl+E"],
                     label: I18n.tr("Edit")
                 },

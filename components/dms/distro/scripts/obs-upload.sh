@@ -9,6 +9,7 @@
 #   ./distro/scripts/obs-upload.sh opensuse dms-git
 #   ./distro/scripts/obs-upload.sh debian dms-git 2    # Rebuild with db2 suffix
 #   ./distro/scripts/obs-upload.sh dms-git --rebuild=2 # Rebuild with db2 suffix (flag syntax)
+#   OBS_BASE_PROJECT=home:duxlabs-dev ./distro/scripts/obs-upload.sh dms   # Dux Labs projects (legacy is the default)
 
 set -e
 
@@ -66,9 +67,11 @@ if [[ ${#POSITIONAL_ARGS[@]} -gt 0 ]]; then
     fi
 fi
 
-OBS_BASE_PROJECT="home:AvengeMedia"
+OBS_BASE_PROJECT="${OBS_BASE_PROJECT:-home:AvengeMedia}"
 OBS_BASE="$HOME/.cache/osc-checkouts"
 AVAILABLE_PACKAGES=(dms dms-git)
+# The legacy AvengeMedia projects are deprecated: stable dms only, dms-git stays frozen there
+[[ "$OBS_BASE_PROJECT" == "home:AvengeMedia" ]] && AVAILABLE_PACKAGES=(dms)
 
 if [[ -z "$PACKAGE" ]]; then
     echo "Available packages:"
@@ -313,6 +316,11 @@ dms-git)
 esac
 
 OBS_PROJECT="${OBS_BASE_PROJECT}:${PROJECT}"
+
+if [[ "$OBS_BASE_PROJECT" == "home:AvengeMedia" && "$PACKAGE" == "dms-git" ]]; then
+    echo "Error: dms-git is not published to $OBS_BASE_PROJECT"
+    exit 1
+fi
 
 echo "==> Target: $OBS_PROJECT / $PACKAGE"
 

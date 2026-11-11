@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -19,12 +20,12 @@ func TestQuickshellVersionFailureDetails(t *testing.T) {
 		{
 			name:   "Qt private API symbol mismatch",
 			stderr: "qs: symbol lookup error: qs: undefined symbol: _ZN23QUntypedPropertyBindingC1EP23QPropertyBindingPrivate, version Qt_6_PRIVATE_API",
-			want:   "Quickshell is incompatible with the installed Qt libraries. Rebuild or reinstall Quickshell against the current Qt version.",
+			want:   "dux-qt-base is incompatible with the installed Qt libraries. Update or rebuild dux-qt-base against the current Qt version.",
 		},
 		{
 			name:   "other failure",
 			stderr: "qs: unsupported option --version",
-			want:   "Run 'qs --version' to inspect the failure.",
+			want:   "Run 'dms qs --version' to inspect the failure.",
 		},
 	}
 
@@ -383,6 +384,50 @@ func TestCheckXDGMenuFile(t *testing.T) {
 	}
 }
 
+func TestXDGMenuPrefixUnderSystemd(t *testing.T) {
+	configHome, binDir := t.TempDir(), t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_CONFIG_DIRS", t.TempDir())
+	t.Setenv("PATH", binDir)
+	if err := os.MkdirAll(filepath.Join(configHome, "menus"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configHome, "menus", "plasma-applications.menu"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "keditfiletype"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sessionHas := func(string) string { return "plasma-" }
+	sessionLacks := func(string) string { return "" }
+
+	cases := []struct {
+		name       string
+		prefix     string
+		systemd    bool
+		sessionEnv func(string) string
+		want       status
+		wantHint   string
+	}{
+		{"compositor block only, shell under systemd", "plasma-", true, sessionLacks, statusWarn, "environment.d"},
+		{"session env has it", "plasma-", true, sessionHas, statusInfo, ""},
+		{"compositor block only, shell spawned by compositor", "plasma-", false, sessionLacks, statusInfo, ""},
+		{"unset under systemd", "", true, sessionLacks, statusWarn, "environment.d"},
+		{"unset without systemd", "", false, sessionLacks, statusWarn, "environment block"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := xdgMenuPrefixResult(c.prefix, c.systemd, c.sessionEnv)
+			if len(got) != 1 || got[0].status != c.want {
+				t.Fatalf("got %+v, want status %v", got, c.want)
+			}
+			if !strings.Contains(got[0].details, c.wantHint) {
+				t.Fatalf("details %q should mention %q", got[0].details, c.wantHint)
+			}
+		})
+	}
+}
+
 func TestCheckMangoConfigReportsUnknownKeysAndOverviewBinds(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "dms"), 0o755); err != nil {
@@ -408,50 +453,132 @@ func TestCheckMangoConfigReportsUnknownKeysAndOverviewBinds(t *testing.T) {
 	}
 }
 
-func TestMangoLacksSnakeCase(t *testing.T) {
-	for ver, want := range map[string]bool{
-		"0.17.5": true,
-		"0.18.0": false,
-		"0.18.2": false,
-		"":       false,
-	} {
-		if got := mangoLacksSnakeCase(ver); got != want {
-			t.Errorf("mangoLacksSnakeCase(%q) = %v, want %v", ver, got, want)
-		}
+func TestCheckMangoConfigReadsOverviewBindsFromToml(t *testing.T) {
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "config.toml"), []byte("[mousebind.default]\n\"NONE+btn_left\" = \"toggleoverview,1\"\n"), 0o644)
+	prev := mangoParseConfig
+	mangoParseConfig = func(string) (string, error) { return "", os.ErrNotExist }
+	t.Cleanup(func() { mangoParseConfig = prev })
+
+	if got := checkMangoConfig(dir); len(got) != 1 || got[0].message != "Obsolete overview binds in config.toml" {
+		t.Fatalf("got %+v", got)
 	}
 }
 
-func TestHyprlandLacksLua(t *testing.T) {
-	for ver, want := range map[string]bool{
-		"0.54.9": true,
-		"0.55.0": false,
-		"":       false,
-	} {
-		if got := hyprlandLacksLua(ver); got != want {
-			t.Errorf("hyprlandLacksLua(%q) = %v, want %v", ver, got, want)
+func TestCheckNiriConfig(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "dms"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
 		}
+	}
+	write("config.kdl", `debug {
+    keep-max-bpc-unchanged
+}
+/-debug {
+    keep-max-bpc-unchanged
+}
+// keep-max-bpc-unchanged
+/* debug {
+    keep-max-bpc-unchanged
+} */
+debug { /-keep-max-bpc-unchanged; render-drm-device r#"/dev/dri/renderD128"# }
+include optional=true "dms/binds.kdl"
+`)
+	write("dms/binds.kdl", "binds {\n    Mod+O { toggle-overview; }\n}\n")
+
+	var got []string
+	for _, r := range checkNiriConfig(dir) {
+		got = append(got, r.message)
+	}
+	want := []string{"config.kdl:2 sets keep-max-bpc-unchanged"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %q", got)
 	}
 }
 
-func TestCheckHyprlandConfigFormat(t *testing.T) {
-	for name, tc := range map[string]struct {
-		files []string
-		warn  bool
+func TestCheckHyprlandQuickshellFloor(t *testing.T) {
+	for _, tc := range []struct {
+		hypr, qs string
+		warn     bool
 	}{
-		"lua only":  {[]string{"hyprland.lua"}, false},
-		"lua wins":  {[]string{"hyprland.lua", "hyprland.conf"}, false},
-		"conf only": {[]string{"hyprland.conf"}, true},
-		"neither":   {nil, false},
+		{"0.57.0", "0.3.1", true},
+		{"0.57.0", "0.3.2", false},
+		{"0.56.1", "0.2.1", false},
+		{"0.57.0", "", false},
 	} {
-		dir := t.TempDir()
-		for _, f := range tc.files {
-			if err := os.WriteFile(filepath.Join(dir, f), nil, 0o644); err != nil {
-				t.Fatal(err)
-			}
+		if got := checkHyprlandQuickshellFloor(tc.hypr, tc.qs); (len(got) == 1 && got[0].status == statusWarn) != tc.warn || (!tc.warn && len(got) != 0) {
+			t.Errorf("hyprland %q quickshell %q: got %+v, want warn=%v", tc.hypr, tc.qs, got, tc.warn)
 		}
-		got := checkHyprlandConfigFormat(dir)
-		if warned := len(got) == 1 && got[0].status == statusWarn; warned != tc.warn || (!tc.warn && len(got) != 0) {
+	}
+}
+
+func TestHyprlandDeprecatedConfigResults(t *testing.T) {
+	got := hyprlandDeprecatedConfigResults([]byte(`["general:no_border_on_floating", "decoration:shadow:range"]`))
+	if len(got) != 1 || got[0].status != statusWarn || !strings.Contains(got[0].details, "decoration:shadow:range") {
+		t.Fatalf("got %+v, want one warning listing both keys", got)
+	}
+	for _, out := range []string{"[]", "unknown request"} {
+		if got := hyprlandDeprecatedConfigResults([]byte(out)); len(got) != 0 {
+			t.Errorf("%q: got %+v, want nothing", out, got)
+		}
+	}
+}
+
+func TestCheckGreetdSession(t *testing.T) {
+	dir := t.TempDir()
+	wrapper := filepath.Join(dir, "dms-greeter")
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hyprlang := filepath.Join(dir, "dms-hypr.conf")
+	if err := os.WriteFile(hyprlang, []byte("# see hl.dsp docs\nexec-once = waybar\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	luaConf := filepath.Join(dir, "lua-hypr.conf")
+	if err := os.WriteFile(luaConf, []byte("hl.config({ misc = { disable_hyprland_logo = true } })\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		command string
+		warn    bool
+	}{
+		"pre-1.6 wrapper":           {wrapper + " --command niri", true},
+		"hyprlang greeter config":   {"dux-greeter --command hyprland -C " + hyprlang, true},
+		"hyprlang via --config=":    {"dux-greeter --command hyprland --config='" + hyprlang + "'", true},
+		"lua content in a .conf":    {"dux-greeter --command hyprland -C " + luaConf, false},
+		"lua greeter config":        {"dux-greeter --command hyprland -C /etc/greetd/dms-hypr.lua", false},
+		"unreadable greeter config": {"dux-greeter --command hyprland -C " + filepath.Join(dir, "missing.conf"), false},
+		"niri greeter":              {"dux-greeter --command niri -C /etc/greetd/niri.kdl", false},
+	} {
+		config := filepath.Join(t.TempDir(), "config.toml")
+		toml := "[terminal]\nvt = 1\n\n[default_session]\ncommand = \"" + tc.command + "\"\nuser = \"greeter\"\n"
+		if err := os.WriteFile(config, []byte(toml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := checkGreetdSession(config); (len(got) == 1 && got[0].status == statusWarn) != tc.warn || (!tc.warn && len(got) != 0) {
 			t.Errorf("%s: got %+v, want warn=%v", name, got, tc.warn)
 		}
+	}
+}
+
+func TestRetiredGreeterPackagesInstalled(t *testing.T) {
+	tests := map[string]struct {
+		query string
+		want  []string
+	}{
+		"dux successor satisfying the retired names": {"dux-greeter-git 2.0.0.r165.g7cf13f1-1\ndux-greeter-git 2.0.0.r165.g7cf13f1-1\ndux-greeter-git 2.0.0.r165.g7cf13f1-1\n", nil},
+		"retired package still installed":            {"greetd-dms-greeter-git 1:1.6.2.r0.g0175be5-1\ngreetd-dms-greeter-git 1:1.6.2.r0.g0175be5-1\n", []string{"greetd-dms-greeter-git"}},
+		"nothing installed":                          {"", nil},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := retiredGreeterPackagesInstalled(tc.query); !slices.Equal(got, tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

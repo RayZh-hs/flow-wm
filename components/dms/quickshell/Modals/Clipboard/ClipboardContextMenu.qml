@@ -39,13 +39,6 @@ DContextMenu {
             text: pinned ? I18n.tr("Unpin", "verb, unpin a clipboard entry or wifi network") : I18n.tr("Pin", "verb, keep an item pinned in place"),
             action: togglePin
         });
-        if (entry?.isImage)
-            items.push({
-                type: "item",
-                icon: "text_fields",
-                text: ClipboardService.ocrBusy ? I18n.tr("Extracting text…") : I18n.tr("Extract text (OCR)"),
-                action: extractText
-            });
         if (canEditEntry)
             items.push({
                 type: "item",
@@ -128,11 +121,6 @@ DContextMenu {
             else
                 modal?.pinEntry(entry);
         }
-        hide();
-    }
-
-    function extractText() {
-        ClipboardService.extractText(entry);
         hide();
     }
 
