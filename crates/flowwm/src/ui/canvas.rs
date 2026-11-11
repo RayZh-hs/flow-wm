@@ -160,6 +160,7 @@ enum Drag {
 pub struct View {
     pub gpu: bool,
     pub native_nodes: bool,
+    pub local_windows: Option<HashSet<u64>>,
     pub theme: Theme,
     pub selected: Option<String>,
     pub selection: HashSet<String>,
@@ -207,6 +208,7 @@ impl Default for View {
         Self {
             gpu: false,
             native_nodes: false,
+            local_windows: None,
             theme: Theme::load(),
             selected: None,
             selection: HashSet::new(),
@@ -675,30 +677,54 @@ fn canvas_node(node: &Node) -> Node {
 pub(super) fn row_state(state: &State, workspace: &str) -> State {
     State {
         orchestration: state.orchestration.as_ref().map(|runtime| {
-            let mut compact = runtime.clone();
-            compact.executions.clear();
-            compact.deliveries.clear();
-            compact.transfers.clear();
-            compact.acknowledged.clear();
-            let id = flow_core::domain::WorkflowId(workspace.into());
-            let references = compact
+            use flow_core::domain::{FlowNet, NodeSpec, RuntimeState, Workflow, WorkflowId};
+            let id = WorkflowId(workspace.into());
+            let references = runtime
                 .workflows
                 .get(&id)
                 .map(|w| w.references.clone())
                 .unwrap_or_default();
-            compact.workflows.retain(|key, w| {
-                key == &id || w.owner.as_ref() == Some(&id) || references.contains(key)
-            });
-            for workflow in compact.workflows.values_mut() {
-                for node in &mut workflow.graph.nodes {
-                    node.flow = Default::default();
-                }
-                workflow.graph.connections.clear();
-                workflow.graph.node_types.clear();
-                workflow.graph.types.clear();
-                workflow.graph.casts.clear();
+            RuntimeState {
+                revision: runtime.revision,
+                host_id: runtime.host_id.clone(),
+                workspaces: runtime.workspaces.clone(),
+                workflows: runtime
+                    .workflows
+                    .iter()
+                    .filter(|(key, w)| {
+                        *key == &id || w.owner.as_ref() == Some(&id) || references.contains(*key)
+                    })
+                    .map(|(key, w)| {
+                        (
+                            key.clone(),
+                            Workflow {
+                                id: w.id.clone(),
+                                name: w.name.clone(),
+                                workspace: w.workspace.clone(),
+                                visibility: w.visibility.clone(),
+                                owner: w.owner.clone(),
+                                references: w.references.clone(),
+                                authority: w.authority.clone(),
+                                transfer: None,
+                                graph: FlowNet {
+                                    nodes: w
+                                        .graph
+                                        .nodes
+                                        .iter()
+                                        .map(|n| NodeSpec {
+                                            id: n.id.clone(),
+                                            type_id: n.type_id.clone(),
+                                            flow: Default::default(),
+                                        })
+                                        .collect(),
+                                    ..Default::default()
+                                },
+                            },
+                        )
+                    })
+                    .collect(),
+                ..Default::default()
             }
-            compact
         }),
         connections: state
             .connections

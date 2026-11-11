@@ -598,3 +598,38 @@ fn application_selection_binds_the_launched_window_to_the_configured_node() {
     assert_eq!(state.node(&id).unwrap().window_id, Some(7));
     assert_eq!(state.node(&id).unwrap().position.x, 500.);
 }
+
+#[test]
+fn moving_a_native_attachment_does_not_move_a_connected_workflow_branch() {
+    let mut state = State::empty("/tmp".into());
+    let mut desktop = desktop();
+    groups::synchronize(&mut state, &desktop);
+    let source = state
+        .nodes
+        .iter()
+        .find(|n| n.window_id == Some(1))
+        .unwrap()
+        .clone();
+    let original = source.workspace.clone();
+    let mut dependent = Node::new(
+        &original,
+        NodeKind::Shell,
+        "/tmp".into(),
+        Default::default(),
+    );
+    dependent.dependencies.push(source.id.clone());
+    let dependent_id = dependent.id.clone();
+    state.nodes.push(dependent);
+    state.orchestration = Some(
+        flow_core::migration::Envelope::from_v1(state.clone())
+            .unwrap()
+            .0
+            .runtime,
+    );
+    desktop.windows[0].workspace_id = Some(20);
+    groups::synchronize(&mut state, &desktop);
+    assert_eq!(state.node(&source.id).unwrap().workspace, original);
+    assert_eq!(state.node(&dependent_id).unwrap().workspace, original);
+    assert_eq!(state.node(&source.id).unwrap().window_id, Some(1));
+    state.validate().unwrap();
+}

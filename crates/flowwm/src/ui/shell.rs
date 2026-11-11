@@ -337,6 +337,14 @@ impl Shell {
                 saved.output_size = (geometry.width() as f64, geometry.height() as f64);
                 saved.transparent = true;
                 saved.native_nodes = true;
+                saved.local_windows = Some(
+                    desktop
+                        .windows
+                        .iter()
+                        .filter(|w| w.workspace_id == Some(row.id))
+                        .map(|w| w.id)
+                        .collect(),
+                );
                 saved.chrome = 1.0;
                 saved.morphing = false;
                 saved.presentations.clear();
@@ -986,6 +994,19 @@ impl Shell {
         view.output_size = (geometry.width() as f64, geometry.height() as f64);
         view.transparent = !self.windowed;
         view.native_nodes = self.native_nodes;
+        let binding = self.engine.snapshot().state.workspace().row.clone();
+        view.local_windows = Some(
+            desktop
+                .windows
+                .iter()
+                .filter(|w| {
+                    binding.as_ref().is_some_and(|r| {
+                        r.session == desktop.session && Some(r.id) == w.workspace_id
+                    })
+                })
+                .map(|w| w.id)
+                .collect(),
+        );
         view.focused_window = desktop
             .workspaces
             .iter()
@@ -2621,6 +2642,30 @@ impl Shell {
                 })
             };
             if let Some(window) = window {
+                if self.native_nodes
+                    && row.is_some_and(|r| Some(r.id) != window.workspace_id)
+                    && let Some(destination) = state.workspaces.iter().find(|w| {
+                        w.row.as_ref().is_some_and(|r| {
+                            Some(r.id) == window.workspace_id && r.session == desktop.session
+                        })
+                    })
+                {
+                    if let Err(error) = self.engine.request(Control::RowView {
+                        workspace: destination.id.clone(),
+                        view: RowView::Windows,
+                    }) {
+                        self.show_error(&error.to_string());
+                        return;
+                    }
+                    self.control(UiCommand::Workspace {
+                        id: destination.id.clone(),
+                    });
+                    gtk::prelude::WidgetExt::display(&self.window()).sync();
+                    if let Err(error) = niri::focus(window.id) {
+                        self.show_error(&error.to_string());
+                    }
+                    return;
+                }
                 let native_peek = self.native_nodes && state.workspace().view == RowView::Nodes;
                 if !native_peek && let Err(error) = niri::focus(window.id) {
                     self.show_error(&error.to_string());
@@ -3971,6 +4016,42 @@ fn window_interface<'a>(
         .and_then(|definition| definition.window.as_ref())
 }
 
+fn apply_interface_fields(
+    engine: &Engine,
+    id: &str,
+    fields: &[(String, gtk::Entry)],
+) -> Result<()> {
+    let state = engine.snapshot().state;
+    let mut node = state.node(id).context("Node is unavailable")?.clone();
+    let mut changed = false;
+    for (property, entry) in fields.iter().filter(|(_, entry)| entry.is_editable()) {
+        let text = entry.text();
+        let value =
+            if crate::graph::property(&state, &node, property).is_some_and(|v| v.is_string()) {
+                serde_json::Value::String(text.to_string())
+            } else {
+                match serde_json::from_str(text.as_str()) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        entry.add_css_class("error");
+                        bail!("Enter a valid value for {property}");
+                    }
+                }
+            };
+        entry.remove_css_class("error");
+        if node.flow.properties.get(property) != Some(&value) {
+            node.flow.properties.insert(property.clone(), value);
+            changed = true;
+        }
+    }
+    if changed {
+        engine.request(Control::Update {
+            node: Box::new(node),
+        })?;
+    }
+    Ok(())
+}
+
 /// Only instantiated from an extension's explicit, validated window contract.
 struct ExtensionPanel {
     root: gtk::Box,
@@ -4015,32 +4096,8 @@ impl ExtensionPanel {
                 let id = node.id.clone();
                 let property = spec.property.clone();
                 control.connect_activate(move |entry| {
-                    let state = engine.snapshot().state;
-                    if let Some(node) = state.node(&id) {
-                        let mut node = node.clone();
-                        let text = entry.text();
-                        let value = if node
-                            .flow
-                            .properties
-                            .get(&property)
-                            .is_some_and(serde_json::Value::is_string)
-                        {
-                            serde_json::Value::String(text.to_string())
-                        } else {
-                            match serde_json::from_str(text.as_str()) {
-                                Ok(value) => value,
-                                Err(_) => {
-                                    entry.add_css_class("error");
-                                    return;
-                                }
-                            }
-                        };
-                        entry.remove_css_class("error");
-                        node.flow.properties.insert(property.clone(), value);
-                        engine.dispatch(Control::Update {
-                            node: Box::new(node),
-                        });
-                    }
+                    let _ =
+                        apply_interface_fields(&engine, &id, &[(property.clone(), entry.clone())]);
                 });
             }
             let group = column(6);
@@ -4073,14 +4130,24 @@ impl ExtensionPanel {
                 let engine = shell.engine.clone();
                 let id = node.id.clone();
                 let operation = action.operation.clone();
+                let fields = fields.clone();
+                let status = status.clone();
                 button.connect_clicked(move |_| {
+                    if matches!(
+                        operation,
+                        flow_core::providers::InterfaceOperation::Activate
+                    ) && let Err(error) = apply_interface_fields(&engine, &id, &fields)
+                    {
+                        status.set_text(&error.to_string());
+                        return;
+                    }
                     use flow_core::providers::InterfaceOperation;
                     engine.dispatch(match &operation {
-                        InterfaceOperation::Activate => Control::Activate {
+                        InterfaceOperation::Activate => Control::Run {
                             id: id.clone(),
-                            args: serde_json::json!({}),
+                            downstream: false,
                         },
-                        InterfaceOperation::Interrupt => Control::Stop { id: id.clone() },
+                        InterfaceOperation::Interrupt => Control::Interrupt { id: id.clone() },
                         InterfaceOperation::Emit { pin, args } => Control::Emit {
                             source: crate::graph::Endpoint {
                                 node: id.clone(),
@@ -4103,18 +4170,20 @@ impl ExtensionPanel {
         panel.refresh(node, &shell.engine.snapshot().state);
         panel
     }
-    fn refresh(&self, node: &Node, _state: &State) {
+    fn refresh(&self, node: &Node, state: &State) {
         self.status.set_text(node.status.label());
+        let value = |property: &str| {
+            node.flow
+                .values
+                .get(property)
+                .cloned()
+                .or_else(|| crate::graph::property(state, node, property))
+        };
         for (property, entry) in &self.fields {
             if entry.has_focus() {
                 continue;
             }
-            let value = node
-                .flow
-                .values
-                .get(property)
-                .or_else(|| node.flow.properties.get(property));
-            let text = value
+            let text = value(property)
                 .map(|v| {
                     v.as_str()
                         .map(String::from)
@@ -4126,22 +4195,13 @@ impl ExtensionPanel {
             }
         }
         if let Some((property, view, group)) = &self.output {
-            group.set_visible(
-                node.flow
-                    .values
-                    .get(property)
-                    .or_else(|| node.flow.properties.get(property))
-                    .is_some_and(|v| !v.is_null()),
-            );
-            let text = node
-                .flow
-                .values
-                .get(property)
-                .or_else(|| node.flow.properties.get(property))
+            let result = value(property);
+            group.set_visible(result.as_ref().is_some_and(|v| !v.is_null()));
+            let text = result
                 .map(|v| {
                     v.as_str()
                         .map(String::from)
-                        .unwrap_or_else(|| serde_json::to_string_pretty(v).unwrap_or_default())
+                        .unwrap_or_else(|| serde_json::to_string_pretty(&v).unwrap_or_default())
                 })
                 .unwrap_or_default();
             set_buffer(view, &text);

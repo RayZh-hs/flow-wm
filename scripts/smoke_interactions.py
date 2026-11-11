@@ -191,7 +191,12 @@ def run():
                 input_command("mousemove", "--sync", round(start_x + 20 * zoom), round(start_y))
                 time.sleep(0.1)
                 input_command("mouseup", "1")
-                wait(lambda: node(constant)["position"] == {"x": 180., "y": 140.}, compositor)
+                try:
+                    wait(lambda: node(constant)["position"] == {"x": 180., "y": 140.}, compositor)
+                except TimeoutError:
+                    print(json.dumps({"constant":node(constant),"catalog":catalog()},indent=2),flush=True)
+                    capture("failed-return-drag.png")
+                    raise
 
                 start_x, start_y = point(540, 130)
                 input_command("mousemove", "--sync", round(start_x), round(start_y), "mousedown", "1")
@@ -209,7 +214,7 @@ def run():
                 request(flow_socket, {"op":"register_node", "definition":definition})
                 optional = create("vox", "Counter interface")
                 extension_node = node(optional)
-                extension_node.update(kind="extension", command=definition["source"], flow={"node_type":definition["id"],"properties":{"start":41}})
+                extension_node.update(kind="extension", command=definition["source"], flow={"node_type":definition["id"],"properties":{"start":40}})
                 request(flow_socket,{"op":"update","node":extension_node})
                 ui("open",id=optional)
                 interface_window = wait(lambda: next((w for w in request(niri_socket,"Windows")["Windows"] if (w.get("app_id") or "").startswith("dev.flowwm.interface.v1.")),None),compositor)
@@ -218,13 +223,50 @@ def run():
                 layout=interface_window["layout"]
                 left,top=layout["tile_pos_in_workspace_view"]
                 width,height=layout["window_size"]
+                click(left+width/2,top+height-100)
+                input_command("key","ctrl+a")
+                input_command("type","--clearmodifiers","41")
                 click(left+width-70,top+height-42)
                 wait(lambda: node(optional)["flow"]["values"].get("value")==42,compositor)
                 capture("optional-extension-interface.png")
                 request(niri_socket,{"Action":{"CloseWindow":{"id":interface_window["id"]}}})
                 wait(lambda: not any(w["id"]==interface_window["id"] for w in request(niri_socket,"Windows")["Windows"]),compositor)
                 assert node(optional), "closing an interface must keep its node"
-                print("Interaction smoke passed: blurred/dimmed preview gaps, visible inline editor, keyboard editing and saving, Escape dismissal, constant and window dragging, persistent release positions, deselection, and row-switch recovery; extension-only compact windows, working actions, and close-without-destroy.")
+                parent=state()["selected_workspace"]
+                def orchestrate(command,caller=None):
+                    reply=request(flow_socket,{"protocol":2,"id":"smoke-"+command["command"],"caller":caller,"command":command})
+                    assert reply["error"] is None, reply
+                    return reply["result"]
+                child="smoke-private-child"
+                orchestrate({"command":"create","workflow":{"id":child,"name":"Owned background work","workspace":"local:user","visibility":"private","owner":parent,"references":[],"graph":{"nodes":[],"connections":[],"types":[],"casts":[],"node_types":[]},"authority":"local","transfer":None}},parent)
+                assert not any(w["id"]==child for w in catalog()["workspaces"]), "private children must stay out of public catalogs"
+                ui("nodes")
+                ui("fit")
+                time.sleep(0.3)
+                capture("owned-workflow-region.png")
+                orchestrate({"command":"make_public","workflow":child},parent)
+                wait(lambda:any(w["id"]==child for w in catalog()["workspaces"]),compositor)
+                released=orchestrate({"command":"snapshot"})["workflows"][child]
+                assert released["workspace"]=="local:user" and released["owner"] is None
+                time.sleep(0.3)
+                capture("public-workflow-reference.png")
+                orchestrate({"command":"unreference","workflow":parent,"target":child},parent)
+                assert child in orchestrate({"command":"snapshot"})["workflows"], "removing a reference must keep its target alive"
+                orchestrate({"command":"destroy","workflow":child})
+                dependent=create("shell","Keep the connected workflow")
+                request(flow_socket,{"op":"connect","source":preview,"target":dependent})
+                preview_window=node(preview)["window_id"]
+                request(niri_socket,{"Action":{"MoveWindowToWorkspace":{"window_id":preview_window,"reference":{"Id":second["row"]["id"]},"focus":False}}})
+                wait(lambda: any(w["id"]==preview_window and w["workspace_id"]==second["row"]["id"] for w in request(niri_socket,"Windows")["Windows"]),compositor)
+                assert node(preview)["workspace"]==parent and node(dependent)["workspace"]==parent, "moving a native attachment must preserve its connected workflow"
+                ui("nodes")
+                ui("fit")
+                time.sleep(0.3)
+                capture("window-on-another-row.png")
+                ui("open",id=preview)
+                wait(lambda: any(w["id"]==preview_window and w["is_focused"] for w in request(niri_socket,"Windows")["Windows"]),compositor)
+                assert node(preview)["workspace"]==parent, "opening an application must not move its workflow"
+                print("Interaction smoke passed: blurred/dimmed preview gaps, visible inline editor, keyboard editing and saving, Escape dismissal, constant and window dragging, persistent release positions, deselection, and row-switch recovery; extension-only compact windows, working actions, close-without-destroy, private regions, identity-preserving Make Public, and native attachments across workflow rows.")
         finally:
             for child in reversed(children):
                 if child.poll() is None:

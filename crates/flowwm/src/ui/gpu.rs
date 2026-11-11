@@ -334,7 +334,11 @@ fn native_canvas_region(state: &State, view: &View, width: i32, height: i32) -> 
             height: rect.height + 32. * view.zoom,
         };
         let _ = holes.subtract_rectangle(&cover.integer());
-        if node.window_id.is_some() {
+        if node.window_id.is_some_and(|id| {
+            view.local_windows
+                .as_ref()
+                .is_none_or(|ids| ids.contains(&id))
+        }) {
             // Keep the shared outline above the native buffer even when fully expanded.
             let content = window_content(rect, t, view.zoom).inset(2. * (1. - t));
             let _ = holes.union_rectangle(&content.integer());
@@ -362,6 +366,13 @@ pub fn native_windows(
         .iter()
         .filter_map(|node| {
             let id = node.window_id?;
+            if view
+                .local_windows
+                .as_ref()
+                .is_some_and(|ids| !ids.contains(&id))
+            {
+                return None;
+            }
             let (_, rect, t) = window_geometry(node, view);
             let content = window_content(rect, t, view.zoom);
             if content.width <= 0. || content.height <= 0. || !content.overlaps(viewport) {
@@ -709,6 +720,14 @@ mod tests {
             state.nodes.push(node);
         }
         (state, view)
+    }
+
+    #[test]
+    fn native_scenes_exclude_attachments_from_another_row_without_cutting_a_hole() {
+        let (state, mut view) = expanded_window_with_fading_peers(1.);
+        view.local_windows = Some(std::collections::HashSet::new());
+        assert!(native_windows(&state, &view, 1200, 800).is_empty());
+        assert!(native_canvas_region(&state, &view, 1200, 800).contains_point(50, 50));
     }
 
     #[test]
