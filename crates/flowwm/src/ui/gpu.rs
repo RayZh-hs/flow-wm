@@ -276,8 +276,13 @@ fn graph_key(width: i32, height: i32, state: &State, revision: u64, view: &View)
     h.finish()
 }
 pub(super) fn window_geometry(node: &Node, view: &View) -> (Rect, Rect, f64) {
-    let p = view.position(node);
     let t = progress(view, node);
+    let (graph, rect) = window_geometry_at(node, view, t);
+    (graph, rect, t)
+}
+
+pub(super) fn window_geometry_at(node: &Node, view: &View, t: f64) -> (Rect, Rect) {
+    let p = view.position(node);
     let graph = Rect {
         x: view.pan_x + p.x * view.zoom,
         y: view.pan_y + p.y * view.zoom,
@@ -299,7 +304,7 @@ pub(super) fn window_geometry(node: &Node, view: &View) -> (Rect, Rect, f64) {
         rect = graph;
         rect.y += 48. * view.zoom * (1. - view.chrome);
     }
-    (graph, rect, t)
+    (graph, rect)
 }
 fn window_content(rect: Rect, t: f64, zoom: f64) -> Rect {
     Rect {

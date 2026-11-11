@@ -47,13 +47,6 @@ niri_render_elements! {
     }
 }
 
-pub(crate) fn chrome_alpha(workspace_distance: f64, overview: f64) -> f32 {
-    let scroll = (1. - workspace_distance.abs() * 5.).clamp(0., 1.);
-    let overview = (1. - overview * 3.).clamp(0., 1.);
-    let alpha = scroll * overview;
-    (alpha * alpha * (3. - 2. * alpha)) as f32
-}
-
 impl<W: LayoutElement> Workspace<W> {
     pub(crate) fn prepare_node_row_exit(&mut self) -> NodeRowScene {
         // A rapid reversal may precede the canvas's first buffer commit.
@@ -161,7 +154,6 @@ impl<W: LayoutElement> Workspace<W> {
         &self,
         mut ctx: RenderCtx<R>,
         xray: XrayPos,
-        chrome_alpha: f32,
         push: &mut dyn FnMut(WorkspaceRenderElement<R>),
     ) {
         let Some(tile) = &self.node_tile else { return };
@@ -188,7 +180,7 @@ impl<W: LayoutElement> Workspace<W> {
                 popup.wl_surface(),
                 loc.to_physical_precise_round(scale),
                 scale,
-                chrome_alpha,
+                1.,
                 Kind::Unspecified,
                 &mut |elem| push(NodeRenderElement::Canvas(elem).into()),
             );
@@ -202,7 +194,7 @@ impl<W: LayoutElement> Workspace<W> {
             canvas,
             loc.to_physical_precise_round(scale),
             scale,
-            chrome_alpha,
+            1.,
             Kind::Unspecified,
             &mut |elem| push(NodeRenderElement::Canvas(elem).into()),
         );

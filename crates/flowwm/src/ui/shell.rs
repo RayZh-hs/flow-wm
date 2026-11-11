@@ -362,12 +362,14 @@ impl Shell {
                                 geometry.width() - insets[1] - insets[3],
                                 geometry.height() - insets[0] - insets[2],
                             ));
-                        for node in scoped
-                            .nodes
-                            .iter()
-                            .filter(|n| n.column_mode == ColumnMode::Window)
-                        {
-                            if let Some(rect) = saved.desktop_rects.get(&node.id) {
+                        for node in scoped.nodes.iter().filter(|n| {
+                            n.column_mode == ColumnMode::Window && n.window_id.is_some()
+                        }) {
+                            if let Some(rect) = saved
+                                .presented_rects
+                                .get(&node.id)
+                                .or_else(|| saved.desktop_rects.get(&node.id))
+                            {
                                 let _ = region.subtract_rectangle(&rect.integer());
                             }
                         }
@@ -1098,15 +1100,27 @@ impl Shell {
         }
         self.collect_images();
         let state = self.engine.snapshot().state;
-        // Preserve exactly what was drawn, including an interrupted morph.
-        let from_rects: HashMap<_, _> = {
+        // ColumnMode already describes the destination. Start from the last
+        // presentation, or from the settled graph and its screen-space peeks.
+        let (mut from, from_rects): (HashMap<_, _>, HashMap<_, _>) = {
             let view = self.view.borrow();
             state
                 .nodes
                 .iter()
                 .filter(|n| n.workspace == state.selected_workspace)
-                .map(|n| (n.id.clone(), super::gpu::window_geometry(n, &view).1))
-                .collect()
+                .map(|n| {
+                    let t = if was_mapped {
+                        view.presentations
+                            .get(&n.id)
+                            .copied()
+                            .unwrap_or_else(|| f64::from(!view.presented_rects.contains_key(&n.id)))
+                    } else {
+                        0.0
+                    };
+                    let (_, rect) = super::gpu::window_geometry_at(n, &view, t);
+                    ((n.id.clone(), t), (n.id.clone(), rect))
+                })
+                .unzip()
         };
         let border_from: HashMap<_, _> = {
             let view = self.view.borrow();
@@ -1164,24 +1178,6 @@ impl Shell {
                 _ => {}
             }
         }
-        let mut from: HashMap<_, _> = state
-            .nodes
-            .iter()
-            .filter(|n| n.workspace == state.selected_workspace)
-            .map(|n| {
-                let previous = if was_mapped {
-                    self.view
-                        .borrow()
-                        .presentations
-                        .get(&n.id)
-                        .copied()
-                        .unwrap_or(1.0)
-                } else {
-                    0.0
-                };
-                (n.id.clone(), previous)
-            })
-            .collect();
         let mut target: HashMap<_, _> = state
             .nodes
             .iter()
@@ -2437,7 +2433,9 @@ impl Shell {
             view.border_opacities.clear();
             view.border_fades.clear();
             view.window_borders = !visible;
-            view.presented_positions.clear();
+            if !self.native_nodes || !visible {
+                view.presented_positions.clear();
+            }
             view.morphing = false;
             view.chrome = if visible { 1.0 } else { 0.0 };
             view.live_fade = 0.0;
@@ -2615,13 +2613,18 @@ impl Shell {
         }
         if node.kind == NodeKind::Window || node.window_id.is_some() {
             let desktop = self.desktop.lock().unwrap().clone();
-            if let Some(window) = desktop.windows.iter().find(|w| {
-                node.window_id == Some(w.id)
-                    || node
-                        .window_match
-                        .as_ref()
-                        .is_some_and(|selector| window_selector(w) == *selector)
-            }) {
+            let row = state.workspace().row.as_ref();
+            let window = if let Some(id) = node.window_id {
+                desktop.windows.iter().find(|w| w.id == id)
+            } else {
+                node.window_match.as_ref().and_then(|selector| {
+                    desktop.windows.iter().find(|w| {
+                        (!self.integrated || row.is_some_and(|r| Some(r.id) == w.workspace_id))
+                            && crate::groups::selector(w) == *selector
+                    })
+                })
+            };
+            if let Some(window) = window {
                 let native_peek = self.native_nodes && state.workspace().view == RowView::Nodes;
                 if !native_peek && let Err(error) = niri::focus(window.id) {
                     self.show_error(&error.to_string());
@@ -2650,11 +2653,26 @@ impl Shell {
                 }
                 if state.workspace().view == RowView::Nodes {
                     let window_id = window.id;
+                    let row_id = row.map(|r| r.id);
+                    let weak = self.weak.clone();
                     self.transition(
                         true,
                         native_peek.then(|| {
                             Box::new(move || {
-                                let _ = niri::focus(window_id);
+                                if let Some(shell) = weak.upgrade()
+                                    && {
+                                        let desktop = shell.desktop.lock().unwrap();
+                                        desktop
+                                            .workspaces
+                                            .iter()
+                                            .any(|r| Some(r.id) == row_id && r.is_focused)
+                                            && desktop.windows.iter().any(|w| {
+                                                w.id == window_id && w.workspace_id == row_id
+                                            })
+                                    }
+                                {
+                                    let _ = niri::focus(window_id);
+                                }
                             }) as Box<dyn FnOnce()>
                         }),
                     );
@@ -4115,9 +4133,6 @@ impl NodePanel {
             self.actions.append(&branch);
         }
     }
-}
-fn window_selector(window: &niri_ipc::Window) -> String {
-    crate::groups::selector(window)
 }
 fn output_view() -> gtk::TextView {
     let text = gtk::TextView::new();

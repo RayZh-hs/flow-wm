@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use niri_config::Config;
 use niri_ipc::node_row::{self, NodeRowScene, NodeWindow};
+use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::Element;
 use smithay::desktop::layer_map_for_output;
 use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::Layer;
@@ -9,7 +10,7 @@ use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_lay
     Anchor, KeyboardInteractivity,
 };
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Physical, Rectangle};
+use smithay::utils::{Physical, Rectangle, Transform};
 
 use super::client::{ClientId, LayerConfigureProps};
 use super::Fixture;
@@ -401,9 +402,13 @@ fn egl_node_rows_replace_windows_and_follow_swipes_overview_and_lifecycle() {
         f.client(client).window(&first_client).commit();
         f.double_roundtrip(client);
         let elements = render(&mut f);
-        assert!(elements.iter().any(|r| r.loc.x == 101 && r.loc.y == 103
-            && r.size.w == width.min(800.) as i32 && r.size.h == height.min(600.) as i32),
-            "expanded content must stay at the scene origin with no extra layout frame: {elements:?}");
+        assert!(
+            elements.iter().any(|r| r.loc.x == 101
+                && r.loc.y == 103
+                && r.size.w == width.min(800.) as i32
+                && r.size.h == height.min(600.) as i32),
+            "expanded content must stay at the scene origin with no extra layout frame: {elements:?}"
+        );
         assert!(f
             .niri()
             .contents_under((120., 120.).into())
@@ -454,13 +459,10 @@ fn egl_node_rows_replace_windows_and_follow_swipes_overview_and_lifecycle() {
         .collect();
     assert_eq!(geos.len(), 2);
     let moving = render_opacity(&mut f);
-    assert!(
-        moving.iter().any(|(_, alpha)| *alpha < 0.01),
-        "canvas text fades while swiping"
-    );
-    assert!(
-        moving.iter().any(|(_, alpha)| *alpha > 0.99),
-        "native window content stays visible"
+    assert_eq!(
+        moving.iter().filter(|(_, alpha)| *alpha == 1.).count(),
+        3,
+        "both canvases and the live client stay visible while swiping"
     );
     let elements = render(&mut f);
     assert_eq!(elements.len(), 4);
@@ -492,14 +494,14 @@ fn egl_node_rows_replace_windows_and_follow_swipes_overview_and_lifecycle() {
     assert_eq!(render(&mut f).len(), 3);
     f.niri().layout.open_overview();
     f.niri_complete_animations();
-    let faded = render_opacity(&mut f);
-    assert!(
-        faded.iter().any(|(_, alpha)| *alpha < 0.01),
-        "canvas text is hidden in overview"
-    );
-    assert!(
-        faded.iter().any(|(_, alpha)| *alpha > 0.99),
-        "native windows remain visible in overview"
+    let overview_opacities = render_opacity(&mut f);
+    assert_eq!(
+        overview_opacities
+            .iter()
+            .filter(|(_, alpha)| *alpha == 1.)
+            .count(),
+        3,
+        "both canvases and the live client stay visible in overview"
     );
     let overview = render(&mut f);
     assert!(
@@ -806,5 +808,118 @@ fn egl_node_rows_blend_backdrops_independently_of_expanded_input() {
                 "the node backdrop reaches zero before input ownership changes"
             );
         }
+    }
+}
+
+#[test]
+fn egl_node_row_blur_blends_rendered_wallpaper_and_matches_the_window_endpoint() {
+    let mut f = Fixture::with_config(
+        Config::parse_mem(
+            r#"
+            layout { background-color "transparent"; }
+            window-rule { draw-border-with-background false; }
+            blur { offset 5; noise 0; saturation 1; }
+            layer-rule {
+                match namespace="wallpaper"
+                place-within-backdrop true
+            }
+            "#,
+        )
+        .unwrap(),
+    );
+    f.niri_state().backend.headless().add_renderer().unwrap();
+    f.add_output(1, (1920, 1080));
+    let client = f.add_client();
+    let win = f.client(client).create_window();
+    let surface = win.surface.clone();
+    win.commit();
+    f.double_roundtrip(client);
+    let win = f.client(client).window(&surface);
+    win.attach_new_buffer();
+    win.set_size(800, 600);
+    win.ack_last_and_commit();
+    f.double_roundtrip(client);
+    f.niri_complete_animations();
+    let workspace = f.niri().layout.active_workspace().unwrap().id().get();
+    let mut scene = f.niri().prepare_node_row_exit(workspace).unwrap();
+    let (x, y, w, h) = scene.windows[0].bounds;
+    let edge = (x + w / 2.) as u16;
+    let sample_y = (y + h / 2.) as usize;
+
+    let layer = f
+        .client(client)
+        .create_layer(None, Layer::Background, "wallpaper");
+    let surface = layer.surface.clone();
+    layer.set_configure_props(LayerConfigureProps {
+        anchor: Some(Anchor::Left | Anchor::Top),
+        size: Some((u32::from(edge), 1080)),
+        exclusive_zone: Some(-1),
+        ..Default::default()
+    });
+    layer.commit();
+    f.double_roundtrip(client);
+    let layer = f.client(client).layer(&surface);
+    let white =
+        layer
+            .spbm
+            .create_u32_rgba_buffer(u32::MAX, u32::MAX, u32::MAX, u32::MAX, &layer.qh, ());
+    layer.surface.attach(Some(&white), 0, 0);
+    layer.set_size(edge, 1080);
+    layer.ack_last_and_commit();
+    f.double_roundtrip(client);
+
+    let output = f.niri_output(1);
+    let sample = |f: &mut Fixture| {
+        let state = f.niri_state();
+        state.niri.update_render_elements(Some(&output));
+        state
+            .backend
+            .headless()
+            .with_primary_renderer(|renderer| {
+                let ctx = RenderCtx {
+                    renderer,
+                    target: RenderTarget::Output,
+                    xray: None,
+                };
+                let elements = state.niri.render_to_vec(ctx, &output, false);
+                let pixels = crate::render_helpers::render_to_vec(
+                    renderer,
+                    (1920, 1080).into(),
+                    1.0.into(),
+                    Transform::Normal,
+                    Fourcc::Abgr8888,
+                    elements.iter().rev(),
+                )
+                .unwrap();
+                [2, 150].map(|offset| {
+                    let x = usize::from(edge) + offset;
+                    i32::from(pixels[4 * (sample_y * 1920 + x)])
+                })
+            })
+            .unwrap()
+    };
+    let windows = sample(&mut f);
+    assert_eq!(windows[0], windows[1], "normal wallpaper has a sharp edge");
+    let (canvas, _) = canvas(&mut f, client, workspace);
+    let mut previous = 0;
+    for t in [0., 0.25, 0.5, 0.75, 1.] {
+        scene.windows[0].presentation = Some(t);
+        scene.windows[0].expanded = false;
+        f.niri().stage_node_row(workspace, scene.clone()).unwrap();
+        f.client(client).window(&canvas).commit();
+        f.double_roundtrip(client);
+        let pixels = sample(&mut f);
+        // Normalize out the uniform dimming by comparing the dark side of
+        // the edge with the wallpaper farther from it.
+        let edge_glow = pixels[0] - pixels[1];
+        if t == 0. {
+            assert_eq!(pixels, windows, "the last morph frame matches Windows");
+        } else {
+            assert!(
+                edge_glow > previous,
+                "wallpaper blur increases with blend {t}: {previous} -> {edge_glow}"
+            );
+        }
+        previous = edge_glow;
     }
 }

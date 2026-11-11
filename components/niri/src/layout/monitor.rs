@@ -1760,12 +1760,6 @@ impl<W: LayoutElement> Monitor<W> {
                 }
 
                 let xray_pos = XrayPos::new(geo.loc, zoom);
-                let node_chrome_alpha = crate::node_row::chrome_alpha(
-                    (geo.loc.y - (self.view_size.h - geo.size.h) / 2.) / geo.size.h,
-                    self.overview_progress
-                        .as_ref()
-                        .map_or(0., |p| p.clamped_value()),
-                );
 
                 match pass {
                     0 => {
@@ -1801,7 +1795,6 @@ impl<W: LayoutElement> Monitor<W> {
                             ctx.r(),
                             xray_pos,
                             focus_ring,
-                            node_chrome_alpha,
                             RenderLayer::MovingBetweenWorkspaces,
                             push!(),
                         );
@@ -1811,7 +1804,6 @@ impl<W: LayoutElement> Monitor<W> {
                             ctx.r(),
                             xray_pos,
                             focus_ring,
-                            node_chrome_alpha,
                             RenderLayer::Normal,
                             push!(),
                         );

@@ -1693,13 +1693,12 @@ impl<W: LayoutElement> Workspace<W> {
         ctx: RenderCtx<R>,
         xray_pos: XrayPos,
         focus_ring: bool,
-        node_chrome_alpha: f32,
         layer: RenderLayer,
         push: &mut dyn FnMut(WorkspaceRenderElement<R>),
     ) {
         if self.nodes_visible() {
             if layer.is_normal() {
-                self.render_nodes(ctx, xray_pos, node_chrome_alpha, push);
+                self.render_nodes(ctx, xray_pos, push);
             }
             return;
         }

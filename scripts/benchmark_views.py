@@ -252,6 +252,61 @@ def run(args):
                     wait(lambda: not any(w["id"] == target["window_id"] for w in request(niri, "Windows")["Windows"]), compositor)
                     wait(lambda: not any(n["id"] == target["id"] for n in request(flow, {"op": "status"})["nodes"]), compositor)
                     result["verified"].append(f"external close removes an unconnected {view} window despite its shared process")
+
+                workspaces = sorted(request(niri, "Workspaces")["Workspaces"], key=lambda w: w["idx"])
+                first, second = (w["id"] for w in workspaces[:2])
+
+                def activate(row):
+                    request(niri, {"Action": {"FocusWorkspace": {"reference": {"Id": row}}}})
+                    wait(lambda: any(w["id"] == row and w["is_focused"] for w in request(niri, "Workspaces")["Workspaces"]), compositor)
+                    def selected():
+                        value = request(flow, {"op": "catalog"})
+                        return any(g["id"] == value["selected_workspace"] and g["row"] and g["row"]["id"] == row for g in value["workspaces"])
+                    wait(selected, compositor)
+
+                def open_probes(row):
+                    activate(row)
+                    before = {w["id"] for w in request(niri, "Windows")["Windows"]}
+                    children.append(subprocess.Popen([sys.executable, __file__, "--clients", "3"], env=env, stdout=log, stderr=log))
+                    def mapped():
+                        windows = [w for w in request(niri, "Windows")["Windows"] if w["workspace_id"] == row and w["id"] not in before]
+                        if len(windows) == 3:
+                            return next(w for w in windows if w["title"] == "View probe 001")
+                    return wait(mapped, compositor)
+
+                other = open_probes(first)
+                probe = open_probes(second)
+                assert (other["app_id"], other["title"]) == (probe["app_id"], probe["title"])
+                target = wait(lambda: next((n for n in request(flow, {"op": "catalog"})["nodes"] if n.get("window_id") == probe["id"]), None), compositor)
+                ui("nodes")
+                wait(lambda: second in rows(), compositor)
+                ui("fit")
+                time.sleep(0.4)
+
+                def peer_bounds(path):
+                    image = Image.open(path).convert("RGB")
+                    bounds = []
+                    for red in (38, 105):
+                        diff = ImageChops.difference(image, Image.new("RGB", image.size, (red, 61, 97)))
+                        r, g, b = diff.split()
+                        bounds.append(ImageChops.lighter(ImageChops.lighter(r, g), b).point(lambda d: 255 if d <= 2 else 0).getbbox())
+                    return bounds
+
+                before = peer_bounds(capture("row-two-before-peek.png"))
+                ui("open", id=target["id"])
+                wait(lambda: any(w["id"] == probe["id"] and w["is_focused"] for w in request(niri, "Windows")["Windows"]), compositor)
+                assert any(w["id"] == second and w["is_focused"] for w in request(niri, "Workspaces")["Workspaces"])
+                expanded = peer_bounds(capture("row-two-peek.png"))
+                assert all(before) and all(expanded) and expanded != before, "the peek must move neighboring previews aside"
+                activate(first)
+                activate(second)
+                time.sleep(0.4)
+                assert peer_bounds(capture("row-two-peek-returned.png")) == expanded, "switching rows must retain the temporary spacing"
+                completed = count("transition_open")
+                ui("toggle")
+                wait(lambda: count("transition_open") > completed, compositor)
+                assert peer_bounds(capture("row-two-after-peek.png")) == before, "collapsing the peek must restore the surrounding previews"
+                result["verified"].append("a second-row peek focuses the exact matching window and preserves temporary spacing across row switches")
             args.output.write_text(json.dumps(result, indent=2) + "\n")
             print(json.dumps(result, indent=2))
         finally:

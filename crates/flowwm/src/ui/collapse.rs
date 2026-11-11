@@ -76,7 +76,16 @@ pub fn rectangles(
     width: f64,
     centered: bool,
 ) -> HashMap<String, Rect> {
-    let Some(row) = desktop.workspaces.iter().find(|w| w.is_focused) else {
+    let binding = state
+        .workspace()
+        .row
+        .as_ref()
+        .filter(|row| row.session == desktop.session);
+    let Some(row) = desktop
+        .workspaces
+        .iter()
+        .find(|w| binding.map_or(w.is_focused, |row| row.id == w.id))
+    else {
         return HashMap::new();
     };
     let mut windows: Vec<_> = desktop
