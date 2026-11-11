@@ -1,6 +1,6 @@
 [workspace]
-members = ["crates/flowwm"]
-exclude = ["components/niri"]
+members = ["crates/flow-core", "crates/flow-builtins", "crates/flow-host", "crates/flowwm"]
+exclude = ["components/niri", "vendor/vox"]
 resolver = "3"
 
 [profile.dev]

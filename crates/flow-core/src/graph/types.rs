@@ -154,6 +154,9 @@ pub fn validate_registry(state: &State) -> Result<()> {
     }
     let mut ids = HashSet::new();
     for node in &state.node_types {
+        if let Some(window) = &node.window {
+            window.validate()?;
+        }
         ensure!(
             ![
                 "constant",

@@ -7,6 +7,9 @@ description = "A native, agent-first workflow extension for Niri"
 license = "GPL-3.0-or-later"
 
 [dependencies]
+flow-core = { path = "../flow-core" }
+flow-builtins = { path = "../flow-builtins" }
+flow-host = { path = "../flow-host" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 directories = "6"
@@ -22,9 +25,6 @@ wayland-client = { version = "0.31.15", features = ["system"] }
 wayland-backend = { version = "0.3.17", features = ["client_system"] }
 wayland-scanner = "0.31.11"
 uuid = { version = "1", features = ["v4", "serde"] }
-vox-core = { path = "../../../Vox/crates/vox-core" }
-vox-runtime = { path = "../../../Vox/crates/vox-runtime" }
-
 [dev-dependencies]
 tempfile = "3"
 

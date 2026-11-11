@@ -1,0 +1,16 @@
+mod backend;
+pub mod frontend;
+pub mod imports;
+mod mir;
+mod optimization;
+mod pipeline;
+mod treewalk;
+
+pub use frontend::{FrontendUnit, SurfaceParameter};
+pub use imports::ImportResolution;
+pub use mir::{MirPassFn, MirPassReport};
+pub use pipeline::{
+    CompileRequest, CompileResult, Compiler, compile_to_voxlib, package_manifest_from_frontend,
+    surface_manifest_from_frontend, validate_tier,
+};
+pub use treewalk::TreewalkScript;

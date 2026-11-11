@@ -1,0 +1,23 @@
+[package]
+name = "flow-host"
+version = "0.2.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+[dependencies]
+flow-core = { path = "../flow-core" }
+flow-builtins = { path = "../flow-builtins" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+directories = "6"
+libc = "0.2"
+niri-ipc = { path = "../../components/niri/niri-ipc" }
+niri-config = { path = "../../components/niri/niri-config" }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+signal-hook = "0.3"
+[dev-dependencies]
+tempfile = "3"
+[[bin]]
+name = "flow-core"
+path = "src/main.rs"

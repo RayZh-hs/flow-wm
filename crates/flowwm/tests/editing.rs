@@ -49,7 +49,7 @@ fn clipboard_copies_internal_edges_as_idle_nodes_with_fresh_ids() {
         .recipe("Copy".into(), &[constant.id.clone(), display.id.clone()])
         .unwrap();
     let temp = tempfile::tempdir().unwrap();
-    let (engine, _) = Engine::new(state, Store::new(temp.path().into()).unwrap());
+    let (engine, _) = engine_with_worker(state, Store::new(temp.path().into()).unwrap());
     let result = engine
         .request(Control::Paste {
             recipe,
@@ -104,7 +104,7 @@ fn connection_catalog_uses_the_registered_casts_and_each_output_type() {
     let sink_id = sink.id.clone();
     state.nodes.extend([source, sink]);
     let temp = tempfile::tempdir().unwrap();
-    let (engine, _) = Engine::new(state, Store::new(temp.path().into()).unwrap());
+    let (engine, _) = engine_with_worker(state, Store::new(temp.path().into()).unwrap());
     let catalog = Catalog::new(
         &engine.snapshot(),
         Presentation {
@@ -203,7 +203,7 @@ fn live_window_parameters_can_be_saved_without_stopping_or_detaching_the_window(
     node.status = Status::Running;
     state.nodes.push(node.clone());
     let temp = tempfile::tempdir().unwrap();
-    let (engine, _) = Engine::new(state, Store::new(temp.path().into()).unwrap());
+    let (engine, _) = engine_with_worker(state, Store::new(temp.path().into()).unwrap());
     node.title = "My editor".into();
     node.window_id = None;
     engine
@@ -217,4 +217,18 @@ fn live_window_parameters_can_be_saved_without_stopping_or_detaching_the_window(
     assert_eq!(saved.status, Status::Running);
     assert_eq!(saved.flow.properties["display_title"], "My editor");
     engine.shutdown();
+}
+
+fn engine_with_worker(
+    state: flowwm::model::State,
+    store: flowwm::store::Store,
+) -> (
+    flowwm::engine::Engine,
+    std::sync::mpsc::Receiver<flowwm::engine::UiCommand>,
+) {
+    Engine::with_worker(
+        state,
+        store,
+        Some(std::path::PathBuf::from(env!("CARGO_BIN_EXE_flowwm"))),
+    )
 }

@@ -1,4 +1,4 @@
-use super::bindings::{python, vox_expression};
+use super::bindings::vox_expression;
 use super::*;
 use anyhow::bail;
 use std::{
@@ -56,6 +56,7 @@ struct ContextData {
     steps: usize,
     cancel: Arc<AtomicBool>,
     result: Evaluation,
+    scripts: Arc<dyn ScriptEvaluator>,
 }
 
 /// A fresh evaluation frame is used for every delivered signal. Data fanout
@@ -65,6 +66,38 @@ pub fn evaluate(
     root: &str,
     signal: Option<(&str, Value)>,
     cancel: Arc<AtomicBool>,
+) -> Result<Evaluation> {
+    evaluate_with(state, root, signal, cancel, Arc::new(NoScripts))
+}
+
+pub trait ScriptEvaluator: Send + Sync {
+    fn evaluate(
+        &self,
+        node: &Node,
+        bindings: &Record,
+        args: &Value,
+        cancel: &AtomicBool,
+    ) -> Result<Value>;
+}
+struct NoScripts;
+impl ScriptEvaluator for NoScripts {
+    fn evaluate(
+        &self,
+        _node: &Node,
+        _bindings: &Record,
+        _args: &Value,
+        _cancel: &AtomicBool,
+    ) -> Result<Value> {
+        bail!("This host has no Python provider")
+    }
+}
+
+pub fn evaluate_with(
+    state: State,
+    root: &str,
+    signal: Option<(&str, Value)>,
+    cancel: Arc<AtomicBool>,
+    scripts: Arc<dyn ScriptEvaluator>,
 ) -> Result<Evaluation> {
     state.validate()?;
     state.node(root).context("Node not found")?;
@@ -82,6 +115,7 @@ pub fn evaluate(
         steps: 0,
         cancel,
         result: Evaluation::default(),
+        scripts,
     }));
     if let Some((pin, args)) = signal {
         if pin.is_empty() {
@@ -641,7 +675,8 @@ impl ContextData {
             ("properties".into(), serde_json::to_value(properties)?),
         ]);
         let value = if node.kind == NodeKind::Python {
-            python(node, &bindings, &args, &self.cancel)?
+            self.scripts
+                .evaluate(node, &bindings, &args, &self.cancel)?
         } else {
             let source = self
                 .state

@@ -400,6 +400,7 @@ fn extensions_register_types_casts_nodes_and_exposed_properties() {
         source: "value.toString()".into(),
     });
     state.node_types.push(NodeDefinition {
+        window: None,
         id: "custom".into(),
         name: "Custom".into(),
         inputs: vec![Pin {
@@ -562,7 +563,7 @@ fn wait_for(engine: &flowwm::engine::Engine, predicate: impl Fn(&State) -> bool)
 #[test]
 fn engine_delivers_each_signal_with_its_own_arguments_and_lazy_data() {
     use flowwm::{
-        engine::{Control, Engine},
+        engine::Control,
         store::Store,
     };
     let directory = tempfile::tempdir().unwrap();
@@ -585,7 +586,8 @@ fn engine_delivers_each_signal_with_its_own_arguments_and_lazy_data() {
     n.flow.inputs.push(Pin::new("number", Type::Int));
     wire(&mut state, &source, "out", &sink, "in");
     wire(&mut state, &value, "value", &sink, "number");
-    let (engine, _) = Engine::new(state, Store::new(directory.path().join("state")).unwrap());
+    let (engine, _) =
+        engine_with_worker(state, Store::new(directory.path().join("state")).unwrap());
     for count in [1, 2] {
         engine
             .request(Control::Emit {
@@ -610,7 +612,7 @@ fn engine_delivers_each_signal_with_its_own_arguments_and_lazy_data() {
 #[test]
 fn stop_interrupts_vox_and_python_loops_without_blocking_control() {
     use flowwm::{
-        engine::{Control, Engine},
+        engine::Control,
         store::Store,
     };
     for (kind, source) in [
@@ -621,7 +623,8 @@ fn stop_interrupts_vox_and_python_loops_without_blocking_control() {
         let mut state = State::empty(directory.path().into());
         let id = node(&mut state, kind);
         state.node_mut(&id).unwrap().command = source.into();
-        let (engine, _) = Engine::new(state, Store::new(directory.path().join("state")).unwrap());
+        let (engine, _) =
+            engine_with_worker(state, Store::new(directory.path().join("state")).unwrap());
         engine
             .request(Control::Activate {
                 id: id.clone(),
@@ -687,4 +690,18 @@ fn alert_nodes_evaluate_their_message_lazily_and_emit_only_when_triggered() {
     assert_eq!(result.alerts.len(), 1);
     assert_eq!(result.alerts[0].message, "Build needs review");
     assert_eq!(result.values[&observer]["value"], "continued");
+}
+
+fn engine_with_worker(
+    state: flowwm::model::State,
+    store: flowwm::store::Store,
+) -> (
+    flowwm::engine::Engine,
+    std::sync::mpsc::Receiver<flowwm::engine::UiCommand>,
+) {
+    flowwm::engine::Engine::with_worker(
+        state,
+        store,
+        Some(std::path::PathBuf::from(env!("CARGO_BIN_EXE_flowwm"))),
+    )
 }

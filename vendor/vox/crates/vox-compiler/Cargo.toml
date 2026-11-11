@@ -1,0 +1,9 @@
+[package]
+name = "vox-compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wasm-encoder.workspace = true
+vox-core = { path = "../vox-core" }

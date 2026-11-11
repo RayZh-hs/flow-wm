@@ -1,0 +1,4331 @@
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
+
+use vox_compiler::frontend::ast::{
+    Argument, BinaryOp, BlockExpr, BlockItem, CompilationUnit, CompoundAssignmentOp, EconIntrinsic,
+    Expr, ExprKind, ForHeader, FunctionDecl, ImportDecl, IntrinsicExpr, LocalValueDecl, Mutability,
+    QualifiedName, StringPart, TopLevelItem, TypeKind, TypeSyntax, UnaryOp, UpdatedIntrinsic,
+    UpdatedPathSegment, ValueDecl, Visibility, WhenExpr,
+};
+use vox_core::{
+    builtins::{self, BuiltinReceiver},
+    host::{FunctionSpec, PackageManifest, TypeSpec, ValueSpec},
+    source::{ModuleKind, ModulePath},
+};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplType {
+    Unit,
+    Null,
+    Bool,
+    Int,
+    UInt,
+    Integer(vox_core::integer::IntegerType),
+    Float,
+    String,
+    List(Box<ReplType>),
+    Tuple(Vec<ReplType>),
+    Nullable(Box<ReplType>),
+    DynTrait(String),
+    Named {
+        name: String,
+        arguments: Vec<ReplType>,
+    },
+    Function {
+        parameters: Vec<ReplType>,
+        result: Box<ReplType>,
+    },
+    GenericFunction {
+        generic_parameters: Vec<GenericParameterSummary>,
+        parameters: Vec<ReplType>,
+        result: Box<ReplType>,
+    },
+    Record(Vec<RecordFieldType>),
+    Range(Box<ReplType>),
+    TypeParameter {
+        name: String,
+        bound: Option<String>,
+    },
+    Unknown(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordFieldType {
+    pub name: String,
+    pub ty: ReplType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingSummary {
+    pub name: String,
+    pub ty: ReplType,
+    pub mutable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionSummary {
+    pub name: String,
+    pub generic_parameters: Vec<GenericParameterSummary>,
+    pub parameters: Vec<CallableParameterSummary>,
+    pub return_type: ReplType,
+    pub evil: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenericParameterSummary {
+    pub name: String,
+    pub bound: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableParameterSummary {
+    pub name: String,
+    pub ty: ReplType,
+    pub has_default: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeEnvironment {
+    pub imports: Vec<String>,
+    pub bindings: Vec<BindingSummary>,
+    pub functions: Vec<FunctionSummary>,
+    pub result: Option<ReplType>,
+    pub expr_type_map: BTreeMap<usize, (usize, ReplType)>,
+    pub warnings: Vec<String>,
+}
+
+impl TypeEnvironment {
+    pub fn find_type_at_offset(&self, offset: usize) -> Option<&ReplType> {
+        self.expr_type_map
+            .range(..=offset)
+            .next_back()
+            .and_then(|(_, (end, ty))| if offset < *end { Some(ty) } else { None })
+    }
+}
+
+pub fn infer_environment(
+    unit: &CompilationUnit,
+    manifests: &[PackageManifest],
+) -> Result<TypeEnvironment, String> {
+    let mut all_manifests = manifests.to_vec();
+    let frontend = vox_compiler::FrontendUnit::from_syntax(unit.clone());
+    all_manifests.push(vox_compiler::surface_manifest_from_frontend(&frontend));
+    let mut normalized = vox_compiler::FrontendUnit::from_syntax(unit.clone());
+    let errors =
+        vox_compiler::frontend::integer_context::normalize(&mut normalized, &all_manifests);
+    if errors.has_errors() {
+        return Err(errors.to_string());
+    }
+    let mut engine = TypeEngine::new(&normalized.syntax, &all_manifests);
+    engine.infer()
+}
+
+pub fn builtin_method_summaries_for_type(ty: &ReplType) -> Vec<FunctionSummary> {
+    let Some(receiver) = builtin_receiver_for_repl_type(ty) else {
+        return Vec::new();
+    };
+    builtins::builtin_methods_for_receiver(receiver)
+        .filter_map(|method| {
+            builtin_method_type_for_repl_type(ty, method.name).map(|method_type| {
+                let (parameters, result) = match method_type {
+                    ReplType::Function { parameters, result } => (parameters, *result),
+                    _ => return None,
+                };
+                Some(FunctionSummary {
+                    name: method.name.to_owned(),
+                    generic_parameters: Vec::new(),
+                    parameters: parameters
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, ty)| CallableParameterSummary {
+                            name: if index == 0 {
+                                "self".to_owned()
+                            } else {
+                                format!("arg{index}")
+                            },
+                            ty,
+                            has_default: false,
+                        })
+                        .collect(),
+                    return_type: result,
+                    evil: receiver == BuiltinReceiver::Econ && method.name == "update",
+                })
+            })?
+        })
+        .collect()
+}
+
+impl ReplType {
+    pub(crate) fn integer(ty: vox_core::integer::IntegerType) -> Self {
+        match ty {
+            vox_core::integer::IntegerType::Int64 => Self::Int,
+            vox_core::integer::IntegerType::UInt64 => Self::UInt,
+            _ => Self::Integer(ty),
+        }
+    }
+    pub(crate) fn integer_type(&self) -> Option<vox_core::integer::IntegerType> {
+        match self {
+            Self::Int => Some(vox_core::integer::IntegerType::Int64),
+            Self::UInt => Some(vox_core::integer::IntegerType::UInt64),
+            Self::Integer(ty) => Some(*ty),
+            _ => None,
+        }
+    }
+
+    pub fn render(&self) -> String {
+        match self {
+            Self::Unit => "Unit".to_owned(),
+            Self::Null => "Null".to_owned(),
+            Self::Bool => "Bool".to_owned(),
+            Self::Int => "Int".to_owned(),
+            Self::UInt => "UInt".to_owned(),
+            Self::Integer(ty) => ty.name().to_owned(),
+            Self::Float => "Float".to_owned(),
+            Self::String => "String".to_owned(),
+            Self::List(item) => format!("List[{}]", item.render()),
+            Self::Tuple(items) => match items.as_slice() {
+                [] => "()".to_owned(),
+                [single] => format!("({},)", single.render()),
+                _ => format!(
+                    "({})",
+                    items
+                        .iter()
+                        .map(ReplType::render)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            },
+            Self::Nullable(inner) => format!("{}?", inner.render()),
+            Self::DynTrait(name) => format!("dyn {name}"),
+            Self::Named { name, arguments } => {
+                if arguments.is_empty() {
+                    name.clone()
+                } else {
+                    format!(
+                        "{name}[{}]",
+                        arguments
+                            .iter()
+                            .map(ReplType::render)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
+            }
+            Self::Function { parameters, result } => format!(
+                "({}) -> {}",
+                parameters
+                    .iter()
+                    .map(ReplType::render)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                result.render()
+            ),
+            Self::GenericFunction {
+                generic_parameters,
+                parameters,
+                result,
+            } => format!(
+                "[{}] ({}) -> {}",
+                generic_parameters
+                    .iter()
+                    .map(|parameter| format!("{}: {}", parameter.name, parameter.bound))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                parameters
+                    .iter()
+                    .map(ReplType::render)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                result.render()
+            ),
+            Self::Record(fields) => format!(
+                "{{{}}}",
+                fields
+                    .iter()
+                    .map(|field| format!("{}: {}", field.name, field.ty.render()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::Range(item) => format!("Range[{}]", item.render()),
+            Self::TypeParameter { name, .. } => name.clone(),
+            Self::Unknown(name) => name.clone(),
+        }
+    }
+
+    fn is_assignable_to(&self, target: &Self) -> bool {
+        if let Some((a, b)) = self.integer_type().zip(target.integer_type()) {
+            return a.can_widen_to(b);
+        }
+        // Scalar widening does not reinterpret the element types of an existing
+        // container, nullable value, or callable. Contextual literals have
+        // already been converted element by element by the frontend.
+        if integer_width_change(self, target) {
+            return false;
+        }
+        match (self, target) {
+            (_, Self::Unknown(_)) | (Self::Unknown(_), _) => true,
+            (Self::Null, Self::Nullable(_)) => true,
+            (left, right) if left == right => true,
+            (Self::Tuple(left), Self::Tuple(right)) => {
+                left.len() == right.len()
+                    && left
+                        .iter()
+                        .zip(right.iter())
+                        .all(|(left, right)| left.is_assignable_to(right))
+            }
+            (Self::List(left), Self::List(right))
+            | (Self::Nullable(left), Self::Nullable(right))
+            | (Self::Range(left), Self::Range(right)) => left.is_assignable_to(right),
+            (left, Self::Nullable(right)) => left.is_assignable_to(right),
+            (
+                Self::Function {
+                    parameters: left_params,
+                    result: left_result,
+                },
+                Self::Function {
+                    parameters: right_params,
+                    result: right_result,
+                },
+            ) => {
+                left_params.len() == right_params.len()
+                    && left_params
+                        .iter()
+                        .zip(right_params.iter())
+                        .all(|(left, right)| left.is_assignable_to(right))
+                    && left_result.is_assignable_to(right_result)
+            }
+            (
+                Self::GenericFunction {
+                    generic_parameters: left_generics,
+                    parameters: left_params,
+                    result: left_result,
+                },
+                Self::GenericFunction {
+                    generic_parameters: right_generics,
+                    parameters: right_params,
+                    result: right_result,
+                },
+            ) => {
+                left_generics == right_generics
+                    && left_params.len() == right_params.len()
+                    && left_params
+                        .iter()
+                        .zip(right_params.iter())
+                        .all(|(left, right)| left.is_assignable_to(right))
+                    && left_result.is_assignable_to(right_result)
+            }
+            (
+                Self::Named {
+                    name: left_name,
+                    arguments: left_args,
+                },
+                Self::Named {
+                    name: right_name,
+                    arguments: right_args,
+                },
+            ) => {
+                left_name == right_name
+                    && left_args.len() == right_args.len()
+                    && left_args
+                        .iter()
+                        .zip(right_args.iter())
+                        .all(|(left, right)| left.is_assignable_to(right))
+            }
+            (_, Self::DynTrait(name)) if name == "Any" => true,
+            (Self::Record(left), Self::Record(right)) => {
+                left.len() == right.len()
+                    && left.iter().zip(right.iter()).all(|(left, right)| {
+                        left.name == right.name && left.ty.is_assignable_to(&right.ty)
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    fn is_known_assignable_to(&self, target: &Self) -> bool {
+        !self.is_unknown_type() && !target.is_unknown_type() && self.is_assignable_to(target)
+    }
+
+    fn is_unknown_type(&self) -> bool {
+        matches!(self, Self::Unknown(name) if name != "Never")
+    }
+
+    fn unify(left: Self, right: Self) -> Self {
+        if let Some(common) = left
+            .integer_type()
+            .zip(right.integer_type())
+            .and_then(|(a, b)| a.common(b))
+        {
+            return Self::integer(common);
+        }
+        if left == right {
+            return left;
+        }
+        match (&left, &right) {
+            (Self::Unknown(_), _) => right,
+            (_, Self::Unknown(_)) => left,
+            (Self::Null, Self::Nullable(_)) => right,
+            (Self::Nullable(_), Self::Null) => left,
+            (Self::Tuple(left_items), Self::Tuple(right_items))
+                if left_items.len() == right_items.len() =>
+            {
+                Self::Tuple(
+                    left_items
+                        .iter()
+                        .cloned()
+                        .zip(right_items.iter().cloned())
+                        .map(|(left, right)| Self::unify(left, right))
+                        .collect(),
+                )
+            }
+            (Self::List(left_item), Self::List(right_item)) => Self::List(Box::new(Self::unify(
+                (**left_item).clone(),
+                (**right_item).clone(),
+            ))),
+            (
+                Self::TypeParameter {
+                    name: left_name,
+                    bound: left_bound,
+                },
+                Self::TypeParameter {
+                    name: right_name,
+                    bound: right_bound,
+                },
+            ) if left_name == right_name && left_bound == right_bound => left,
+            _ => Self::Unknown(format!("{} | {}", left.render(), right.render())),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ValueInfo {
+    name: String,
+    ty: ReplType,
+    mutable: bool,
+}
+
+#[derive(Debug, Clone)]
+struct FunctionInfo {
+    summary: FunctionSummary,
+}
+
+#[derive(Debug, Clone)]
+struct MethodCandidate {
+    name: String,
+    receiver: ReplType,
+    origin: MethodOrigin,
+}
+
+#[derive(Debug, Clone)]
+enum MethodOrigin {
+    LocalFunction,
+    ImportedFunction {
+        package: String,
+        symbol: String,
+        visible_name: String,
+    },
+    Builtin,
+    TraitMethod {
+        trait_name: String,
+    },
+}
+
+impl MethodCandidate {
+    fn describe_origin(&self) -> String {
+        match &self.origin {
+            MethodOrigin::LocalFunction => format!("local function `{}`", self.name),
+            MethodOrigin::ImportedFunction {
+                package,
+                symbol,
+                visible_name,
+            } => {
+                let qualified = format!("{package}.{symbol}");
+                if symbol == visible_name {
+                    format!("imported function `{qualified}`")
+                } else {
+                    format!("imported function `{qualified}` (visible as `{visible_name}`)")
+                }
+            }
+            MethodOrigin::Builtin => {
+                format!("built-in method `{}.{}`", self.receiver.render(), self.name)
+            }
+            MethodOrigin::TraitMethod { trait_name } => {
+                format!("trait method `{trait_name}.{}`", self.name)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ImportedPackage {
+    manifest: Option<PackageManifest>,
+    selective: Option<Vec<(String, Option<String>)>>,
+}
+
+struct TypeEngine<'a> {
+    unit: &'a CompilationUnit,
+    module: String,
+    manifests: BTreeMap<String, PackageManifest>,
+    imports: BTreeMap<String, ImportedPackage>,
+    module_aliases: BTreeMap<String, String>,
+    values: BTreeMap<String, ValueInfo>,
+    functions: BTreeMap<String, FunctionInfo>,
+    expr_types: RefCell<BTreeMap<usize, (usize, ReplType)>>,
+    warnings: RefCell<Vec<String>>,
+    local_types: BTreeMap<String, TypeSpec>,
+    local_traits: BTreeMap<String, vox_core::host::TraitSpec>,
+}
+
+impl<'a> TypeEngine<'a> {
+    fn new(unit: &'a CompilationUnit, manifests: &'a [PackageManifest]) -> Self {
+        let local_frontend = vox_compiler::FrontendUnit::from_syntax(unit.clone());
+        let local_manifest = vox_compiler::surface_manifest_from_frontend(&local_frontend);
+        let local_types = unit
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                TopLevelItem::Struct(structure) => Some((
+                    structure.name.clone(),
+                    TypeSpec {
+                        name: vox_core::types::QualifiedTypeName {
+                            module: unit.header.module.clone(),
+                            name: structure.name.clone(),
+                        },
+                        fields: structure
+                            .fields
+                            .iter()
+                            .map(|field| vox_core::host::FieldSpec {
+                                name: field.name.clone(),
+                                ty: vox_core::types::VoxType::opaque_surface(
+                                    field.ty.to_source_string(),
+                                ),
+                            })
+                            .collect(),
+                    },
+                )),
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        Self {
+            module: unit.header.module.as_str(),
+            unit,
+            manifests: manifests
+                .iter()
+                .cloned()
+                .map(|manifest| (manifest.package.as_str(), manifest))
+                .collect(),
+            imports: BTreeMap::new(),
+            module_aliases: BTreeMap::new(),
+            values: BTreeMap::new(),
+            functions: BTreeMap::new(),
+            expr_types: RefCell::new(BTreeMap::new()),
+            warnings: RefCell::new(Vec::new()),
+            local_types: if local_types.is_empty() {
+                local_manifest
+                    .types
+                    .into_iter()
+                    .map(|ty| (ty.name.name.clone(), ty))
+                    .collect()
+            } else {
+                local_types
+            },
+            local_traits: local_manifest
+                .traits
+                .into_iter()
+                .map(|trait_spec| (trait_spec.name.name.clone(), trait_spec))
+                .collect(),
+        }
+    }
+
+    fn infer(&mut self) -> Result<TypeEnvironment, String> {
+        self.prime()?;
+        let result = if let Some(expr) = &self.unit.result {
+            let mut scope = self.top_level_scope();
+            Some(self.infer_expr(expr, &mut scope)?)
+        } else {
+            None
+        };
+
+        Ok(TypeEnvironment {
+            imports: self.imports.keys().cloned().collect(),
+            bindings: self
+                .values
+                .values()
+                .map(|binding| BindingSummary {
+                    name: binding.name.clone(),
+                    ty: binding.ty.clone(),
+                    mutable: binding.mutable,
+                })
+                .collect(),
+            functions: self
+                .functions
+                .values()
+                .map(|function| function.summary.clone())
+                .collect(),
+            result,
+            expr_type_map: self.expr_types.borrow().clone(),
+            warnings: self.warnings.borrow().clone(),
+        })
+    }
+
+    fn prime(&mut self) -> Result<(), String> {
+        self.collect_imports()?;
+        self.collect_function_headers()?;
+        self.validate_native_declarations()?;
+        self.check_method_guards()?;
+        self.infer_native_method_bodies()?;
+        match self.unit.header.kind {
+            ModuleKind::Package => {
+                self.collect_value_placeholders()?;
+                self.infer_function_bodies()?;
+                self.infer_value_initializers()?;
+            }
+            ModuleKind::Script { .. } => {
+                self.collect_parameter_bindings()?;
+                self.infer_parameter_defaults()?;
+                self.infer_script_items()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn infer_native_method_bodies(&mut self) -> Result<(), String> {
+        let methods = self
+            .unit
+            .items
+            .iter()
+            .flat_map(|item| match item {
+                TopLevelItem::Struct(structure) => structure
+                    .methods
+                    .iter()
+                    .map(|method| (method.clone(), structure.name.clone()))
+                    .collect::<Vec<_>>(),
+                TopLevelItem::Impl(implementation) => implementation
+                    .methods
+                    .iter()
+                    .map(|method| {
+                        (
+                            method.clone(),
+                            implementation.struct_name.to_source_string(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+                TopLevelItem::Trait(_) => Vec::new(),
+                _ => Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        for (method, _) in methods {
+            let mut scope = self.top_level_scope();
+            self.infer_function_body(&method, &mut scope)?;
+        }
+        for trait_decl in self.unit.items.iter().filter_map(|item| match item {
+            TopLevelItem::Trait(trait_decl) => Some(trait_decl),
+            _ => None,
+        }) {
+            for method in &trait_decl.methods {
+                let Some(body) = &method.body else {
+                    continue;
+                };
+                let mut scope = self.top_level_scope();
+                let synthetic = FunctionDecl {
+                    docs: method.docs.clone(),
+                    visibility: method.visibility,
+                    evil: method.evil,
+                    associated: method.associated,
+                    name: method.name.clone(),
+                    generic_parameters: method.generic_parameters.clone(),
+                    parameters: method.parameters.clone(),
+                    return_type: method.return_type.clone(),
+                    body: body.clone(),
+                    span: method.span.clone(),
+                };
+                self.infer_function_body(&synthetic, &mut scope)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_native_declarations(&self) -> Result<(), String> {
+        let mut structs = BTreeSet::new();
+        let mut traits = BTreeSet::new();
+        for item in &self.unit.items {
+            match item {
+                TopLevelItem::Struct(structure) => {
+                    if !structs.insert(structure.name.clone()) {
+                        return Err(format!("struct `{}` is already declared", structure.name));
+                    }
+                    let mut fields = BTreeSet::new();
+                    for field in &structure.fields {
+                        if !fields.insert(field.name.clone()) {
+                            return Err(format!(
+                                "struct `{}` has duplicate field `{}`",
+                                structure.name, field.name
+                            ));
+                        }
+                    }
+                    let mut methods = BTreeSet::new();
+                    for method in &structure.methods {
+                        if !methods.insert(method.name.clone()) {
+                            return Err(format!(
+                                "struct `{}` has duplicate method `{}`",
+                                structure.name, method.name
+                            ));
+                        }
+                    }
+                }
+                TopLevelItem::Trait(trait_decl) => {
+                    if !traits.insert(trait_decl.name.clone()) {
+                        return Err(format!("trait `{}` is already declared", trait_decl.name));
+                    }
+                    let mut members = BTreeSet::new();
+                    for field in &trait_decl.fields {
+                        if !members.insert(field.name.clone()) {
+                            return Err(format!(
+                                "trait `{}` has duplicate field `{}`",
+                                trait_decl.name, field.name
+                            ));
+                        }
+                    }
+                    for method in &trait_decl.methods {
+                        if !members.insert(method.name.clone()) {
+                            return Err(format!(
+                                "trait `{}` has duplicate member `{}`",
+                                trait_decl.name, method.name
+                            ));
+                        }
+                    }
+                }
+                TopLevelItem::Impl(implementation) => {
+                    let trait_name = implementation.trait_name.to_source_string();
+                    let struct_name = implementation.struct_name.to_source_string();
+                    let trait_decl = self
+                        .unit
+                        .items
+                        .iter()
+                        .find_map(|item| match item {
+                            TopLevelItem::Trait(trait_decl) if trait_decl.name == trait_name => {
+                                Some(trait_decl)
+                            }
+                            _ => None,
+                        })
+                        .ok_or_else(|| format!("unknown trait `{trait_name}` in impl"))?;
+                    let structure = self
+                        .unit
+                        .items
+                        .iter()
+                        .find_map(|item| match item {
+                            TopLevelItem::Struct(structure) if structure.name == struct_name => {
+                                Some(structure)
+                            }
+                            _ => None,
+                        })
+                        .ok_or_else(|| format!("unknown struct `{struct_name}` in impl"))?;
+                    for field in trait_decl
+                        .fields
+                        .iter()
+                        .filter(|field| matches!(field.visibility, Visibility::Public))
+                    {
+                        let Some(implemented) = structure
+                            .fields
+                            .iter()
+                            .find(|candidate| candidate.name == field.name)
+                        else {
+                            return Err(format!(
+                                "struct `{struct_name}` is missing trait field `{}`",
+                                field.name
+                            ));
+                        };
+                        if implemented.ty.to_source_string() != field.ty.to_source_string() {
+                            return Err(format!(
+                                "trait field `{}` has incompatible type",
+                                field.name
+                            ));
+                        }
+                    }
+                    for method in trait_decl
+                        .methods
+                        .iter()
+                        .filter(|method| matches!(method.visibility, Visibility::Public))
+                        .filter(|method| !method.associated)
+                    {
+                        let implemented = implementation
+                            .methods
+                            .iter()
+                            .chain(structure.methods.iter())
+                            .find(|candidate| candidate.name == method.name);
+                        if implemented.is_none() && method.body.is_none() {
+                            return Err(format!(
+                                "impl `{trait_name}` for `{struct_name}` is missing method `{}`",
+                                method.name
+                            ));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn collect_imports(&mut self) -> Result<(), String> {
+        for import in self
+            .unit
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                TopLevelItem::Import(import) => Some(import),
+                _ => None,
+            })
+            .flat_map(ImportDecl::expanded)
+        {
+            let name = import.module.to_source_string();
+            let manifest = self
+                .manifests
+                .get(&name)
+                .cloned()
+                .ok_or_else(|| format!("imported package `{name}` is not mounted"))?;
+
+            let selective = import.items.as_ref().map(|items| {
+                items
+                    .iter()
+                    .map(|item| (item.name.clone(), item.alias.clone()))
+                    .collect::<Vec<_>>()
+            });
+
+            if let Some(alias) = &import.alias {
+                self.imports.insert(
+                    alias.clone(),
+                    ImportedPackage {
+                        manifest: Some(manifest.clone()),
+                        selective: selective.clone(),
+                    },
+                );
+                self.module_aliases.insert(alias.clone(), name.clone());
+            } else if let Some(binding) = import.module.segments.last() {
+                self.imports.insert(
+                    binding.clone(),
+                    ImportedPackage {
+                        manifest: Some(manifest.clone()),
+                        selective: selective.clone(),
+                    },
+                );
+                self.module_aliases.insert(binding.clone(), name.clone());
+            }
+
+            self.imports.insert(
+                name.clone(),
+                ImportedPackage {
+                    manifest: Some(manifest.clone()),
+                    selective: selective.clone(),
+                },
+            );
+
+            if selective.is_none() {
+                let mut seen = BTreeSet::new();
+                seen.insert(name.clone());
+                self.collect_reexported_imports(&name, &manifest, &mut seen)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn collect_reexported_imports(
+        &mut self,
+        source_package: &str,
+        manifest: &PackageManifest,
+        seen: &mut BTreeSet<String>,
+    ) -> Result<(), String> {
+        for module in &manifest.reexports {
+            let name = module.as_str();
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            let reexport = self.manifests.get(&name).cloned().ok_or_else(|| {
+                format!("re-exported package `{name}` from `{source_package}` is not mounted")
+            })?;
+            self.imports
+                .entry(name.clone())
+                .or_insert_with(|| ImportedPackage {
+                    manifest: Some(reexport.clone()),
+                    selective: None,
+                });
+            self.collect_reexported_imports(&name, &reexport, seen)?;
+        }
+        Ok(())
+    }
+
+    fn collect_function_headers(&mut self) -> Result<(), String> {
+        let mut seen_by_name: BTreeMap<String, Vec<FunctionSummary>> = BTreeMap::new();
+
+        for item in &self.unit.items {
+            if let TopLevelItem::Function(function) = item {
+                let generic_parameters = generic_parameter_scope(&function.generic_parameters);
+                let mut parameters = Vec::with_capacity(function.parameters.len());
+                for parameter in &function.parameters {
+                    parameters.push(CallableParameterSummary {
+                        name: parameter.name.clone(),
+                        ty: self.type_from_syntax_checked(&parameter.ty, &generic_parameters)?,
+                        has_default: parameter.default.is_some(),
+                    });
+                }
+                let return_type = function
+                    .return_type
+                    .as_ref()
+                    .map(|ty| self.type_from_syntax_checked(ty, &generic_parameters))
+                    .transpose()?
+                    .unwrap_or_else(|| ReplType::Unknown(format!("{} return type", function.name)));
+                let summary = FunctionSummary {
+                    name: function.name.clone(),
+                    generic_parameters: function
+                        .generic_parameters
+                        .iter()
+                        .map(|parameter| GenericParameterSummary {
+                            name: parameter.name.clone(),
+                            bound: parameter.bound.clone(),
+                        })
+                        .collect(),
+                    parameters,
+                    return_type,
+                    evil: function.evil,
+                };
+
+                if let Some(existing) = seen_by_name.get(&function.name) {
+                    for prior in existing {
+                        if functions_indistinguishable(&summary, prior) {
+                            return Err(format!(
+                                "ambiguous function `{}`: has multiple definitions with the same parameter types",
+                                function.name
+                            ));
+                        }
+                    }
+                }
+
+                seen_by_name
+                    .entry(function.name.clone())
+                    .or_default()
+                    .push(summary.clone());
+                self.functions
+                    .insert(function.name.clone(), FunctionInfo { summary });
+            }
+        }
+
+        Ok(())
+    }
+
+    fn check_method_guards(&self) -> Result<(), String> {
+        let mut candidates = self.local_method_candidates()?;
+        candidates.extend(self.imported_method_candidates());
+        candidates.extend(builtin_method_candidates());
+        candidates.extend(self.trait_method_candidates());
+
+        for (index, candidate) in candidates.iter().enumerate() {
+            for other in candidates.iter().skip(index + 1) {
+                if candidate.name == other.name
+                    && method_receivers_overlap(&candidate.receiver, &other.receiver)
+                {
+                    return Err(format!(
+                        "method guard violation: method `{}` for receiver `{}` is provided by both {} and {}",
+                        candidate.name,
+                        collision_receiver_name(&candidate.receiver, &other.receiver),
+                        candidate.describe_origin(),
+                        other.describe_origin(),
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn local_method_candidates(&self) -> Result<Vec<MethodCandidate>, String> {
+        let mut candidates = Vec::new();
+        for function in self.unit.items.iter().filter_map(|item| match item {
+            TopLevelItem::Function(function) => Some(function),
+            _ => None,
+        }) {
+            let Some(parameter) = function.parameters.first() else {
+                continue;
+            };
+            let generic_parameters = generic_parameter_scope(&function.generic_parameters);
+            let receiver = self.type_from_syntax_checked(&parameter.ty, &generic_parameters)?;
+            self.push_function_method_candidates(
+                &mut candidates,
+                function.name.clone(),
+                receiver,
+                MethodOrigin::LocalFunction,
+            );
+        }
+        Ok(candidates)
+    }
+
+    fn imported_method_candidates(&self) -> Vec<MethodCandidate> {
+        let mut candidates = Vec::new();
+        for (import_path, imported) in &self.imports {
+            let Some(manifest) = &imported.manifest else {
+                continue;
+            };
+            if manifest.package.as_str() != *import_path {
+                continue;
+            }
+
+            if let Some(selective) = &imported.selective {
+                for (symbol, alias) in selective {
+                    let Some(function) = manifest.functions.iter().find(|function| {
+                        function.name == *symbol
+                            && matches!(
+                                function.export,
+                                vox_core::host::FunctionExportKind::Function
+                            )
+                    }) else {
+                        continue;
+                    };
+                    let Some(parameter) = function.parameters.first() else {
+                        continue;
+                    };
+                    let visible_name = alias.as_ref().unwrap_or(symbol).clone();
+                    self.push_function_method_candidates(
+                        &mut candidates,
+                        visible_name.clone(),
+                        from_vox_host_type(&parameter.ty),
+                        MethodOrigin::ImportedFunction {
+                            package: manifest.package.as_str(),
+                            symbol: symbol.clone(),
+                            visible_name,
+                        },
+                    );
+                }
+            } else {
+                for function in &manifest.functions {
+                    if !matches!(
+                        function.export,
+                        vox_core::host::FunctionExportKind::Function
+                    ) {
+                        continue;
+                    }
+                    let Some(parameter) = function.parameters.first() else {
+                        continue;
+                    };
+                    self.push_function_method_candidates(
+                        &mut candidates,
+                        function.name.clone(),
+                        from_vox_host_type(&parameter.ty),
+                        MethodOrigin::ImportedFunction {
+                            package: manifest.package.as_str(),
+                            symbol: function.name.clone(),
+                            visible_name: function.name.clone(),
+                        },
+                    );
+                }
+            }
+        }
+        candidates
+    }
+
+    fn trait_method_candidates(&self) -> Vec<MethodCandidate> {
+        let mut candidates = Vec::new();
+        let mut implementations_by_trait = BTreeMap::<_, BTreeSet<_>>::new();
+        for manifest in self.manifests.values() {
+            for (trait_name, implementations) in &manifest.trait_impls {
+                implementations_by_trait
+                    .entry(trait_name.clone())
+                    .or_default()
+                    .extend(implementations.iter().cloned());
+            }
+        }
+
+        for (trait_name, implementations) in implementations_by_trait {
+            let Some(trait_spec) = self.manifests.values().find_map(|candidate_manifest| {
+                candidate_manifest
+                    .traits
+                    .iter()
+                    .find(|trait_spec| trait_spec.name == trait_name)
+            }) else {
+                continue;
+            };
+            let full_trait_name = format!(
+                "{}.{}",
+                trait_spec.name.module.as_str(),
+                trait_spec.name.name
+            );
+
+            for method in &trait_spec.methods {
+                candidates.push(MethodCandidate {
+                    name: method.name.clone(),
+                    receiver: ReplType::DynTrait(full_trait_name.clone()),
+                    origin: MethodOrigin::TraitMethod {
+                        trait_name: full_trait_name.clone(),
+                    },
+                });
+                for implementation in &implementations {
+                    candidates.push(MethodCandidate {
+                        name: method.name.clone(),
+                        receiver: ReplType::Named {
+                            name: format!(
+                                "{}.{}",
+                                implementation.module.as_str(),
+                                implementation.name
+                            ),
+                            arguments: Vec::new(),
+                        },
+                        origin: MethodOrigin::TraitMethod {
+                            trait_name: full_trait_name.clone(),
+                        },
+                    });
+                }
+            }
+        }
+        candidates
+    }
+
+    fn push_function_method_candidates(
+        &self,
+        candidates: &mut Vec<MethodCandidate>,
+        name: String,
+        receiver: ReplType,
+        origin: MethodOrigin,
+    ) {
+        candidates.push(MethodCandidate {
+            name: name.clone(),
+            receiver: receiver.clone(),
+            origin: origin.clone(),
+        });
+
+        let ReplType::DynTrait(receiver_trait) = receiver else {
+            return;
+        };
+        let mut implementation_names = BTreeSet::new();
+        for manifest in self.manifests.values() {
+            for (trait_name, implementations) in &manifest.trait_impls {
+                let full_trait_name = format!("{}.{}", trait_name.module.as_str(), trait_name.name);
+                if !type_names_match(&receiver_trait, &full_trait_name) {
+                    continue;
+                }
+                for implementation in implementations {
+                    implementation_names.insert(format!(
+                        "{}.{}",
+                        implementation.module.as_str(),
+                        implementation.name
+                    ));
+                }
+            }
+        }
+        candidates.extend(implementation_names.into_iter().map(|implementation_name| {
+            MethodCandidate {
+                name: name.clone(),
+                receiver: ReplType::Named {
+                    name: implementation_name,
+                    arguments: Vec::new(),
+                },
+                origin: origin.clone(),
+            }
+        }));
+    }
+
+    fn collect_value_placeholders(&mut self) -> Result<(), String> {
+        for item in &self.unit.items {
+            match item {
+                TopLevelItem::Param(parameter) => {
+                    let ty = self.type_from_syntax_checked(&parameter.ty, &BTreeMap::new())?;
+                    self.values.insert(
+                        parameter.name.clone(),
+                        ValueInfo {
+                            name: parameter.name.clone(),
+                            ty,
+                            mutable: false,
+                        },
+                    );
+                }
+                TopLevelItem::Value(value) => {
+                    let ty = value
+                        .ty
+                        .as_ref()
+                        .map(|ty| self.type_from_syntax_checked(ty, &BTreeMap::new()))
+                        .transpose()?;
+                    self.values.insert(
+                        value.name.clone(),
+                        ValueInfo {
+                            name: value.name.clone(),
+                            ty: ty.unwrap_or_else(|| {
+                                ReplType::Unknown(format!("{} type", value.name))
+                            }),
+                            mutable: matches!(value.mutability, Mutability::Var),
+                        },
+                    );
+                }
+                TopLevelItem::Import(_)
+                | TopLevelItem::Function(_)
+                | TopLevelItem::Struct(_)
+                | TopLevelItem::Trait(_)
+                | TopLevelItem::Impl(_) => {}
+                TopLevelItem::Statement(_) => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn collect_parameter_bindings(&mut self) -> Result<(), String> {
+        for item in &self.unit.items {
+            let TopLevelItem::Param(parameter) = item else {
+                continue;
+            };
+            let ty = self.type_from_syntax_checked(&parameter.ty, &BTreeMap::new())?;
+            self.values.insert(
+                parameter.name.clone(),
+                ValueInfo {
+                    name: parameter.name.clone(),
+                    ty,
+                    mutable: false,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn infer_parameter_defaults(&self) -> Result<(), String> {
+        for item in &self.unit.items {
+            let TopLevelItem::Param(parameter) = item else {
+                continue;
+            };
+            let Some(default) = &parameter.default else {
+                continue;
+            };
+
+            let mut scope = self.top_level_scope();
+            let inferred = self.infer_expr(default, &mut scope)?;
+            let explicit =
+                self.type_from_syntax_checked(&parameter.ty, &scope.generic_parameters)?;
+            if !inferred.is_known_assignable_to(&explicit) {
+                return Err(format!(
+                    "parameter `{}` has default type `{}`, which is not assignable to `{}`",
+                    parameter.name,
+                    inferred.render(),
+                    explicit.render()
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn infer_function_bodies(&mut self) -> Result<(), String> {
+        for item in &self.unit.items {
+            let TopLevelItem::Function(function) = item else {
+                continue;
+            };
+
+            let mut scope = self.top_level_scope();
+            self.infer_function_body(function, &mut scope)?;
+        }
+
+        Ok(())
+    }
+
+    fn infer_value_initializers(&mut self) -> Result<(), String> {
+        for item in &self.unit.items {
+            let TopLevelItem::Value(value) = item else {
+                continue;
+            };
+
+            let mut scope = self.top_level_scope();
+            let ty = self.infer_value_initializer(value, &mut scope)?;
+            self.expr_types
+                .borrow_mut()
+                .insert(value.span.start, (value.span.end, ty.clone()));
+
+            if let Some(binding) = self.values.get_mut(&value.name) {
+                binding.ty = ty;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn infer_script_items(&mut self) -> Result<(), String> {
+        let mut scope = self.top_level_scope();
+        let mut finalized_values = BTreeMap::<String, BTreeSet<String>>::new();
+        for item in &self.unit.items {
+            match item {
+                TopLevelItem::Import(_)
+                | TopLevelItem::Param(_)
+                | TopLevelItem::Struct(_)
+                | TopLevelItem::Trait(_)
+                | TopLevelItem::Impl(_) => {}
+                TopLevelItem::Function(function) => {
+                    let captured = self.infer_function_body(function, &mut scope.clone())?;
+                    for name in captured {
+                        finalized_values
+                            .entry(name)
+                            .or_default()
+                            .insert(function.name.clone());
+                    }
+                }
+                TopLevelItem::Value(value) => {
+                    if let Some(functions) = finalized_values.get(&value.name) {
+                        return Err(captured_rebind_error(&value.name, functions));
+                    }
+                    let ty = self.infer_value_initializer(value, &mut scope)?;
+                    self.expr_types
+                        .borrow_mut()
+                        .insert(value.span.start, (value.span.end, ty.clone()));
+                    let binding = LocalBinding {
+                        ty: ty.clone(),
+                        mutable: matches!(value.mutability, Mutability::Var),
+                    };
+                    scope.values.insert(value.name.clone(), binding);
+                    self.values.insert(
+                        value.name.clone(),
+                        ValueInfo {
+                            name: value.name.clone(),
+                            ty,
+                            mutable: matches!(value.mutability, Mutability::Var),
+                        },
+                    );
+                }
+                TopLevelItem::Statement(statement) => {
+                    self.infer_script_statement(statement, &mut scope)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn infer_function_body(
+        &mut self,
+        function: &FunctionDecl,
+        scope: &mut TypeScope,
+    ) -> Result<BTreeSet<String>, String> {
+        let captured_values = self.validate_function_captures(function, scope)?;
+        let previous_evil = scope.evil;
+        scope.evil = function.evil;
+        scope.generic_parameters = generic_parameter_scope(&function.generic_parameters);
+        for parameter in &function.parameters {
+            scope.values.insert(
+                parameter.name.clone(),
+                LocalBinding {
+                    ty: self.type_from_syntax_checked(&parameter.ty, &scope.generic_parameters)?,
+                    mutable: false,
+                },
+            );
+        }
+
+        let inferred = self.infer_expr(&function.body, scope)?;
+        let return_type = if let Some(explicit) = &function.return_type {
+            let explicit = self.type_from_syntax_checked(explicit, &scope.generic_parameters)?;
+            if !inferred.is_known_assignable_to(&explicit) {
+                return Err(format!(
+                    "function `{}` returns `{}`, which is not assignable to `{}`",
+                    function.name,
+                    inferred.render(),
+                    explicit.render()
+                ));
+            }
+            explicit
+        } else {
+            inferred
+        };
+
+        if let Some(existing) = self.functions.get_mut(&function.name) {
+            existing.summary.return_type = return_type;
+        }
+        scope.evil = previous_evil;
+        Ok(captured_values)
+    }
+
+    fn validate_function_captures(
+        &self,
+        function: &FunctionDecl,
+        scope: &TypeScope,
+    ) -> Result<BTreeSet<String>, String> {
+        let parameter_names = function
+            .parameters
+            .iter()
+            .map(|parameter| parameter.name.clone())
+            .collect::<BTreeSet<_>>();
+        let captures = CaptureNameCollector::new(&self.module, &scope.values, parameter_names)
+            .collect_function(function);
+        for name in &captures {
+            let Some(binding) = scope.values.get(name) else {
+                continue;
+            };
+            if binding.mutable {
+                return Err(format!(
+                    "function `{}` cannot capture mutable binding `{}`; bind it to a `val` first",
+                    function.name, name
+                ));
+            }
+        }
+        Ok(captures)
+    }
+
+    fn infer_value_initializer(
+        &self,
+        value: &ValueDecl,
+        scope: &mut TypeScope,
+    ) -> Result<ReplType, String> {
+        let explicit = value
+            .ty
+            .as_ref()
+            .map(|ty| self.type_from_syntax_checked(ty, &scope.generic_parameters))
+            .transpose()?;
+        let inferred = self.infer_expr(&value.initializer, scope)?;
+        if let Some(explicit) = explicit {
+            if !inferred.is_known_assignable_to(&explicit) {
+                return Err(format!(
+                    "value `{}` has initializer type `{}`, which is not assignable to `{}`",
+                    value.name,
+                    inferred.render(),
+                    explicit.render()
+                ));
+            }
+            Ok(explicit)
+        } else {
+            Ok(inferred)
+        }
+    }
+
+    fn top_level_scope(&self) -> TypeScope {
+        let mut scope = TypeScope::default();
+        for binding in self.values.values() {
+            scope.values.insert(
+                binding.name.clone(),
+                LocalBinding {
+                    ty: binding.ty.clone(),
+                    mutable: binding.mutable,
+                },
+            );
+        }
+        scope
+    }
+
+    fn infer_expr(&self, expr: &Expr, scope: &mut TypeScope) -> Result<ReplType, String> {
+        let ty = self.infer_expr_inner(expr, scope)?;
+        self.expr_types
+            .borrow_mut()
+            .insert(expr.span.start, (expr.span.end, ty.clone()));
+        Ok(ty)
+    }
+
+    fn infer_expr_inner(&self, expr: &Expr, scope: &mut TypeScope) -> Result<ReplType, String> {
+        match &expr.kind {
+            ExprKind::Integer(_) => Ok(ReplType::Int),
+            ExprKind::UInt(_) => Ok(ReplType::UInt),
+            ExprKind::FixedInteger(v) => Ok(ReplType::integer(v.ty())),
+            ExprKind::IntegerWiden { target, ty } => {
+                self.infer_expr(target, scope)?;
+                Ok(ReplType::integer(*ty))
+            }
+            ExprKind::Float(_) => Ok(ReplType::Float),
+            ExprKind::Bool(_) => Ok(ReplType::Bool),
+            ExprKind::Null => Ok(ReplType::Null),
+            ExprKind::String(_) => Ok(ReplType::String),
+            ExprKind::List(items) => {
+                let mut item_type = ReplType::Unknown("Unknown".to_owned());
+                for item in items {
+                    item_type = ReplType::unify(item_type, self.infer_expr(item, scope)?);
+                }
+                Ok(ReplType::List(Box::new(item_type)))
+            }
+            ExprKind::Tuple(items) => {
+                if items.is_empty() {
+                    Ok(ReplType::Unit)
+                } else {
+                    items
+                        .iter()
+                        .map(|item| self.infer_expr(item, scope))
+                        .collect::<Result<Vec<_>, _>>()
+                        .map(ReplType::Tuple)
+                }
+            }
+            ExprKind::Record(fields) => fields
+                .iter()
+                .map(|field| {
+                    if let Some(ty) = &field.ty {
+                        self.type_from_syntax_checked(ty, &scope.generic_parameters)?;
+                    }
+                    self.infer_expr(&field.value, scope)
+                        .map(|ty| RecordFieldType {
+                            name: field.name.clone(),
+                            ty,
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(ReplType::Record),
+            ExprKind::Name(name) => self.resolve_name_type(name, scope),
+            ExprKind::Call { callee, arguments } => {
+                if let ExprKind::Field { target, name } = &callee.kind {
+                    if let Some(qualified) = expr_as_qualified_name(callee) {
+                        if let Ok(callee_type) = self.resolve_name_type(&qualified, scope) {
+                            return self.infer_call(callee_type, arguments, scope);
+                        }
+                    }
+                    if let Ok(receiver_type) = self.infer_expr(target, scope) {
+                        if let Some(method_type) =
+                            self.resolve_method_name_type(&receiver_type, name, scope)
+                        {
+                            return self.infer_method_call(
+                                receiver_type,
+                                name,
+                                method_type,
+                                arguments,
+                                scope,
+                            );
+                        }
+                    }
+                }
+                let callee_type = self.infer_expr(callee, scope)?;
+                self.infer_call(callee_type, arguments, scope)
+            }
+            ExprKind::Intrinsic(intrinsic) => self.infer_intrinsic(intrinsic, scope),
+            ExprKind::Index { target, .. } => match self.infer_expr(target, scope)? {
+                ReplType::List(item) | ReplType::Range(item) => Ok(*item),
+                ReplType::Tuple(items) => Ok(items
+                    .first()
+                    .cloned()
+                    .unwrap_or(ReplType::Unknown("Unknown".to_owned()))),
+                other => Err(format!("cannot index value of type `{}`", other.render())),
+            },
+            ExprKind::Field { target, name } => {
+                if let Some(qualified) = expr_as_qualified_name(expr) {
+                    if let Ok(ty) = self.resolve_name_type(&qualified, scope) {
+                        return Ok(ty);
+                    }
+                }
+                self.infer_field(target, name, scope)
+            }
+            ExprKind::SafeField { target, name } => {
+                let ty = self.infer_field(target, name, scope)?;
+                Ok(ReplType::Nullable(Box::new(ty)))
+            }
+            ExprKind::NonNull { target } => match self.infer_expr(target, scope)? {
+                ReplType::Nullable(inner) => Ok(*inner),
+                other => Ok(other),
+            },
+            ExprKind::ReceiverCall {
+                receiver,
+                callee,
+                arguments,
+            } => {
+                let receiver_type = self.infer_expr(receiver, scope)?;
+                let callee_type = self.resolve_name_type(callee, scope)?;
+                let mut args = Vec::with_capacity(arguments.len() + 1);
+                args.push(CallArgumentType::Positional(receiver_type));
+                for argument in arguments {
+                    match argument {
+                        Argument::Positional(expr) => {
+                            args.push(CallArgumentType::Positional(self.infer_expr(expr, scope)?));
+                        }
+                        Argument::Named { value, .. } => {
+                            args.push(CallArgumentType::Named(self.infer_expr(value, scope)?));
+                        }
+                    }
+                }
+                self.apply_call(callee_type, args)
+            }
+            ExprKind::Unary { op, expr } => {
+                let ty = self.infer_expr(expr, scope)?;
+                match (op, ty) {
+                    (UnaryOp::Negate, ReplType::Int) => Ok(ReplType::Int),
+                    (UnaryOp::Negate, ReplType::Integer(ty)) if ty.signed() => {
+                        Ok(ReplType::integer(ty))
+                    }
+                    (UnaryOp::Negate, ReplType::Float) => Ok(ReplType::Float),
+                    (UnaryOp::Not, ReplType::Bool) => Ok(ReplType::Bool),
+                    (_, other) => Err(format!("operator is not defined for `{}`", other.render())),
+                }
+            }
+            ExprKind::Binary { left, op, right } => self.infer_binary(left, *op, right, scope),
+            ExprKind::Range(range) => {
+                let start = range
+                    .start
+                    .as_ref()
+                    .map(|expr| self.infer_expr(expr, scope))
+                    .transpose()?
+                    .unwrap_or_else(|| ReplType::Unknown("Unknown".to_owned()));
+                let end = range
+                    .end
+                    .as_ref()
+                    .map(|expr| self.infer_expr(expr, scope))
+                    .transpose()?
+                    .unwrap_or_else(|| start.clone());
+                Ok(ReplType::Range(Box::new(ReplType::unify(start, end))))
+            }
+            ExprKind::If(expr) => {
+                let mut ty = ReplType::Unit;
+                for branch in &expr.branches {
+                    let condition = self.infer_expr(&branch.condition, scope)?;
+                    if condition != ReplType::Bool
+                        && condition != ReplType::Unknown("Unknown".to_owned())
+                    {
+                        return Err("if condition must be Bool".to_owned());
+                    }
+                    ty = ReplType::unify(ty, self.infer_block(&branch.body, scope)?);
+                }
+                if let Some(else_branch) = &expr.else_branch {
+                    ty = ReplType::unify(ty, self.infer_block(else_branch, scope)?);
+                }
+                Ok(ty)
+            }
+            ExprKind::When(expr) => {
+                let subject_ty = self.infer_expr(&expr.subject, scope)?;
+                let mut ty = ReplType::Unknown("Unknown".to_owned());
+                for arm in &expr.arms {
+                    let mut nested = scope.clone();
+                    if let Some(binding) = &arm.binding {
+                        nested.values.insert(
+                            binding.clone(),
+                            LocalBinding {
+                                ty: self.type_from_syntax_checked(
+                                    &arm.ty,
+                                    &nested.generic_parameters,
+                                )?,
+                                mutable: false,
+                            },
+                        );
+                    }
+                    ty = ReplType::unify(ty, self.infer_expr(&arm.body, &mut nested)?);
+                }
+                if let Some(else_arm) = &expr.else_arm {
+                    ty = ReplType::unify(ty, self.infer_expr(else_arm, scope)?);
+                }
+                self.check_when_exhaustiveness(expr, &subject_ty)?;
+                Ok(ty)
+            }
+            ExprKind::For(expr) => {
+                let mut loop_scope = scope.clone();
+                if let Some(init) = &expr.init {
+                    match init.as_ref() {
+                        BlockItem::LocalValue(value) => {
+                            self.infer_local_value(value, &mut loop_scope)?;
+                        }
+                        BlockItem::Assignment(assignment) => {
+                            let current = loop_scope
+                                .values
+                                .get(&assignment.name)
+                                .cloned()
+                                .ok_or_else(|| format!("unknown local `{}`", assignment.name))?;
+                            if !current.mutable {
+                                return Err(format!(
+                                    "cannot assign to immutable local `{}`",
+                                    assignment.name
+                                ));
+                            }
+                            let next = self.infer_expr(&assignment.value, &mut loop_scope)?;
+                            if !next.is_assignable_to(&current.ty) {
+                                return Err(format!(
+                                    "cannot assign `{}` to `{}`",
+                                    next.render(),
+                                    current.ty.render()
+                                ));
+                            }
+                        }
+                        BlockItem::CompoundAssignment(assignment) => {
+                            let current = loop_scope
+                                .values
+                                .get(&assignment.name)
+                                .cloned()
+                                .ok_or_else(|| format!("unknown local `{}`", assignment.name))?;
+                            if !current.mutable {
+                                return Err(format!(
+                                    "cannot assign to immutable local `{}`",
+                                    assignment.name
+                                ));
+                            }
+                            let rhs = self.infer_expr(&assignment.value, &mut loop_scope)?;
+                            self.infer_compound_assignment(&current.ty, &rhs, assignment.op)?;
+                        }
+                        BlockItem::Expr(expr) => {
+                            self.infer_expr(expr, &mut loop_scope)?;
+                        }
+                        _ => {
+                            return Err("unsupported statement in `for` header".to_owned());
+                        }
+                    }
+                }
+                match &expr.header {
+                    ForHeader::In { pattern, iterable } => {
+                        let iterable = self.infer_expr(iterable, &mut loop_scope)?;
+                        match iterable {
+                            ReplType::List(item) | ReplType::Range(item) => {
+                                loop_scope.values.insert(
+                                    pattern.clone(),
+                                    LocalBinding {
+                                        ty: *item,
+                                        mutable: false,
+                                    },
+                                );
+                                self.infer_block(&expr.body, &mut loop_scope)?;
+                            }
+                            other => {
+                                return Err(format!(
+                                    "for-loop requires an iterable list or range, found `{}`",
+                                    other.render()
+                                ));
+                            }
+                        }
+                    }
+                    ForHeader::Condition(condition) => {
+                        let cond = self.infer_expr(condition, &mut loop_scope)?;
+                        if !matches!(cond, ReplType::Bool) {
+                            return Err(format!(
+                                "for condition must be `Bool`, found `{}`",
+                                cond.render()
+                            ));
+                        }
+                        self.infer_block(&expr.body, &mut loop_scope)?;
+                    }
+                }
+                Ok(ReplType::Unit)
+            }
+            ExprKind::Lambda(lambda) => {
+                let mut nested = scope.clone();
+                let mut parameters = Vec::new();
+                let parameter_names = lambda
+                    .parameters
+                    .iter()
+                    .map(|parameter| parameter.name.clone())
+                    .collect::<BTreeSet<_>>();
+                let captures =
+                    CaptureNameCollector::new(&self.module, &nested.values, parameter_names)
+                        .collect(&lambda.body);
+                for name in captures {
+                    let Some(binding) = nested.values.get(&name) else {
+                        continue;
+                    };
+                    if binding.mutable {
+                        return Err(format!(
+                            "lambda cannot capture mutable binding `{name}`; bind it to a `val` first"
+                        ));
+                    }
+                }
+                for parameter in &lambda.parameters {
+                    let ty = parameter
+                        .ty
+                        .as_ref()
+                        .map(|ty| self.type_from_syntax_checked(ty, &nested.generic_parameters))
+                        .transpose()?
+                        .unwrap_or_else(|| ReplType::Unknown(parameter.name.clone()));
+                    nested.values.insert(
+                        parameter.name.clone(),
+                        LocalBinding {
+                            ty: ty.clone(),
+                            mutable: false,
+                        },
+                    );
+                    parameters.push(ty);
+                }
+                let result = self.infer_expr(&lambda.body, &mut nested)?;
+                Ok(ReplType::Function {
+                    parameters,
+                    result: Box::new(result),
+                })
+            }
+            ExprKind::Block(block) => self.infer_block(block, scope),
+        }
+    }
+
+    fn infer_intrinsic(
+        &self,
+        intrinsic: &IntrinsicExpr,
+        scope: &mut TypeScope,
+    ) -> Result<ReplType, String> {
+        match intrinsic {
+            IntrinsicExpr::Updated(updated) => self.infer_updated(updated, scope),
+            IntrinsicExpr::Econ(econ) => self.infer_econ(econ, scope),
+        }
+    }
+
+    fn check_when_exhaustiveness(
+        &self,
+        expr: &WhenExpr,
+        subject_ty: &ReplType,
+    ) -> Result<(), String> {
+        let ReplType::DynTrait(trait_name) = subject_ty else {
+            return Ok(());
+        };
+
+        let mut implementing_structs: BTreeSet<String> = BTreeSet::new();
+        for manifest in self.manifests.values() {
+            for (trait_qt, impls) in &manifest.trait_impls {
+                let full_trait = format!("{}.{}", trait_qt.module.as_str(), trait_qt.name);
+                if full_trait == *trait_name || trait_qt.name == *trait_name {
+                    for impl_qt in impls {
+                        let full_name = format!("{}.{}", impl_qt.module.as_str(), impl_qt.name);
+                        implementing_structs.insert(full_name);
+                        implementing_structs.insert(impl_qt.name.clone());
+                    }
+                }
+            }
+        }
+
+        if implementing_structs.is_empty() {
+            return Ok(());
+        }
+
+        if expr.else_arm.is_some() {
+            return Ok(());
+        }
+
+        let mut uncovered: BTreeSet<String> = implementing_structs;
+        for arm in &expr.arms {
+            let arm_type_str = arm.ty.to_source_string();
+            if arm_type_str.starts_with("dyn ") {
+                continue;
+            }
+            uncovered.remove(&arm_type_str);
+            let mut to_remove = Vec::new();
+            for name in &uncovered {
+                if arm_type_str.ends_with(&format!(".{}", name)) {
+                    to_remove.push(name.clone());
+                }
+            }
+            for name in to_remove {
+                uncovered.remove(&name);
+            }
+        }
+
+        if !uncovered.is_empty() {
+            let missing: Vec<String> = uncovered.into_iter().collect();
+            return Err(format!(
+                "`when` expression is not exhaustive: missing arm(s) for type(s) {}",
+                missing.join(", ")
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn infer_block(&self, block: &BlockExpr, scope: &mut TypeScope) -> Result<ReplType, String> {
+        let mut nested = scope.clone();
+        for item in &block.items {
+            match item {
+                BlockItem::LocalValue(value) => self.infer_local_value(value, &mut nested)?,
+                BlockItem::Assignment(assignment) => {
+                    if let Some(target) = &assignment.target {
+                        if !nested.evil {
+                            return Err("field assignment requires an `evil` function".to_owned());
+                        }
+                        let target_ty = self.infer_expr(target, &mut nested)?;
+                        let field_ty = self.native_field_type(&target_ty, &assignment.name)?;
+                        let next = self.infer_expr(&assignment.value, &mut nested)?;
+                        if !next.is_assignable_to(&field_ty) {
+                            return Err(format!(
+                                "cannot assign `{}` to `{}`",
+                                next.render(),
+                                field_ty.render()
+                            ));
+                        }
+                        continue;
+                    }
+                    let current = nested
+                        .values
+                        .get(&assignment.name)
+                        .cloned()
+                        .ok_or_else(|| format!("unknown local `{}`", assignment.name))?;
+                    if !current.mutable {
+                        return Err(format!(
+                            "cannot assign to immutable local `{}`",
+                            assignment.name
+                        ));
+                    }
+                    let next = self.infer_expr(&assignment.value, &mut nested)?;
+                    if !next.is_assignable_to(&current.ty) {
+                        return Err(format!(
+                            "cannot assign `{}` to `{}`",
+                            next.render(),
+                            current.ty.render()
+                        ));
+                    }
+                }
+                BlockItem::CompoundAssignment(assignment) => {
+                    if let Some(target) = &assignment.target {
+                        if !scope.evil {
+                            return Err("field assignment requires an `evil` function".to_owned());
+                        }
+                        let target_ty = self.infer_expr(target, &mut nested)?;
+                        let field_ty = self.native_field_type(&target_ty, &assignment.name)?;
+                        let rhs = self.infer_expr(&assignment.value, &mut nested)?;
+                        self.infer_compound_assignment(&field_ty, &rhs, assignment.op)?;
+                        continue;
+                    }
+                    let current = nested
+                        .values
+                        .get(&assignment.name)
+                        .cloned()
+                        .ok_or_else(|| format!("unknown local `{}`", assignment.name))?;
+                    if !current.mutable {
+                        return Err(format!(
+                            "cannot assign to immutable local `{}`",
+                            assignment.name
+                        ));
+                    }
+                    let rhs = self.infer_expr(&assignment.value, &mut nested)?;
+                    self.infer_compound_assignment(&current.ty, &rhs, assignment.op)?;
+                }
+                BlockItem::Return(statement) => {
+                    return Ok(statement
+                        .value
+                        .as_ref()
+                        .map(|value| self.infer_expr(value, &mut nested))
+                        .transpose()?
+                        .unwrap_or(ReplType::Unit));
+                }
+                BlockItem::Panic(_) => return Ok(ReplType::Unknown("Never".to_owned())),
+                BlockItem::Break(_) | BlockItem::Continue(_) => {
+                    return Ok(ReplType::Unknown("Never".to_owned()));
+                }
+                BlockItem::BlockStatement(expr) | BlockItem::Expr(expr) => {
+                    self.infer_expr(expr, &mut nested)?;
+                }
+            }
+        }
+
+        block
+            .trailing
+            .as_ref()
+            .map(|expr| self.infer_expr(expr, &mut nested))
+            .transpose()
+            .map(|value| value.unwrap_or(ReplType::Unit))
+    }
+
+    fn infer_script_statement(
+        &self,
+        statement: &BlockItem,
+        scope: &mut TypeScope,
+    ) -> Result<(), String> {
+        match statement {
+            BlockItem::LocalValue(value) => self.infer_local_value(value, scope),
+            BlockItem::Assignment(assignment) => {
+                let current = scope
+                    .values
+                    .get(&assignment.name)
+                    .cloned()
+                    .ok_or_else(|| format!("unknown local `{}`", assignment.name))?;
+                if !current.mutable {
+                    return Err(format!(
+                        "cannot assign to immutable local `{}`",
+                        assignment.name
+                    ));
+                }
+                let next = self.infer_expr(&assignment.value, scope)?;
+                if !next.is_assignable_to(&current.ty) {
+                    return Err(format!(
+                        "cannot assign `{}` to `{}`",
+                        next.render(),
+                        current.ty.render()
+                    ));
+                }
+                Ok(())
+            }
+            BlockItem::CompoundAssignment(assignment) => {
+                let current = scope
+                    .values
+                    .get(&assignment.name)
+                    .cloned()
+                    .ok_or_else(|| format!("unknown local `{}`", assignment.name))?;
+                if !current.mutable {
+                    return Err(format!(
+                        "cannot assign to immutable local `{}`",
+                        assignment.name
+                    ));
+                }
+                let rhs = self.infer_expr(&assignment.value, scope)?;
+                self.infer_compound_assignment(&current.ty, &rhs, assignment.op)
+            }
+            BlockItem::Return(_) => {
+                Err("`return` may only be used inside a function body".to_owned())
+            }
+            BlockItem::Panic(_) => Ok(()),
+            BlockItem::Break(_) => Err("`break` may only be used inside a `for` loop".to_owned()),
+            BlockItem::Continue(_) => {
+                Err("`continue` may only be used inside a `for` loop".to_owned())
+            }
+            BlockItem::BlockStatement(expr) | BlockItem::Expr(expr) => {
+                self.infer_expr(expr, scope)?;
+                Ok(())
+            }
+        }
+    }
+
+    fn infer_local_value(
+        &self,
+        value: &LocalValueDecl,
+        scope: &mut TypeScope,
+    ) -> Result<(), String> {
+        let explicit = value
+            .ty
+            .as_ref()
+            .map(|ty| self.type_from_syntax_checked(ty, &scope.generic_parameters))
+            .transpose()?;
+        let inferred = self.infer_expr(&value.initializer, scope)?;
+        let ty = if let Some(explicit) = explicit {
+            if !inferred.is_known_assignable_to(&explicit) {
+                return Err(format!(
+                    "local `{}` has initializer type `{}`, which is not assignable to `{}`",
+                    value.name,
+                    inferred.render(),
+                    explicit.render()
+                ));
+            }
+            explicit
+        } else {
+            inferred
+        };
+        self.expr_types
+            .borrow_mut()
+            .insert(value.span.start, (value.span.end, ty.clone()));
+        scope.values.insert(
+            value.name.clone(),
+            LocalBinding {
+                ty,
+                mutable: matches!(value.mutability, Mutability::Var),
+            },
+        );
+        Ok(())
+    }
+
+    fn infer_binary(
+        &self,
+        left: &Expr,
+        op: BinaryOp,
+        right: &Expr,
+        scope: &mut TypeScope,
+    ) -> Result<ReplType, String> {
+        let left = self.infer_expr(left, scope)?;
+        let right = self.infer_expr(right, scope)?;
+        match op {
+            BinaryOp::Add => addition_result(&left, &right).ok_or_else(|| {
+                format!(
+                    "operator `+` is not defined for `{}` and `{}`",
+                    left.render(),
+                    right.render()
+                )
+            }),
+            BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Remainder => {
+                numeric_result(&left, &right)
+            }
+            BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => {
+                if left.integer_type().is_some() || right.integer_type().is_some() {
+                    numeric_result(&left, &right)?;
+                }
+                Ok(ReplType::Bool)
+            }
+            BinaryOp::Equal | BinaryOp::NotEqual | BinaryOp::And | BinaryOp::Or => {
+                Ok(ReplType::Bool)
+            }
+            BinaryOp::Coalesce => match left {
+                ReplType::Nullable(inner) => Ok(ReplType::unify(*inner, right)),
+                other => Ok(ReplType::unify(other, right)),
+            },
+        }
+    }
+
+    fn infer_field(
+        &self,
+        target: &Expr,
+        name: &str,
+        scope: &mut TypeScope,
+    ) -> Result<ReplType, String> {
+        match self.infer_expr(target, scope)? {
+            ReplType::Record(fields) => fields
+                .into_iter()
+                .find(|field| field.name == name)
+                .map(|field| field.ty)
+                .ok_or_else(|| format!("record has no field `{name}`")),
+            ReplType::Nullable(inner) => match *inner {
+                ReplType::Record(fields) => fields
+                    .into_iter()
+                    .find(|field| field.name == name)
+                    .map(|field| ReplType::Nullable(Box::new(field.ty)))
+                    .ok_or_else(|| format!("record has no field `{name}`")),
+                other => Err(format!("cannot access field on `{}`", other.render())),
+            },
+            ReplType::Named {
+                name: type_name, ..
+            } => self
+                .native_type_spec(&type_name)
+                .and_then(|ty| ty.fields.iter().find(|field| field.name == name))
+                .map(|field| from_vox_host_type(&field.ty))
+                .ok_or_else(|| format!("type `{type_name}` has no field `{name}`")),
+            ReplType::DynTrait(trait_name) => self
+                .local_traits
+                .values()
+                .find(|trait_spec| {
+                    trait_spec.name.name == trait_name
+                        || format!(
+                            "{}.{}",
+                            trait_spec.name.module.as_str(),
+                            trait_spec.name.name
+                        ) == trait_name
+                })
+                .and_then(|trait_spec| trait_spec.fields.iter().find(|field| field.name == name))
+                .map(|field| from_vox_host_type(&field.ty))
+                .ok_or_else(|| format!("trait `{trait_name}` has no field `{name}`")),
+            other => Err(format!("cannot access field on `{}`", other.render())),
+        }
+    }
+
+    fn native_field_type(&self, target_type: &ReplType, field: &str) -> Result<ReplType, String> {
+        let ReplType::Named { name, .. } = target_type else {
+            return Err("field assignment requires a native struct receiver".to_owned());
+        };
+        self.native_type_spec(name)
+            .and_then(|ty| ty.fields.iter().find(|candidate| candidate.name == field))
+            .map(|field| from_vox_host_type(&field.ty))
+            .ok_or_else(|| format!("type `{name}` has no field `{field}`"))
+    }
+
+    fn native_type_spec(&self, name: &str) -> Option<&TypeSpec> {
+        self.local_types
+            .values()
+            .chain(
+                self.manifests
+                    .values()
+                    .flat_map(|manifest| manifest.types.iter()),
+            )
+            .find(|ty| {
+                ty.name.name == name
+                    || format!("{}.{}", ty.name.module.as_str(), ty.name.name) == name
+            })
+    }
+
+    fn infer_updated(
+        &self,
+        updated: &UpdatedIntrinsic,
+        scope: &mut TypeScope,
+    ) -> Result<ReplType, String> {
+        let updates = &updated.updates;
+        if updates.is_empty() {
+            return Err("`with` requires at least one field assignment".to_owned());
+        }
+
+        let target_type = self.infer_expr(&updated.target, scope)?;
+        let mut seen = BTreeSet::new();
+
+        for update in updates {
+            let path = render_updated_path(&update.path);
+            if !seen.insert(path.clone()) {
+                return Err(format!("`with` path `{path}` was provided more than once"));
+            }
+
+            let expected = self.updated_path_type(&target_type, &update.path)?;
+            let actual = self.infer_expr(&update.value, scope)?;
+            let assignment_type = if let Some(ty) = &update.ty {
+                let hinted = self.type_from_syntax_checked(ty, &scope.generic_parameters)?;
+                if !actual.is_assignable_to(&hinted) {
+                    return Err(format!(
+                        "cannot assign `{}` to `with` path `{path}` with hinted type `{}`",
+                        actual.render(),
+                        hinted.render()
+                    ));
+                }
+                if hinted != expected {
+                    return Err(format!(
+                        "hinted type `{}` does not match `with` path `{path}` of source type `{}`",
+                        hinted.render(),
+                        expected.render()
+                    ));
+                }
+                self.expr_types.borrow_mut().insert(
+                    update.value.span.start,
+                    (update.value.span.end, hinted.clone()),
+                );
+                hinted
+            } else {
+                actual
+            };
+            if !assignment_type.is_assignable_to(&expected) {
+                return Err(format!(
+                    "cannot assign `{}` to `with` path `{}` of type `{}`",
+                    assignment_type.render(),
+                    path,
+                    expected.render()
+                ));
+            }
+        }
+
+        Ok(target_type)
+    }
+
+    fn infer_econ(&self, econ: &EconIntrinsic, scope: &TypeScope) -> Result<ReplType, String> {
+        Ok(ReplType::Named {
+            name: "Econ".to_owned(),
+            arguments: vec![self.type_from_syntax_checked(&econ.ty, &scope.generic_parameters)?],
+        })
+    }
+
+    fn type_from_syntax_checked(
+        &self,
+        ty: &TypeSyntax,
+        generic_parameters: &BTreeMap<String, GenericParameterSummary>,
+    ) -> Result<ReplType, String> {
+        self.validate_type_syntax(ty, generic_parameters)?;
+        Ok(from_type_syntax(ty, generic_parameters))
+    }
+
+    fn validate_type_syntax(
+        &self,
+        ty: &TypeSyntax,
+        generic_parameters: &BTreeMap<String, GenericParameterSummary>,
+    ) -> Result<(), String> {
+        match &ty.kind {
+            TypeKind::Function { parameters, result } => {
+                for parameter in parameters {
+                    self.validate_type_syntax(parameter, generic_parameters)?;
+                }
+                self.validate_type_syntax(result, generic_parameters)
+            }
+            TypeKind::Nullable(inner) | TypeKind::Grouped(inner) => {
+                self.validate_type_syntax(inner, generic_parameters)
+            }
+            TypeKind::Named { name, arguments } => {
+                for argument in arguments {
+                    self.validate_type_syntax(argument, generic_parameters)?;
+                }
+
+                let raw = name.to_source_string();
+                if is_predefined_type_name(&raw)
+                    || generic_parameters.contains_key(&raw)
+                    || self.named_type_exists(&raw)
+                {
+                    Ok(())
+                } else {
+                    Err(format!("Unknown type {raw}."))
+                }
+            }
+            TypeKind::Dyn(name) => {
+                let raw = name.to_source_string();
+                if raw == "Any" || self.trait_type_exists(&raw) {
+                    Ok(())
+                } else {
+                    Err(format!("Unknown type {raw}."))
+                }
+            }
+            TypeKind::Tuple(items) => {
+                for item in items {
+                    self.validate_type_syntax(item, generic_parameters)?;
+                }
+                Ok(())
+            }
+            TypeKind::Record(fields) => {
+                for field in fields {
+                    self.validate_type_syntax(&field.ty, generic_parameters)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn named_type_exists(&self, raw: &str) -> bool {
+        if self.local_types.values().any(|ty| {
+            ty.name.name == raw || format!("{}.{}", ty.name.module.as_str(), ty.name.name) == raw
+        }) {
+            return true;
+        }
+        self.manifests.values().any(|manifest| {
+            manifest.types.iter().any(|ty| {
+                ty.name.name == raw
+                    || format!("{}.{}", ty.name.module.as_str(), ty.name.name) == raw
+            })
+        })
+    }
+
+    fn trait_type_exists(&self, raw: &str) -> bool {
+        if self.local_traits.values().any(|trait_spec| {
+            trait_spec.name.name == raw
+                || format!(
+                    "{}.{}",
+                    trait_spec.name.module.as_str(),
+                    trait_spec.name.name
+                ) == raw
+        }) {
+            return true;
+        }
+        self.manifests.values().any(|manifest| {
+            manifest.traits.iter().any(|trait_spec| {
+                trait_spec.name.name == raw
+                    || format!(
+                        "{}.{}",
+                        trait_spec.name.module.as_str(),
+                        trait_spec.name.name
+                    ) == raw
+            })
+        })
+    }
+
+    fn updated_path_type(
+        &self,
+        target: &ReplType,
+        path: &[UpdatedPathSegment],
+    ) -> Result<ReplType, String> {
+        let Some((segment, rest)) = path.split_first() else {
+            return Err("`with` update path cannot be empty".to_owned());
+        };
+
+        match (target, segment) {
+            (ReplType::Record(fields), UpdatedPathSegment::Field(name)) => {
+                let field = fields
+                    .iter()
+                    .find(|field| field.name == *name)
+                    .ok_or_else(|| format!("record has no field `{name}`"))?;
+                if rest.is_empty() {
+                    Ok(field.ty.clone())
+                } else {
+                    self.updated_path_type(&field.ty, rest)
+                }
+            }
+            (ReplType::Record(_), UpdatedPathSegment::Index(index)) => Err(format!(
+                "record updates require a field name, found `#{index}`"
+            )),
+            (ReplType::Tuple(items), UpdatedPathSegment::Index(index)) => {
+                let field = items
+                    .get(*index)
+                    .ok_or_else(|| format!("tuple index {index} is out of bounds"))?;
+                if rest.is_empty() {
+                    Ok(field.clone())
+                } else {
+                    self.updated_path_type(field, rest)
+                }
+            }
+            (ReplType::Tuple(_), UpdatedPathSegment::Field(name)) => Err(format!(
+                "tuple updates require an index like `#0`, found `{name}`"
+            )),
+            (ReplType::List(item), UpdatedPathSegment::Index(_)) => {
+                if rest.is_empty() {
+                    Ok((**item).clone())
+                } else {
+                    self.updated_path_type(item, rest)
+                }
+            }
+            (ReplType::List(_), UpdatedPathSegment::Field(name)) => Err(format!(
+                "list updates require an index like `#0`, found `{name}`"
+            )),
+            (named @ ReplType::Named { .. }, UpdatedPathSegment::Field(name)) => {
+                let field = self.native_field_type(named, name)?;
+                if rest.is_empty() {
+                    Ok(field)
+                } else {
+                    self.updated_path_type(&field, rest)
+                }
+            }
+            (ReplType::Named { name, .. }, UpdatedPathSegment::Index(index)) => Err(format!(
+                "struct `{name}` updates require a field name, found `#{index}`"
+            )),
+            (ReplType::Unknown(_), _) => Ok(target.clone()),
+            (other, _) => Err(format!("`with` is not supported for `{}`", other.render())),
+        }
+    }
+
+    fn infer_compound_assignment(
+        &self,
+        left: &ReplType,
+        right: &ReplType,
+        op: CompoundAssignmentOp,
+    ) -> Result<(), String> {
+        if left.integer_type().is_some() {
+            let result = numeric_result(left, right)?;
+            if !result.is_assignable_to(left) {
+                return Err(
+                    "compound assignment would narrow its integer result; convert explicitly"
+                        .to_owned(),
+                );
+            }
+        }
+        match op {
+            CompoundAssignmentOp::Add => {
+                self.infer_compound_add(left, right)?;
+                Ok(())
+            }
+            CompoundAssignmentOp::Subtract
+            | CompoundAssignmentOp::Multiply
+            | CompoundAssignmentOp::Divide
+            | CompoundAssignmentOp::Remainder => {
+                numeric_result(left, right)?;
+                Ok(())
+            }
+        }
+    }
+
+    fn infer_compound_add(&self, left: &ReplType, right: &ReplType) -> Result<(), String> {
+        addition_result(left, right).map(|_| ()).ok_or_else(|| {
+            format!(
+                "operator `+=` is not defined for `{}` and `{}`",
+                left.render(),
+                right.render()
+            )
+        })
+    }
+
+    fn infer_call(
+        &self,
+        callee_type: ReplType,
+        arguments: &[Argument],
+        scope: &mut TypeScope,
+    ) -> Result<ReplType, String> {
+        let arguments = arguments
+            .iter()
+            .map(|argument| match argument {
+                Argument::Positional(expr) => self
+                    .infer_expr(expr, scope)
+                    .map(CallArgumentType::Positional),
+                Argument::Named { value, .. } => {
+                    self.infer_expr(value, scope).map(CallArgumentType::Named)
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        self.apply_call(callee_type, arguments)
+    }
+
+    fn infer_method_call(
+        &self,
+        receiver_type: ReplType,
+        method_name: &str,
+        method_type: ReplType,
+        arguments: &[Argument],
+        scope: &mut TypeScope,
+    ) -> Result<ReplType, String> {
+        let mut method_args = Vec::with_capacity(arguments.len() + 1);
+        method_args.push(CallArgumentType::Positional(receiver_type.clone()));
+        let mut argument_types = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            match argument {
+                Argument::Positional(expr) => {
+                    let ty = self.infer_expr(expr, scope)?;
+                    argument_types.push(ty.clone());
+                    method_args.push(CallArgumentType::Positional(ty));
+                }
+                Argument::Named { value, .. } => {
+                    let ty = self.infer_expr(value, scope)?;
+                    argument_types.push(ty.clone());
+                    method_args.push(CallArgumentType::Named(ty));
+                }
+            }
+        }
+
+        let builtin_receiver = builtin_receiver_for_repl_type(&receiver_type);
+        if let Some(receiver) = builtin_receiver
+            && builtins::builtin_method(receiver, method_name).is_some()
+        {
+            validate_builtin_method_arity(method_name, &method_type, arguments.len())?;
+        }
+
+        if builtin_receiver != Some(BuiltinReceiver::List) {
+            return self.apply_call(method_type, method_args);
+        }
+        if builtins::builtin_method(BuiltinReceiver::List, method_name).is_none() {
+            return self.apply_call(method_type, method_args);
+        }
+
+        if let Some(result) =
+            infer_higher_order_list_method(&receiver_type, method_name, &argument_types)?
+        {
+            return Ok(result);
+        }
+
+        self.apply_call(method_type, method_args)
+    }
+
+    fn apply_call(
+        &self,
+        callee_type: ReplType,
+        arguments: Vec<CallArgumentType>,
+    ) -> Result<ReplType, String> {
+        let (generic_parameters, parameters, result) = match callee_type {
+            ReplType::Function { parameters, result } => (Vec::new(), parameters, result),
+            ReplType::GenericFunction {
+                generic_parameters,
+                parameters,
+                result,
+            } => (generic_parameters, parameters, result),
+            _ => return Err("attempted to call a non-function expression".to_owned()),
+        };
+
+        let mut assigned = vec![false; parameters.len()];
+        let mut next_positional = 0usize;
+        let mut substitutions = BTreeMap::new();
+
+        for argument in arguments {
+            match argument {
+                CallArgumentType::Positional(ty) => {
+                    while next_positional < parameters.len() && assigned[next_positional] {
+                        next_positional += 1;
+                    }
+                    let Some(parameter) = parameters.get(next_positional) else {
+                        return Err("too many positional arguments".to_owned());
+                    };
+                    if !self.argument_matches_parameter(
+                        parameter,
+                        &ty,
+                        &mut substitutions,
+                        !generic_parameters.is_empty(),
+                    )? {
+                        return Err(format!(
+                            "argument of type `{}` is not assignable to `{}`",
+                            ty.render(),
+                            parameter.render()
+                        ));
+                    }
+                    assigned[next_positional] = true;
+                    next_positional += 1;
+                }
+                CallArgumentType::Named(ty) => {
+                    if let Some((index, parameter)) = parameters
+                        .iter()
+                        .enumerate()
+                        .find(|(index, _)| !assigned[*index])
+                    {
+                        if !self.argument_matches_parameter(
+                            parameter,
+                            &ty,
+                            &mut substitutions,
+                            !generic_parameters.is_empty(),
+                        )? {
+                            return Err(format!(
+                                "argument of type `{}` is not assignable to `{}`",
+                                ty.render(),
+                                parameter.render()
+                            ));
+                        }
+                        assigned[index] = true;
+                    }
+                }
+            }
+        }
+
+        if generic_parameters.is_empty() {
+            return Ok(*result);
+        }
+
+        let mut resolved = BTreeMap::new();
+        for parameter in &generic_parameters {
+            let Some(ty) = substitutions.get(&parameter.name).cloned() else {
+                return Err(format!(
+                    "could not infer a concrete type for generic parameter `{}`",
+                    parameter.name
+                ));
+            };
+            if !type_satisfies_bound(&ty, &parameter.bound) {
+                return Err(format!(
+                    "argument type `{}` does not satisfy bound `{}` for `{}`",
+                    ty.render(),
+                    parameter.bound,
+                    parameter.name
+                ));
+            }
+            resolved.insert(parameter.name.clone(), ty);
+        }
+
+        Ok(substitute_repl_type(&result, &resolved))
+    }
+
+    fn argument_matches_parameter(
+        &self,
+        parameter: &ReplType,
+        argument: &ReplType,
+        substitutions: &mut BTreeMap<String, ReplType>,
+        allow_generic_inference: bool,
+    ) -> Result<bool, String> {
+        if !allow_generic_inference {
+            return Ok(argument.is_assignable_to(parameter));
+        }
+
+        match_generic_parameter(parameter, argument, substitutions)
+    }
+
+    fn resolve_name_type(
+        &self,
+        name: &QualifiedName,
+        scope: &TypeScope,
+    ) -> Result<ReplType, String> {
+        if name.segments.len() == 1 {
+            let local = &name.segments[0];
+            if let Some(binding) = scope.values.get(local) {
+                return Ok(binding.ty.clone());
+            }
+            if let Some(function) = self.functions.get(local) {
+                return Ok(self.function_repl_type(&function.summary));
+            }
+            if let Some(ty) = self.local_constructor_type(local) {
+                return Ok(ty);
+            }
+            if scope.generic_parameters.contains_key(local) {
+                return Err(type_name_used_as_value_error(local, "type parameter"));
+            }
+            if let Some(kind) = predefined_type_name_kind(local) {
+                return Err(type_name_used_as_value_error(local, kind));
+            }
+            if let Some(result) = self.resolve_unqualified_name(local)? {
+                return Ok(result);
+            }
+            return Err(format!("unknown name `{local}`"));
+        }
+
+        if name.segments.len() == 2 {
+            if let Some(method) =
+                self.local_associated_method_type(&name.segments[0], &name.segments[1])
+            {
+                return Ok(method);
+            }
+        }
+
+        if let Some(local) = self.resolve_local_qualified_name(name) {
+            if let Some(binding) = scope.values.get(&local) {
+                return Ok(binding.ty.clone());
+            }
+            if let Some(function) = self.functions.get(&local) {
+                return Ok(self.function_repl_type(&function.summary));
+            }
+        }
+
+        self.resolve_imported_name(name)
+    }
+
+    fn local_constructor_type(&self, name: &str) -> Option<ReplType> {
+        let ty = self.local_types.get(name)?;
+        let parameters = ty
+            .fields
+            .iter()
+            .map(|field| from_vox_host_type(&field.ty))
+            .collect();
+        Some(ReplType::Function {
+            parameters,
+            result: Box::new(ReplType::Named {
+                name: name.to_owned(),
+                arguments: Vec::new(),
+            }),
+        })
+    }
+
+    fn local_associated_method_type(&self, owner: &str, method: &str) -> Option<ReplType> {
+        let structure = self.unit.items.iter().find_map(|item| match item {
+            TopLevelItem::Struct(structure) if structure.name == owner => Some(structure),
+            _ => None,
+        })?;
+        let function = structure
+            .methods
+            .iter()
+            .find(|function| function.associated && function.name == method)?;
+        Some(ReplType::Function {
+            parameters: function
+                .parameters
+                .iter()
+                .map(|parameter| from_type_syntax(&parameter.ty, &BTreeMap::new()))
+                .collect(),
+            result: Box::new(
+                function
+                    .return_type
+                    .as_ref()
+                    .map(|ty| from_type_syntax(ty, &BTreeMap::new()))
+                    .unwrap_or(ReplType::Unit),
+            ),
+        })
+    }
+
+    fn resolve_unqualified_name(&self, local: &str) -> Result<Option<ReplType>, String> {
+        enum ImportedSymbol<'a> {
+            Function(&'a FunctionSpec),
+            Value(&'a ValueSpec),
+        }
+
+        let mut candidates: Vec<(String, ImportedSymbol<'_>)> = Vec::new();
+        for (import_path, imported) in &self.imports {
+            if let Some(manifest) = &imported.manifest {
+                if manifest.package.as_str() != *import_path {
+                    continue;
+                }
+                if let Some(selective) = &imported.selective {
+                    for (name, alias) in selective {
+                        let effective = alias.as_ref().unwrap_or(name);
+                        if effective == local {
+                            if let Some(function) =
+                                manifest.functions.iter().find(|f| &f.name == name)
+                            {
+                                candidates.push((
+                                    import_path.clone(),
+                                    ImportedSymbol::Function(function),
+                                ));
+                            }
+                            if let Some(value) = manifest.values.iter().find(|v| &v.name == name) {
+                                candidates
+                                    .push((import_path.clone(), ImportedSymbol::Value(value)));
+                            }
+                        }
+                    }
+                } else {
+                    if let Some(function) = manifest.functions.iter().find(|f| f.name == local) {
+                        candidates.push((import_path.clone(), ImportedSymbol::Function(function)));
+                    }
+                    if let Some(value) = manifest.values.iter().find(|v| v.name == local) {
+                        candidates.push((import_path.clone(), ImportedSymbol::Value(value)));
+                    }
+                }
+            }
+        }
+
+        match candidates.len() {
+            0 => Ok(None),
+            1 => {
+                let (_path, symbol) = candidates.into_iter().next().unwrap();
+                Ok(Some(match symbol {
+                    ImportedSymbol::Function(function) => self.function_type_from_spec(function),
+                    ImportedSymbol::Value(value) => from_vox_host_type(&value.ty),
+                }))
+            }
+            _ => {
+                let names = candidates
+                    .iter()
+                    .map(|(path, _)| format!("`{path}.{}`", local))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Err(format!(
+                    "ambiguous name `{local}` (imported from multiple packages: {names})"
+                ))
+            }
+        }
+    }
+
+    fn resolve_local_qualified_name(&self, name: &QualifiedName) -> Option<String> {
+        let module = self.module.split('.').collect::<Vec<_>>();
+        if name.segments.len() != module.len() + 1 {
+            return None;
+        }
+        for (expected, actual) in module.iter().zip(name.segments.iter()) {
+            if expected != actual {
+                return None;
+            }
+        }
+        name.segments.last().cloned()
+    }
+
+    fn resolve_imported_name(&self, name: &QualifiedName) -> Result<ReplType, String> {
+        for length in (1..name.segments.len()).rev() {
+            let package = name.segments[..length].join(".");
+            let Some(imported) = self.imports.get(&package) else {
+                continue;
+            };
+            let Some(manifest) = &imported.manifest else {
+                return Err(format!("package `{package}` is not mounted"));
+            };
+
+            if let Some(selective) = &imported.selective {
+                if name.segments.len() != length + 1 {
+                    continue;
+                }
+                let symbol = &name.segments[length];
+                if !selective.iter().any(|(n, _)| n == symbol) {
+                    continue;
+                }
+            }
+
+            if name.segments.len() == length + 1 {
+                let symbol = &name.segments[length];
+                if let Some(function) = manifest
+                    .functions
+                    .iter()
+                    .find(|function| &function.name == symbol)
+                {
+                    return Ok(self.function_type_from_spec(function));
+                }
+                if let Some(value) = manifest.values.iter().find(|value| &value.name == symbol) {
+                    return Ok(from_vox_host_type(&value.ty));
+                }
+                if manifest.types.iter().any(|ty| ty.name.name == *symbol) {
+                    return Err(type_name_used_as_value_error(
+                        &format!("{package}.{symbol}"),
+                        "type",
+                    ));
+                }
+                if manifest
+                    .traits
+                    .iter()
+                    .any(|trait_spec| trait_spec.name.name == *symbol)
+                {
+                    return Err(type_name_used_as_value_error(
+                        &format!("{package}.{symbol}"),
+                        "trait",
+                    ));
+                }
+            }
+
+            if name.segments.len() == length + 2 {
+                let trait_symbol = &name.segments[length];
+                let method_symbol = &name.segments[length + 1];
+                if let Some(trait_spec) = manifest
+                    .traits
+                    .iter()
+                    .find(|trait_spec| trait_spec.name.name == *trait_symbol)
+                {
+                    if let Some(method) = trait_spec
+                        .methods
+                        .iter()
+                        .find(|method| method.name == *method_symbol)
+                    {
+                        if let Some(function) = manifest
+                            .functions
+                            .iter()
+                            .find(|function| function.name == method.lowered_by)
+                        {
+                            return Ok(self.function_type_from_spec(function));
+                        }
+
+                        let mut parameters = vec![ReplType::DynTrait(format!(
+                            "{}.{}",
+                            trait_spec.name.module.as_str(),
+                            trait_spec.name.name
+                        ))];
+                        parameters.extend(
+                            method
+                                .parameters
+                                .iter()
+                                .map(|parameter| from_vox_host_type(&parameter.ty)),
+                        );
+                        return Ok(ReplType::Function {
+                            parameters,
+                            result: Box::new(from_vox_host_type(&method.return_type)),
+                        });
+                    }
+                }
+            }
+        }
+
+        Err(format!(
+            "unknown qualified name `{}`",
+            name.to_source_string()
+        ))
+    }
+
+    fn resolve_method_name_type(
+        &self,
+        target_type: &ReplType,
+        method_name: &str,
+        _scope: &TypeScope,
+    ) -> Option<ReplType> {
+        if let Some(function) = self.functions.get(method_name) {
+            if let Some(first_param) = function.summary.parameters.first() {
+                if target_type.is_assignable_to(&first_param.ty) {
+                    return Some(self.function_repl_type(&function.summary));
+                }
+            }
+        }
+
+        for (import_path, imported) in &self.imports {
+            if let Some(manifest) = &imported.manifest {
+                if manifest.package.as_str() != *import_path {
+                    continue;
+                }
+                if let Some(selective) = &imported.selective {
+                    for (fn_name, alias) in selective {
+                        let effective = alias.as_ref().unwrap_or(fn_name);
+                        if effective == method_name {
+                            if let Some(function) =
+                                manifest.functions.iter().find(|f| &f.name == fn_name)
+                            {
+                                if let Some(first_param) = function.parameters.first() {
+                                    let param_ty = from_vox_host_type(&first_param.ty);
+                                    if target_type.is_assignable_to(&param_ty) {
+                                        return Some(self.function_type_from_spec(function));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if let Some(function) =
+                    manifest.functions.iter().find(|f| f.name == method_name)
+                {
+                    if let Some(first_param) = function.parameters.first() {
+                        let param_ty = from_vox_host_type(&first_param.ty);
+                        if target_type.is_assignable_to(&param_ty) {
+                            return Some(self.function_type_from_spec(function));
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(method_type) = builtin_method_type_for_repl_type(target_type, method_name) {
+            return Some(method_type);
+        }
+
+        if let ReplType::Named { name, .. } = target_type {
+            if let Some(structure) = self.local_types.get(name) {
+                if structure
+                    .fields
+                    .iter()
+                    .any(|field| field.name == method_name)
+                {
+                    return None;
+                }
+                if let Some(function) = self.unit.items.iter().find_map(|item| match item {
+                    TopLevelItem::Struct(structure) if structure.name == *name => structure
+                        .methods
+                        .iter()
+                        .find(|method| method.name == method_name),
+                    _ => None,
+                }) {
+                    let mut parameters = Vec::with_capacity(function.parameters.len());
+                    parameters.extend(
+                        function
+                            .parameters
+                            .iter()
+                            .map(|parameter| from_type_syntax(&parameter.ty, &BTreeMap::new())),
+                    );
+                    return Some(ReplType::Function {
+                        parameters,
+                        result: Box::new(
+                            function
+                                .return_type
+                                .as_ref()
+                                .map(|ty| from_type_syntax(ty, &BTreeMap::new()))
+                                .unwrap_or(ReplType::Unit),
+                        ),
+                    });
+                }
+            }
+        }
+
+        self.resolve_trait_method(target_type, method_name)
+    }
+
+    fn resolve_trait_method(&self, target_type: &ReplType, method_name: &str) -> Option<ReplType> {
+        let target_name = match target_type {
+            ReplType::Named { name, .. } => name,
+            ReplType::DynTrait(name) => name,
+            _ => return None,
+        };
+
+        for manifest in self.manifests.values() {
+            for (trait_qt, impls) in &manifest.trait_impls {
+                for impl_qt in impls {
+                    let full_impl = format!("{}.{}", impl_qt.module.as_str(), impl_qt.name);
+                    if full_impl == *target_name || impl_qt.name == *target_name {
+                        if let Some(trait_spec) =
+                            manifest.traits.iter().find(|t| &t.name == trait_qt)
+                        {
+                            if let Some(method) =
+                                trait_spec.methods.iter().find(|m| m.name == method_name)
+                            {
+                                if let Some(function) = manifest
+                                    .functions
+                                    .iter()
+                                    .find(|f| f.name == method.lowered_by)
+                                {
+                                    return Some(self.function_type_from_spec(function));
+                                }
+
+                                let trait_full = format!(
+                                    "{}.{}",
+                                    trait_spec.name.module.as_str(),
+                                    trait_spec.name.name
+                                );
+                                let mut parameters = vec![ReplType::DynTrait(trait_full)];
+                                parameters.extend(
+                                    method.parameters.iter().map(|p| from_vox_host_type(&p.ty)),
+                                );
+                                return Some(ReplType::Function {
+                                    parameters,
+                                    result: Box::new(from_vox_host_type(&method.return_type)),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    fn function_repl_type(&self, summary: &FunctionSummary) -> ReplType {
+        let parameters = summary
+            .parameters
+            .iter()
+            .map(|parameter| parameter.ty.clone())
+            .collect();
+        let result = Box::new(summary.return_type.clone());
+        if summary.generic_parameters.is_empty() {
+            ReplType::Function { parameters, result }
+        } else {
+            ReplType::GenericFunction {
+                generic_parameters: summary.generic_parameters.clone(),
+                parameters,
+                result,
+            }
+        }
+    }
+
+    fn function_type_from_spec(&self, function: &FunctionSpec) -> ReplType {
+        ReplType::Function {
+            parameters: function
+                .parameters
+                .iter()
+                .map(|parameter| from_vox_host_type(&parameter.ty))
+                .collect(),
+            result: Box::new(from_vox_host_type(&function.return_type)),
+        }
+    }
+}
+
+struct CaptureNameCollector<'a> {
+    module_segments: Vec<String>,
+    visible: &'a BTreeMap<String, LocalBinding>,
+    scopes: Vec<BTreeSet<String>>,
+    captures: BTreeSet<String>,
+}
+
+impl<'a> CaptureNameCollector<'a> {
+    fn new(
+        module: &str,
+        visible: &'a BTreeMap<String, LocalBinding>,
+        parameters: BTreeSet<String>,
+    ) -> Self {
+        Self {
+            module_segments: module.split('.').map(str::to_owned).collect(),
+            visible,
+            scopes: vec![parameters],
+            captures: BTreeSet::new(),
+        }
+    }
+
+    fn collect_function(mut self, function: &FunctionDecl) -> BTreeSet<String> {
+        for parameter in &function.parameters {
+            if let Some(default) = &parameter.default {
+                self.visit_expr(default);
+            }
+        }
+        self.visit_expr(&function.body);
+        self.captures
+    }
+
+    fn collect(mut self, expr: &Expr) -> BTreeSet<String> {
+        self.visit_expr(expr);
+        self.captures
+    }
+
+    fn push_scope(&mut self) {
+        self.scopes.push(BTreeSet::new());
+    }
+
+    fn pop_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    fn bind_name(&mut self, name: &str) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.to_owned());
+        }
+    }
+
+    fn is_shadowed(&self, name: &str) -> bool {
+        self.scopes.iter().rev().any(|scope| scope.contains(name))
+    }
+
+    fn capture_name(&mut self, name: &QualifiedName) {
+        let local = match name.segments.as_slice() {
+            [local] => local,
+            segments
+                if segments.len() == self.module_segments.len() + 1
+                    && segments[..self.module_segments.len()]
+                        .iter()
+                        .zip(self.module_segments.iter())
+                        .all(|(left, right)| left == right) =>
+            {
+                segments.last().expect("qualified name has a local segment")
+            }
+            _ => return,
+        };
+
+        if !self.is_shadowed(local) && self.visible.contains_key(local) {
+            self.captures.insert(local.clone());
+        }
+    }
+
+    fn visit_expr(&mut self, expr: &Expr) {
+        match &expr.kind {
+            ExprKind::Integer(_)
+            | ExprKind::UInt(_)
+            | ExprKind::FixedInteger(_)
+            | ExprKind::Float(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Null => {}
+            ExprKind::Name(name) => self.capture_name(name),
+            ExprKind::String(literal) => {
+                for part in &literal.parts {
+                    if let StringPart::Interpolation(expr) = part {
+                        self.visit_expr(expr);
+                    }
+                }
+            }
+            ExprKind::List(items) | ExprKind::Tuple(items) => {
+                for item in items {
+                    self.visit_expr(item);
+                }
+            }
+            ExprKind::Record(fields) => {
+                for field in fields {
+                    self.visit_expr(&field.value);
+                }
+            }
+            ExprKind::Call { callee, arguments } => {
+                self.visit_expr(callee);
+                for argument in arguments {
+                    self.visit_argument(argument);
+                }
+            }
+            ExprKind::Intrinsic(intrinsic) => self.visit_intrinsic(intrinsic),
+            ExprKind::Index { target, index } => {
+                self.visit_expr(target);
+                self.visit_expr(index);
+            }
+            ExprKind::Field { target, .. }
+            | ExprKind::SafeField { target, .. }
+            | ExprKind::NonNull { target }
+            | ExprKind::IntegerWiden { target, .. } => self.visit_expr(target),
+            ExprKind::ReceiverCall {
+                receiver,
+                callee,
+                arguments,
+            } => {
+                self.visit_expr(receiver);
+                self.capture_name(callee);
+                for argument in arguments {
+                    self.visit_argument(argument);
+                }
+            }
+            ExprKind::Unary { expr, .. } => self.visit_expr(expr),
+            ExprKind::Binary { left, right, .. } => {
+                self.visit_expr(left);
+                self.visit_expr(right);
+            }
+            ExprKind::Range(range) => {
+                if let Some(start) = &range.start {
+                    self.visit_expr(start);
+                }
+                if let Some(end) = &range.end {
+                    self.visit_expr(end);
+                }
+            }
+            ExprKind::If(expr) => {
+                for branch in &expr.branches {
+                    self.visit_expr(&branch.condition);
+                    self.visit_block(&branch.body);
+                }
+                if let Some(else_branch) = &expr.else_branch {
+                    self.visit_block(else_branch);
+                }
+            }
+            ExprKind::When(expr) => {
+                self.visit_expr(&expr.subject);
+                for arm in &expr.arms {
+                    self.push_scope();
+                    if let Some(binding) = &arm.binding {
+                        self.bind_name(binding);
+                    }
+                    self.visit_expr(&arm.body);
+                    self.pop_scope();
+                }
+                if let Some(else_arm) = &expr.else_arm {
+                    self.visit_expr(else_arm);
+                }
+            }
+            ExprKind::For(expr) => {
+                let scope_pushed = expr.init.is_some();
+                if scope_pushed {
+                    self.push_scope();
+                }
+                if let Some(init) = &expr.init {
+                    match init.as_ref() {
+                        BlockItem::LocalValue(value) => {
+                            self.visit_expr(&value.initializer);
+                            self.bind_name(&value.name);
+                        }
+                        BlockItem::Assignment(assignment) => {
+                            self.capture_name(&QualifiedName {
+                                segments: vec![assignment.name.clone()],
+                                span: assignment.span.clone(),
+                            });
+                            self.visit_expr(&assignment.value);
+                        }
+                        BlockItem::CompoundAssignment(assignment) => {
+                            self.capture_name(&QualifiedName {
+                                segments: vec![assignment.name.clone()],
+                                span: assignment.span.clone(),
+                            });
+                            self.visit_expr(&assignment.value);
+                        }
+                        BlockItem::Expr(e) => {
+                            self.visit_expr(e);
+                        }
+                        _ => {}
+                    }
+                }
+                match &expr.header {
+                    ForHeader::In { iterable, pattern } => {
+                        self.visit_expr(iterable);
+                        self.push_scope();
+                        self.bind_name(pattern);
+                        self.visit_block_contents(&expr.body);
+                        self.pop_scope();
+                    }
+                    ForHeader::Condition(condition) => {
+                        self.visit_expr(condition);
+                        self.visit_block_contents(&expr.body);
+                    }
+                }
+                if scope_pushed {
+                    self.pop_scope();
+                }
+            }
+            ExprKind::Lambda(lambda) => {
+                self.push_scope();
+                for parameter in &lambda.parameters {
+                    self.bind_name(&parameter.name);
+                }
+                self.visit_expr(&lambda.body);
+                self.pop_scope();
+            }
+            ExprKind::Block(block) => self.visit_block(block),
+        }
+    }
+
+    fn visit_argument(&mut self, argument: &Argument) {
+        match argument {
+            Argument::Positional(expr) => self.visit_expr(expr),
+            Argument::Named { value, .. } => self.visit_expr(value),
+        }
+    }
+
+    fn visit_intrinsic(&mut self, intrinsic: &IntrinsicExpr) {
+        match intrinsic {
+            IntrinsicExpr::Updated(updated) => {
+                self.visit_expr(&updated.target);
+                for update in &updated.updates {
+                    self.visit_expr(&update.value);
+                }
+            }
+            IntrinsicExpr::Econ(econ) => self.visit_block(&econ.body),
+        }
+    }
+
+    fn visit_block(&mut self, block: &BlockExpr) {
+        self.push_scope();
+        self.visit_block_contents(block);
+        self.pop_scope();
+    }
+
+    fn visit_block_contents(&mut self, block: &BlockExpr) {
+        for item in &block.items {
+            match item {
+                BlockItem::LocalValue(value) => {
+                    self.visit_expr(&value.initializer);
+                    self.bind_name(&value.name);
+                }
+                BlockItem::Assignment(assignment) => {
+                    self.capture_name(&QualifiedName {
+                        segments: vec![assignment.name.clone()],
+                        span: assignment.span.clone(),
+                    });
+                    self.visit_expr(&assignment.value);
+                }
+                BlockItem::CompoundAssignment(assignment) => {
+                    self.capture_name(&QualifiedName {
+                        segments: vec![assignment.name.clone()],
+                        span: assignment.span.clone(),
+                    });
+                    self.visit_expr(&assignment.value);
+                }
+                BlockItem::Return(statement) => {
+                    if let Some(value) = &statement.value {
+                        self.visit_expr(value);
+                    }
+                }
+                BlockItem::Panic(statement) => {
+                    for part in &statement.message.parts {
+                        if let StringPart::Interpolation(expr) = part {
+                            self.visit_expr(expr);
+                        }
+                    }
+                }
+                BlockItem::Break(_) | BlockItem::Continue(_) => {}
+                BlockItem::BlockStatement(expr) | BlockItem::Expr(expr) => self.visit_expr(expr),
+            }
+        }
+        if let Some(trailing) = &block.trailing {
+            self.visit_expr(trailing);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct TypeScope {
+    values: BTreeMap<String, LocalBinding>,
+    generic_parameters: BTreeMap<String, GenericParameterSummary>,
+    evil: bool,
+}
+
+#[derive(Debug, Clone)]
+struct LocalBinding {
+    ty: ReplType,
+    mutable: bool,
+}
+
+enum CallArgumentType {
+    Positional(ReplType),
+    Named(ReplType),
+}
+
+fn captured_rebind_error(name: &str, functions: &BTreeSet<String>) -> String {
+    let functions = render_function_set(functions);
+    format!("cannot rebind `{name}` because it is captured by {functions} in this scope")
+}
+
+fn render_function_set(functions: &BTreeSet<String>) -> String {
+    let names = functions
+        .iter()
+        .map(|function| format!("`{function}`"))
+        .collect::<Vec<_>>();
+    match names.as_slice() {
+        [single] => format!("function {single}"),
+        _ => format!("functions {}", names.join(", ")),
+    }
+}
+
+fn functions_indistinguishable(a: &FunctionSummary, b: &FunctionSummary) -> bool {
+    if a.parameters.len() != b.parameters.len() {
+        return false;
+    }
+    a.parameters
+        .iter()
+        .zip(b.parameters.iter())
+        .all(|(pa, pb)| pa.ty == pb.ty)
+}
+
+fn addition_result(left: &ReplType, right: &ReplType) -> Option<ReplType> {
+    if let Some(common) = left
+        .integer_type()
+        .zip(right.integer_type())
+        .and_then(|(a, b)| a.common(b))
+    {
+        return Some(ReplType::integer(common));
+    }
+    if (left.integer_type().is_some() && *right == ReplType::Float)
+        || (right.integer_type().is_some() && *left == ReplType::Float)
+    {
+        return Some(ReplType::Float);
+    }
+
+    match (left, right) {
+        (ReplType::Int, ReplType::Int) => Some(ReplType::Int),
+        (ReplType::UInt, ReplType::UInt) => Some(ReplType::UInt),
+        (ReplType::Float, ReplType::Float)
+        | (ReplType::Float, ReplType::Int)
+        | (ReplType::Int, ReplType::Float)
+        | (ReplType::Float, ReplType::UInt)
+        | (ReplType::UInt, ReplType::Float) => Some(ReplType::Float),
+        (ReplType::String, ReplType::String) => Some(ReplType::String),
+        (
+            ReplType::TypeParameter {
+                name: left_name,
+                bound: Some(left_bound),
+            },
+            ReplType::TypeParameter {
+                name: right_name,
+                bound: Some(right_bound),
+            },
+        ) if left_name == right_name
+            && left_bound == right_bound
+            && bound_allows_numeric(left_bound) =>
+        {
+            Some(left.clone())
+        }
+        _ => None,
+    }
+}
+
+fn numeric_result(left: &ReplType, right: &ReplType) -> Result<ReplType, String> {
+    if let Some(common) = left
+        .integer_type()
+        .zip(right.integer_type())
+        .and_then(|(a, b)| a.common(b))
+    {
+        return Ok(ReplType::integer(common));
+    }
+    if (left.integer_type().is_some() && *right == ReplType::Float)
+        || (right.integer_type().is_some() && *left == ReplType::Float)
+    {
+        return Ok(ReplType::Float);
+    }
+
+    match (left, right) {
+        (ReplType::Int, ReplType::Int) => Ok(ReplType::Int),
+        (ReplType::UInt, ReplType::UInt) => Ok(ReplType::UInt),
+        (ReplType::Float, ReplType::Float)
+        | (ReplType::Float, ReplType::Int)
+        | (ReplType::Int, ReplType::Float)
+        | (ReplType::Float, ReplType::UInt)
+        | (ReplType::UInt, ReplType::Float) => Ok(ReplType::Float),
+        (
+            ReplType::TypeParameter {
+                name: left_name,
+                bound: Some(left_bound),
+            },
+            ReplType::TypeParameter {
+                name: right_name,
+                bound: Some(right_bound),
+            },
+        ) if left_name == right_name
+            && left_bound == right_bound
+            && bound_allows_numeric(left_bound) =>
+        {
+            Ok(left.clone())
+        }
+        _ => Err(format!(
+            "numeric operator is not defined for `{}` and `{}`",
+            left.render(),
+            right.render()
+        )),
+    }
+}
+
+fn from_type_syntax(
+    ty: &TypeSyntax,
+    generic_parameters: &BTreeMap<String, GenericParameterSummary>,
+) -> ReplType {
+    match &ty.kind {
+        TypeKind::Function { parameters, result } => ReplType::Function {
+            parameters: parameters
+                .iter()
+                .map(|parameter| from_type_syntax(parameter, generic_parameters))
+                .collect(),
+            result: Box::new(from_type_syntax(result, generic_parameters)),
+        },
+        TypeKind::Nullable(inner) => {
+            ReplType::Nullable(Box::new(from_type_syntax(inner, generic_parameters)))
+        }
+        TypeKind::Named { name, arguments } => {
+            let raw = name.to_source_string();
+            match raw.as_str() {
+                "Int" => ReplType::Int,
+                "UInt" => ReplType::UInt,
+                other if vox_core::integer::IntegerType::from_name(other).is_some() => {
+                    ReplType::integer(vox_core::integer::IntegerType::from_name(other).unwrap())
+                }
+                other if vox_core::integer::IntegerType::from_name(other).is_some() => {
+                    ReplType::integer(vox_core::integer::IntegerType::from_name(other).unwrap())
+                }
+                "Float" => ReplType::Float,
+                "Bool" => ReplType::Bool,
+                "String" => ReplType::String,
+                "Unit" => ReplType::Unit,
+                "List" if arguments.len() == 1 => ReplType::List(Box::new(from_type_syntax(
+                    &arguments[0],
+                    generic_parameters,
+                ))),
+                _ if arguments.is_empty() => generic_parameters
+                    .get(&raw)
+                    .map(|parameter| ReplType::TypeParameter {
+                        name: parameter.name.clone(),
+                        bound: Some(parameter.bound.clone()),
+                    })
+                    .unwrap_or_else(|| ReplType::Named {
+                        name: raw,
+                        arguments: Vec::new(),
+                    }),
+                _ => ReplType::Named {
+                    name: raw,
+                    arguments: arguments
+                        .iter()
+                        .map(|argument| from_type_syntax(argument, generic_parameters))
+                        .collect(),
+                },
+            }
+        }
+        TypeKind::Dyn(name) => ReplType::DynTrait(name.to_source_string()),
+        TypeKind::Grouped(inner) => from_type_syntax(inner, generic_parameters),
+        TypeKind::Tuple(items) => {
+            if items.is_empty() {
+                ReplType::Unit
+            } else {
+                ReplType::Tuple(
+                    items
+                        .iter()
+                        .map(|item| from_type_syntax(item, generic_parameters))
+                        .collect(),
+                )
+            }
+        }
+        TypeKind::Record(fields) => {
+            if fields.is_empty() {
+                ReplType::Unit
+            } else {
+                ReplType::Record(
+                    fields
+                        .iter()
+                        .map(|field| RecordFieldType {
+                            name: field.name.clone(),
+                            ty: from_type_syntax(&field.ty, generic_parameters),
+                        })
+                        .collect(),
+                )
+            }
+        }
+    }
+}
+
+fn from_vox_host_type(ty: &vox_core::types::VoxType) -> ReplType {
+    match ty {
+        vox_core::types::VoxType::Int => ReplType::Int,
+        vox_core::types::VoxType::UInt => ReplType::UInt,
+        vox_core::types::VoxType::Integer(ty) => ReplType::integer(*ty),
+        vox_core::types::VoxType::Float => ReplType::Float,
+        vox_core::types::VoxType::Bool => ReplType::Bool,
+        vox_core::types::VoxType::String => ReplType::String,
+        vox_core::types::VoxType::List(item) => ReplType::List(Box::new(from_vox_host_type(item))),
+        vox_core::types::VoxType::Tuple(items) => {
+            if items.is_empty() {
+                ReplType::Unit
+            } else {
+                ReplType::Tuple(items.iter().map(from_vox_host_type).collect())
+            }
+        }
+        vox_core::types::VoxType::Record(fields) => ReplType::Record(
+            fields
+                .iter()
+                .map(|field| RecordFieldType {
+                    name: field.name.clone(),
+                    ty: from_vox_host_type(&field.ty),
+                })
+                .collect(),
+        ),
+        vox_core::types::VoxType::Nullable(inner) => {
+            ReplType::Nullable(Box::new(from_vox_host_type(inner)))
+        }
+        vox_core::types::VoxType::DynTrait(name) => {
+            ReplType::DynTrait(format!("{}.{}", name.module.as_str(), name.name))
+        }
+        vox_core::types::VoxType::Named(name) => ReplType::Named {
+            name: format!("{}.{}", name.module.as_str(), name.name),
+            arguments: Vec::new(),
+        },
+        vox_core::types::VoxType::TypeParameter(name) => ReplType::TypeParameter {
+            name: name.clone(),
+            bound: None,
+        },
+        vox_core::types::VoxType::OpaqueSurface(raw) => repl_type_from_opaque_surface(raw),
+    }
+}
+
+fn repl_type_from_opaque_surface(raw: &str) -> ReplType {
+    match raw {
+        "Int" => ReplType::Int,
+        "UInt" => ReplType::UInt,
+        other if vox_core::integer::IntegerType::from_name(other).is_some() => {
+            ReplType::integer(vox_core::integer::IntegerType::from_name(other).unwrap())
+        }
+        "Float" => ReplType::Float,
+        "Bool" => ReplType::Bool,
+        "String" => ReplType::String,
+        "Unit" | "()" => ReplType::Unit,
+        _ => ReplType::Named {
+            name: raw.to_owned(),
+            arguments: Vec::new(),
+        },
+    }
+}
+
+fn generic_parameter_scope(
+    parameters: &[vox_compiler::frontend::ast::GenericParameter],
+) -> BTreeMap<String, GenericParameterSummary> {
+    parameters
+        .iter()
+        .map(|parameter| {
+            (
+                parameter.name.clone(),
+                GenericParameterSummary {
+                    name: parameter.name.clone(),
+                    bound: parameter.bound.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+fn render_updated_path(path: &[UpdatedPathSegment]) -> String {
+    path.iter()
+        .map(|segment| match segment {
+            UpdatedPathSegment::Field(name) => name.clone(),
+            UpdatedPathSegment::Index(index) => format!("#{index}"),
+        })
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+fn expr_as_qualified_name(expr: &Expr) -> Option<QualifiedName> {
+    match &expr.kind {
+        ExprKind::Name(name) => Some(name.clone()),
+        ExprKind::Field { target, name } => {
+            let mut qualified = expr_as_qualified_name(target)?;
+            qualified.segments.push(name.clone());
+            qualified.span = expr.span.clone();
+            Some(qualified)
+        }
+        _ => None,
+    }
+}
+
+fn match_generic_parameter(
+    expected: &ReplType,
+    actual: &ReplType,
+    substitutions: &mut BTreeMap<String, ReplType>,
+) -> Result<bool, String> {
+    match expected {
+        ReplType::TypeParameter { name, bound } => {
+            if let Some(existing) = substitutions.get(name) {
+                return Ok(actual.is_assignable_to(existing) && existing.is_assignable_to(actual));
+            }
+            if let Some(bound) = bound {
+                if !type_satisfies_bound(actual, bound) {
+                    return Ok(false);
+                }
+            }
+            substitutions.insert(name.clone(), actual.clone());
+            Ok(true)
+        }
+        ReplType::List(expected_item) => {
+            let ReplType::List(actual_item) = actual else {
+                return Ok(false);
+            };
+            match_generic_parameter(expected_item, actual_item, substitutions)
+        }
+        ReplType::Nullable(expected_inner) => match actual {
+            ReplType::Null => Ok(true),
+            ReplType::Nullable(actual_inner) => {
+                match_generic_parameter(expected_inner, actual_inner, substitutions)
+            }
+            actual => match_generic_parameter(expected_inner, actual, substitutions),
+        },
+        ReplType::Tuple(expected_items) => {
+            let ReplType::Tuple(actual_items) = actual else {
+                return Ok(false);
+            };
+            if expected_items.len() != actual_items.len() {
+                return Ok(false);
+            }
+            for (expected, actual) in expected_items.iter().zip(actual_items.iter()) {
+                if !match_generic_parameter(expected, actual, substitutions)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        ReplType::Record(expected_fields) => {
+            let ReplType::Record(actual_fields) = actual else {
+                return Ok(false);
+            };
+            if expected_fields.len() != actual_fields.len() {
+                return Ok(false);
+            }
+            for (expected, actual) in expected_fields.iter().zip(actual_fields.iter()) {
+                if expected.name != actual.name
+                    || !match_generic_parameter(&expected.ty, &actual.ty, substitutions)?
+                {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        ReplType::Range(expected_item) => {
+            let ReplType::Range(actual_item) = actual else {
+                return Ok(false);
+            };
+            match_generic_parameter(expected_item, actual_item, substitutions)
+        }
+        ReplType::Named {
+            name: expected_name,
+            arguments: expected_arguments,
+        } => {
+            let ReplType::Named {
+                name: actual_name,
+                arguments: actual_arguments,
+            } = actual
+            else {
+                return Ok(false);
+            };
+            if expected_name != actual_name || expected_arguments.len() != actual_arguments.len() {
+                return Ok(false);
+            }
+            for (expected, actual) in expected_arguments.iter().zip(actual_arguments.iter()) {
+                if !match_generic_parameter(expected, actual, substitutions)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        ReplType::Function { parameters, result } => {
+            let ReplType::Function {
+                parameters: actual_parameters,
+                result: actual_result,
+            } = actual
+            else {
+                return Ok(false);
+            };
+            if parameters.len() != actual_parameters.len() {
+                return Ok(false);
+            }
+            for (expected, actual) in parameters.iter().zip(actual_parameters.iter()) {
+                if !match_generic_parameter(expected, actual, substitutions)? {
+                    return Ok(false);
+                }
+            }
+            match_generic_parameter(result, actual_result, substitutions)
+        }
+        _ => Ok(actual.is_assignable_to(expected)),
+    }
+}
+
+fn substitute_repl_type(ty: &ReplType, substitutions: &BTreeMap<String, ReplType>) -> ReplType {
+    match ty {
+        ReplType::List(item) => ReplType::List(Box::new(substitute_repl_type(item, substitutions))),
+        ReplType::Tuple(items) => ReplType::Tuple(
+            items
+                .iter()
+                .map(|item| substitute_repl_type(item, substitutions))
+                .collect(),
+        ),
+        ReplType::Nullable(inner) => {
+            ReplType::Nullable(Box::new(substitute_repl_type(inner, substitutions)))
+        }
+        ReplType::Named { name, arguments } => ReplType::Named {
+            name: name.clone(),
+            arguments: arguments
+                .iter()
+                .map(|argument| substitute_repl_type(argument, substitutions))
+                .collect(),
+        },
+        ReplType::Function { parameters, result } => ReplType::Function {
+            parameters: parameters
+                .iter()
+                .map(|parameter| substitute_repl_type(parameter, substitutions))
+                .collect(),
+            result: Box::new(substitute_repl_type(result, substitutions)),
+        },
+        ReplType::Record(fields) => ReplType::Record(
+            fields
+                .iter()
+                .map(|field| RecordFieldType {
+                    name: field.name.clone(),
+                    ty: substitute_repl_type(&field.ty, substitutions),
+                })
+                .collect(),
+        ),
+        ReplType::Range(item) => {
+            ReplType::Range(Box::new(substitute_repl_type(item, substitutions)))
+        }
+        ReplType::TypeParameter { name, .. } => substitutions
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| ty.clone()),
+        _ => ty.clone(),
+    }
+}
+
+fn builtin_receiver_for_repl_type(ty: &ReplType) -> Option<BuiltinReceiver> {
+    match ty {
+        ReplType::Int => Some(BuiltinReceiver::Int),
+        ReplType::UInt => Some(BuiltinReceiver::UInt),
+        ReplType::Integer(ty) => Some(BuiltinReceiver::Integer(*ty)),
+        ReplType::Float => Some(BuiltinReceiver::Float),
+        ReplType::Bool => Some(BuiltinReceiver::Bool),
+        ReplType::String => Some(BuiltinReceiver::String),
+        ReplType::List(_) => Some(BuiltinReceiver::List),
+        ReplType::Named { name, .. } if name == "Econ" => Some(BuiltinReceiver::Econ),
+        _ => None,
+    }
+}
+
+fn builtin_method_type_for_repl_type(ty: &ReplType, method_name: &str) -> Option<ReplType> {
+    let receiver = builtin_receiver_for_repl_type(ty)?;
+    builtins::builtin_method(receiver, method_name)?;
+    if ty.integer_type().is_some() || *ty == ReplType::Float {
+        let result = if let Some(integer) = method_name
+            .strip_prefix("to")
+            .and_then(vox_core::integer::IntegerType::from_name)
+        {
+            Some(ReplType::Nullable(Box::new(ReplType::integer(integer))))
+        } else {
+            match method_name {
+                "toString" => Some(ReplType::String),
+                "toFloat" => Some(ReplType::Float),
+                _ => None,
+            }
+        };
+        if let Some(result) = result {
+            return Some(ReplType::Function {
+                parameters: vec![ty.clone()],
+                result: Box::new(result),
+            });
+        }
+    }
+
+    let int = ReplType::Int;
+    let uint = ReplType::UInt;
+    let float = ReplType::Float;
+    let bool_ty = ReplType::Bool;
+    let string = ReplType::String;
+    let nullable_int = ReplType::Nullable(Box::new(ReplType::Int));
+    let nullable_uint = ReplType::Nullable(Box::new(ReplType::UInt));
+    let nullable_float = ReplType::Nullable(Box::new(ReplType::Float));
+
+    let signature = match (receiver, method_name) {
+        (BuiltinReceiver::Int, "toString") => (vec![int.clone()], string),
+        (BuiltinReceiver::Int, "toFloat") => (vec![int.clone()], float),
+        (BuiltinReceiver::Int, "toUInt") => (vec![int.clone()], nullable_uint),
+        (BuiltinReceiver::UInt, "toString") => (vec![uint.clone()], string),
+        (BuiltinReceiver::UInt, "toFloat") => (vec![uint.clone()], float),
+        (BuiltinReceiver::UInt, "toInt") => (vec![uint.clone()], nullable_int),
+        (BuiltinReceiver::Float, "toString") => (vec![float.clone()], string),
+        (BuiltinReceiver::Float, "toInt") => (vec![float.clone()], nullable_int),
+        (BuiltinReceiver::Float, "round" | "floor" | "ceil") => (vec![float.clone()], int),
+        (BuiltinReceiver::Bool, "toString") => (vec![bool_ty.clone()], string),
+        (BuiltinReceiver::String, "length") => (vec![string.clone()], int),
+        (BuiltinReceiver::String, "isEmpty") => (vec![string.clone()], bool_ty),
+        (BuiltinReceiver::String, "toInt") => (vec![string.clone()], nullable_int),
+        (BuiltinReceiver::String, "toFloat") => (vec![string.clone()], nullable_float),
+        (BuiltinReceiver::String, "startsWith" | "endsWith" | "contains") => {
+            (vec![string.clone(), string.clone()], bool_ty)
+        }
+        (BuiltinReceiver::String, "indexOf") => (
+            vec![string.clone(), string.clone()],
+            ReplType::Nullable(Box::new(ReplType::Int)),
+        ),
+        (BuiltinReceiver::String, "substring") => {
+            (vec![string.clone(), int.clone(), int.clone()], string)
+        }
+        (BuiltinReceiver::String, "replace") => {
+            (vec![string.clone(), string.clone(), string.clone()], string)
+        }
+        (BuiltinReceiver::String, "split") => (
+            vec![string.clone(), string.clone()],
+            ReplType::List(Box::new(string)),
+        ),
+        (BuiltinReceiver::String, "toLower" | "toUpper" | "trim") => (vec![string.clone()], string),
+        (BuiltinReceiver::String, "repeat") => (vec![string.clone(), int.clone()], string),
+        (BuiltinReceiver::List, "length" | "size") => (vec![ty.clone()], int),
+        (BuiltinReceiver::List, "isEmpty" | "contains") => {
+            let item = list_item_type(ty);
+            let params = if method_name == "contains" {
+                vec![ty.clone(), item]
+            } else {
+                vec![ty.clone()]
+            };
+            (params, bool_ty)
+        }
+        (BuiltinReceiver::List, "first" | "last") => (
+            vec![ty.clone()],
+            ReplType::Nullable(Box::new(list_item_type(ty))),
+        ),
+        (BuiltinReceiver::List, "get") => (
+            vec![ty.clone(), int.clone()],
+            ReplType::Nullable(Box::new(list_item_type(ty))),
+        ),
+        (BuiltinReceiver::List, "indexOf") => (
+            vec![ty.clone(), list_item_type(ty)],
+            ReplType::Nullable(Box::new(ReplType::Int)),
+        ),
+        (BuiltinReceiver::List, "slice") => (vec![ty.clone(), int.clone(), int], ty.clone()),
+        (BuiltinReceiver::List, "reversed") => (vec![ty.clone()], ty.clone()),
+        (BuiltinReceiver::List, "fold") => {
+            let item = list_item_type(ty);
+            let acc = ReplType::TypeParameter {
+                name: "U".to_owned(),
+                bound: None,
+            };
+            (
+                vec![
+                    ty.clone(),
+                    acc.clone(),
+                    ReplType::Function {
+                        parameters: vec![acc.clone(), item],
+                        result: Box::new(acc.clone()),
+                    },
+                ],
+                acc,
+            )
+        }
+        (BuiltinReceiver::List, "foldRight") => {
+            let item = list_item_type(ty);
+            let acc = ReplType::TypeParameter {
+                name: "U".to_owned(),
+                bound: None,
+            };
+            (
+                vec![
+                    ty.clone(),
+                    acc.clone(),
+                    ReplType::Function {
+                        parameters: vec![item, acc.clone()],
+                        result: Box::new(acc.clone()),
+                    },
+                ],
+                acc,
+            )
+        }
+        (BuiltinReceiver::List, "map") => {
+            let item = list_item_type(ty);
+            let mapped = ReplType::TypeParameter {
+                name: "U".to_owned(),
+                bound: None,
+            };
+            (
+                vec![
+                    ty.clone(),
+                    ReplType::Function {
+                        parameters: vec![item],
+                        result: Box::new(mapped.clone()),
+                    },
+                ],
+                ReplType::List(Box::new(mapped)),
+            )
+        }
+        (BuiltinReceiver::List, "filter") => (
+            vec![
+                ty.clone(),
+                ReplType::Function {
+                    parameters: vec![list_item_type(ty)],
+                    result: Box::new(bool_ty),
+                },
+            ],
+            ty.clone(),
+        ),
+        (BuiltinReceiver::List, "flatMap") => {
+            let item = list_item_type(ty);
+            let mapped = ReplType::TypeParameter {
+                name: "U".to_owned(),
+                bound: None,
+            };
+            (
+                vec![
+                    ty.clone(),
+                    ReplType::Function {
+                        parameters: vec![item],
+                        result: Box::new(ReplType::List(Box::new(mapped.clone()))),
+                    },
+                ],
+                ReplType::List(Box::new(mapped)),
+            )
+        }
+        (BuiltinReceiver::List, "zip") => {
+            let other_item = ReplType::TypeParameter {
+                name: "U".to_owned(),
+                bound: None,
+            };
+            (
+                vec![ty.clone(), ReplType::List(Box::new(other_item.clone()))],
+                ReplType::List(Box::new(ReplType::Tuple(vec![
+                    list_item_type(ty),
+                    other_item,
+                ]))),
+            )
+        }
+        (BuiltinReceiver::Econ, "update") => {
+            let snapshot = match ty {
+                ReplType::Named { arguments, .. } => arguments
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| ReplType::Unknown("Unknown".to_owned())),
+                _ => ReplType::Unknown("Unknown".to_owned()),
+            };
+            (vec![ty.clone()], snapshot)
+        }
+        _ => return None,
+    };
+
+    Some(ReplType::Function {
+        parameters: signature.0,
+        result: Box::new(signature.1),
+    })
+}
+
+fn infer_higher_order_list_method(
+    receiver_type: &ReplType,
+    method_name: &str,
+    arguments: &[ReplType],
+) -> Result<Option<ReplType>, String> {
+    let item = list_item_type(receiver_type);
+    match method_name {
+        "fold" => {
+            let [init, f] = arguments else {
+                return Ok(None);
+            };
+            let ReplType::Function { parameters, result } = f else {
+                return Ok(None);
+            };
+            if parameters.len() != 2 {
+                return Err("`fold` callback must accept two arguments".to_owned());
+            }
+            if !parameters[0].is_assignable_to(init) || !init.is_assignable_to(&parameters[0]) {
+                return Err(format!(
+                    "`fold` callback accumulator type `{}` must match initial value type `{}`",
+                    parameters[0].render(),
+                    init.render()
+                ));
+            }
+            if !item.is_assignable_to(&parameters[1]) {
+                return Err(format!(
+                    "`fold` callback item parameter `{}` cannot accept list item type `{}`",
+                    parameters[1].render(),
+                    item.render()
+                ));
+            }
+            if !result.is_assignable_to(init) {
+                return Err(format!(
+                    "`fold` callback result `{}` is not assignable to accumulator `{}`",
+                    result.render(),
+                    init.render()
+                ));
+            }
+            Ok(Some(init.clone()))
+        }
+        "foldRight" => {
+            let [init, f] = arguments else {
+                return Ok(None);
+            };
+            let ReplType::Function { parameters, result } = f else {
+                return Ok(None);
+            };
+            if parameters.len() != 2 {
+                return Err("`foldRight` callback must accept two arguments".to_owned());
+            }
+            if !item.is_assignable_to(&parameters[0]) {
+                return Err(format!(
+                    "`foldRight` callback item parameter `{}` cannot accept list item type `{}`",
+                    parameters[0].render(),
+                    item.render()
+                ));
+            }
+            if !parameters[1].is_assignable_to(init) || !init.is_assignable_to(&parameters[1]) {
+                return Err(format!(
+                    "`foldRight` callback accumulator type `{}` must match initial value type `{}`",
+                    parameters[1].render(),
+                    init.render()
+                ));
+            }
+            if !result.is_assignable_to(init) {
+                return Err(format!(
+                    "`foldRight` callback result `{}` is not assignable to accumulator `{}`",
+                    result.render(),
+                    init.render()
+                ));
+            }
+            Ok(Some(init.clone()))
+        }
+        "map" => {
+            let [f] = arguments else {
+                return Ok(None);
+            };
+            let ReplType::Function { parameters, result } = f else {
+                return Ok(None);
+            };
+            if parameters.len() != 1 {
+                return Err("`map` callback must accept one argument".to_owned());
+            }
+            if !item.is_assignable_to(&parameters[0]) {
+                return Err(format!(
+                    "`map` callback parameter `{}` cannot accept list item type `{}`",
+                    parameters[0].render(),
+                    item.render()
+                ));
+            }
+            Ok(Some(ReplType::List(Box::new((**result).clone()))))
+        }
+        "filter" => {
+            let [f] = arguments else {
+                return Ok(None);
+            };
+            let ReplType::Function { parameters, result } = f else {
+                return Ok(None);
+            };
+            if parameters.len() != 1 {
+                return Err("`filter` callback must accept one argument".to_owned());
+            }
+            if !item.is_assignable_to(&parameters[0]) {
+                return Err(format!(
+                    "`filter` callback parameter `{}` cannot accept list item type `{}`",
+                    parameters[0].render(),
+                    item.render()
+                ));
+            }
+            if !result.is_assignable_to(&ReplType::Bool) {
+                return Err(format!(
+                    "`filter` callback result must be Bool, found `{}`",
+                    result.render()
+                ));
+            }
+            Ok(Some(receiver_type.clone()))
+        }
+        "flatMap" => {
+            let [f] = arguments else {
+                return Ok(None);
+            };
+            let ReplType::Function { parameters, result } = f else {
+                return Ok(None);
+            };
+            if parameters.len() != 1 {
+                return Err("`flatMap` callback must accept one argument".to_owned());
+            }
+            if !item.is_assignable_to(&parameters[0]) {
+                return Err(format!(
+                    "`flatMap` callback parameter `{}` cannot accept list item type `{}`",
+                    parameters[0].render(),
+                    item.render()
+                ));
+            }
+            let ReplType::List(mapped) = &**result else {
+                return Err(format!(
+                    "`flatMap` callback result must be List, found `{}`",
+                    result.render()
+                ));
+            };
+            Ok(Some(ReplType::List(Box::new((**mapped).clone()))))
+        }
+        "zip" => {
+            let [other] = arguments else {
+                return Ok(None);
+            };
+            let ReplType::List(other_item) = other else {
+                return Ok(None);
+            };
+            Ok(Some(ReplType::List(Box::new(ReplType::Tuple(vec![
+                item,
+                (**other_item).clone(),
+            ])))))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn validate_builtin_method_arity(
+    method_name: &str,
+    method_type: &ReplType,
+    argument_count: usize,
+) -> Result<(), String> {
+    let ReplType::Function { parameters, .. } = method_type else {
+        return Ok(());
+    };
+    let expected = parameters.len().saturating_sub(1);
+    if argument_count == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{method_name}` expects {expected} argument(s), got {argument_count}"
+        ))
+    }
+}
+
+fn list_item_type(ty: &ReplType) -> ReplType {
+    match ty {
+        ReplType::List(item) => (**item).clone(),
+        _ => ReplType::Unknown("Unknown".to_owned()),
+    }
+}
+
+fn builtin_method_candidates() -> Vec<MethodCandidate> {
+    builtins::all_builtin_methods()
+        .map(|method| MethodCandidate {
+            name: method.name.to_owned(),
+            receiver: match method.receiver {
+                BuiltinReceiver::Int => ReplType::Int,
+                BuiltinReceiver::UInt => ReplType::UInt,
+                BuiltinReceiver::Integer(ty) => ReplType::integer(ty),
+                BuiltinReceiver::Float => ReplType::Float,
+                BuiltinReceiver::Bool => ReplType::Bool,
+                BuiltinReceiver::String => ReplType::String,
+                BuiltinReceiver::List => ReplType::List(Box::new(ReplType::TypeParameter {
+                    name: "T".to_owned(),
+                    bound: None,
+                })),
+                BuiltinReceiver::Econ => ReplType::Named {
+                    name: "Econ".to_owned(),
+                    arguments: vec![ReplType::TypeParameter {
+                        name: "T".to_owned(),
+                        bound: None,
+                    }],
+                },
+            },
+            origin: MethodOrigin::Builtin,
+        })
+        .collect()
+}
+
+fn method_receivers_overlap(left: &ReplType, right: &ReplType) -> bool {
+    match (left, right) {
+        (ReplType::Unknown(_), _) | (_, ReplType::Unknown(_)) => true,
+        (ReplType::TypeParameter { .. }, _) | (_, ReplType::TypeParameter { .. }) => true,
+        (ReplType::DynTrait(name), _) | (_, ReplType::DynTrait(name)) if name == "Any" => true,
+        (ReplType::Nullable(_), ReplType::Nullable(_)) => true,
+        (ReplType::Nullable(left), right) | (right, ReplType::Nullable(left)) => {
+            method_receivers_overlap(left, right)
+        }
+        (ReplType::List(left), ReplType::List(right))
+        | (ReplType::Range(left), ReplType::Range(right)) => method_receivers_overlap(left, right),
+        (ReplType::Tuple(left), ReplType::Tuple(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| method_receivers_overlap(left, right))
+        }
+        (ReplType::Record(left), ReplType::Record(right)) => {
+            left.len() == right.len()
+                && left.iter().zip(right).all(|(left, right)| {
+                    left.name == right.name && method_receivers_overlap(&left.ty, &right.ty)
+                })
+        }
+        (
+            ReplType::Named {
+                name: left_name,
+                arguments: left_arguments,
+            },
+            ReplType::Named {
+                name: right_name,
+                arguments: right_arguments,
+            },
+        ) => {
+            type_names_match(left_name, right_name)
+                && left_arguments.len() == right_arguments.len()
+                && left_arguments
+                    .iter()
+                    .zip(right_arguments)
+                    .all(|(left, right)| method_receivers_overlap(left, right))
+        }
+        (ReplType::DynTrait(left), ReplType::DynTrait(right)) => type_names_match(left, right),
+        _ => left == right,
+    }
+}
+
+fn type_names_match(left: &str, right: &str) -> bool {
+    left == right
+        || left.rsplit_once('.').is_some_and(|(_, name)| name == right)
+        || right.rsplit_once('.').is_some_and(|(_, name)| name == left)
+}
+
+fn collision_receiver_name(left: &ReplType, right: &ReplType) -> String {
+    if matches!(left, ReplType::TypeParameter { .. } | ReplType::Unknown(_)) {
+        right.render()
+    } else {
+        left.render()
+    }
+}
+
+fn bound_allows_numeric(bound: &str) -> bool {
+    matches!(bound, "Numeric")
+}
+
+fn type_satisfies_bound(ty: &ReplType, bound: &str) -> bool {
+    match bound {
+        "Any" => true,
+        "Numeric" => matches!(
+            ty,
+            ReplType::Int | ReplType::UInt | ReplType::Integer(_) | ReplType::Float
+        ),
+        _ => true,
+    }
+}
+
+fn predefined_type_name_kind(name: &str) -> Option<&'static str> {
+    if vox_core::integer::IntegerType::from_name(name).is_some() {
+        return Some("type");
+    }
+    match name {
+        "Int" | "UInt" | "Float" | "Bool" | "String" | "Unit" => Some("type"),
+        "List" | "Econ" => Some("type constructor"),
+        _ => None,
+    }
+}
+
+fn is_predefined_type_name(name: &str) -> bool {
+    predefined_type_name_kind(name).is_some()
+}
+
+fn type_name_used_as_value_error(name: &str, kind: &str) -> String {
+    format!(
+        "`{name}` is a {kind}, not a value; use it only in type positions such as annotations or `when ... is` arms"
+    )
+}
+
+pub fn language_keywords() -> Vec<String> {
+    [
+        "as", "dyn", "econ", "else", "evil", "false", "for", "fun", "if", "impl", "import", "in",
+        "is", "null", "package", "panic", "param", "private", "public", "return", "script",
+        "struct", "trait", "true", "val", "var", "when", "with",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
+
+pub fn extend_manifest_symbols(symbols: &mut Vec<String>, manifest: &PackageManifest) {
+    let package = manifest.package.as_str();
+    symbols.push(package.clone());
+
+    for reexport in &manifest.reexports {
+        symbols.push(reexport.as_str());
+    }
+
+    for function in &manifest.functions {
+        symbols.push(format!("{package}.{}", function.name));
+    }
+
+    for value in &manifest.values {
+        symbols.push(format!("{package}.{}", value.name));
+    }
+
+    for ty in &manifest.types {
+        symbols.push(format!("{package}.{}", ty.name.name));
+    }
+
+    for trait_spec in &manifest.traits {
+        symbols.push(format!("{package}.{}", trait_spec.name.name));
+        for method in &trait_spec.methods {
+            symbols.push(format!(
+                "{package}.{}.{}",
+                trait_spec.name.name, method.name
+            ));
+            symbols.push(format!("{package}.{}", method.lowered_by));
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn _module_path(raw: &str) -> ModulePath {
+    ModulePath::parse(raw).expect("module path")
+}
+
+fn integer_width_change(a: &ReplType, b: &ReplType) -> bool {
+    if let Some((a, b)) = a.integer_type().zip(b.integer_type()) {
+        return a != b;
+    }
+    match (a, b) {
+        (ReplType::List(a), ReplType::List(b))
+        | (ReplType::Nullable(a), ReplType::Nullable(b))
+        | (ReplType::Range(a), ReplType::Range(b)) => integer_width_change(a, b),
+        (ReplType::Tuple(a), ReplType::Tuple(b)) => {
+            a.iter().zip(b).any(|(a, b)| integer_width_change(a, b))
+        }
+        (ReplType::Record(a), ReplType::Record(b)) => a
+            .iter()
+            .zip(b)
+            .any(|(a, b)| integer_width_change(&a.ty, &b.ty)),
+        (
+            ReplType::Function {
+                parameters: a,
+                result: ar,
+            },
+            ReplType::Function {
+                parameters: b,
+                result: br,
+            },
+        ) => {
+            a.iter().zip(b).any(|(a, b)| integer_width_change(a, b)) || integer_width_change(ar, br)
+        }
+        _ => false,
+    }
+}

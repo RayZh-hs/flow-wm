@@ -702,12 +702,57 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
+name = "flow-builtins"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "flow-core",
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "flow-core"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "uuid",
+ "vox-core",
+ "vox-runtime",
+]
+
+[[package]]
+name = "flow-host"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "directories",
+ "flow-builtins",
+ "flow-core",
+ "libc",
+ "niri-config",
+ "niri-ipc",
+ "serde",
+ "serde_json",
+ "signal-hook",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "flowwm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "directories",
+ "flow-builtins",
+ "flow-core",
+ "flow-host",
  "gtk4",
  "gtk4-layer-shell",
  "libc",
@@ -718,8 +763,6 @@ dependencies = [
  "signal-hook",
  "tempfile",
  "uuid",
- "vox-core",
- "vox-runtime",
  "wayland-backend",
  "wayland-client",
  "wayland-scanner",

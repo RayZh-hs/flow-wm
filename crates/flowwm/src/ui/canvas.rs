@@ -666,6 +666,7 @@ fn canvas_node(node: &Node) -> Node {
 
 pub(super) fn row_state(state: &State, workspace: &str) -> State {
     State {
+        orchestration: None,
         connections: state
             .connections
             .iter()

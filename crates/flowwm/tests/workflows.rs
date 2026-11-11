@@ -55,8 +55,12 @@ fn row_view_changes_are_local_and_persist_across_restart() {
         ColumnMode::Node
     );
     f.engine.shutdown();
-    let state: State =
-        serde_json::from_slice(&fs::read(f.dir.path().join("data/state.json")).unwrap()).unwrap();
+    let state: State = serde_json::from_slice::<flow_core::migration::Envelope>(
+        &fs::read(f.dir.path().join("data/runtime-v2.json")).unwrap(),
+    )
+    .unwrap()
+    .into_compatibility()
+    .unwrap();
     assert_eq!(state.workspace().view, RowView::Nodes);
     assert_eq!(
         state
@@ -85,7 +89,7 @@ impl Fixture {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("data")).unwrap();
         let state = State::empty(dir.path().to_path_buf());
-        let (engine, _) = Engine::new(state, store);
+        let (engine, _) = engine_with_worker(state, store);
         Self { engine, dir }
     }
     fn node(&self, kind: NodeKind, command: &str) -> Node {
@@ -398,9 +402,12 @@ fn corrupt_state_is_preserved_and_restart_stops_running_work() {
         Status::Stopped
     );
     let invalid = b"{ corrupt state";
-    fs::write(dir.path().join("state.json"), invalid).unwrap();
+    fs::write(dir.path().join("runtime-v2.json"), invalid).unwrap();
     assert!(store.load(dir.path().into()).is_err());
-    assert_eq!(fs::read(dir.path().join("state.json")).unwrap(), invalid);
+    assert_eq!(
+        fs::read(dir.path().join("runtime-v2.json")).unwrap(),
+        invalid
+    );
 }
 
 #[test]
@@ -686,4 +693,18 @@ fn deleting_a_running_node_cancels_its_process_before_removing_the_node() {
     f.add(&next);
     f.run(&next.id, false);
     f.wait(&next.id, Status::Done);
+}
+
+fn engine_with_worker(
+    state: flowwm::model::State,
+    store: flowwm::store::Store,
+) -> (
+    flowwm::engine::Engine,
+    std::sync::mpsc::Receiver<flowwm::engine::UiCommand>,
+) {
+    Engine::with_worker(
+        state,
+        store,
+        Some(std::path::PathBuf::from(env!("CARGO_BIN_EXE_flowwm"))),
+    )
 }

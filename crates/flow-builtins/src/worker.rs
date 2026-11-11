@@ -1,5 +1,9 @@
 //! Run evaluations in an owned process group so Stop also interrupts Vox loops.
-use super::*;
+use crate::evaluate;
+use anyhow::{Context, Result, ensure};
+use flow_core::{graph::*, model::State};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
     fs::File,
     io::{Read, Write},
@@ -50,6 +54,7 @@ pub fn run_worker() -> Result<()> {
 }
 
 pub fn evaluate_isolated(
+    executable: &std::path::Path,
     mut state: State,
     root: &str,
     signal: Option<(String, Value)>,
@@ -69,16 +74,6 @@ pub fn evaluate_isolated(
         bytes.len() <= 32 * 1024 * 1024,
         "Graph snapshot is too large"
     );
-    let executable = std::env::current_exe()?;
-    let parent = executable.parent().context("Executable has no parent")?;
-    let executable = if parent.file_name().is_some_and(|n| n == "deps") {
-        parent
-            .parent()
-            .context("Missing build directory")?
-            .join("flowwm")
-    } else {
-        parent.join("flowwm")
-    };
     let (reader, writer) = UnixStream::pair()?;
     let fd = writer.as_raw_fd();
     let mut command = Command::new(executable);

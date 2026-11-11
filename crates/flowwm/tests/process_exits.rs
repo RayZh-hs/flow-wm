@@ -99,7 +99,8 @@ impl Fixture {
             )
             .unwrap();
         }
-        let (engine, _) = Engine::new(state, Store::new(directory.path().join("state")).unwrap());
+        let (engine, _) =
+            engine_with_worker(state, Store::new(directory.path().join("state")).unwrap());
         let fixture = Self {
             engine,
             desktop,
@@ -392,4 +393,18 @@ fn manually_stopping_a_closed_window_removes_it_and_cancels_exit_delivery() {
     child.wait().unwrap();
     fixture.sync();
     assert!(fixture.codes().is_empty());
+}
+
+fn engine_with_worker(
+    state: flowwm::model::State,
+    store: flowwm::store::Store,
+) -> (
+    flowwm::engine::Engine,
+    std::sync::mpsc::Receiver<flowwm::engine::UiCommand>,
+) {
+    Engine::with_worker(
+        state,
+        store,
+        Some(std::path::PathBuf::from(env!("CARGO_BIN_EXE_flowwm"))),
+    )
 }

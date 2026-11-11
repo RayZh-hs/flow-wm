@@ -1,0 +1,13 @@
+[package]
+name = "vox-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+inventory.workspace = true
+thiserror.workspace = true
+wasmtime.workspace = true
+vox-compiler = { path = "../vox-compiler" }
+vox-core = { path = "../vox-core" }
+

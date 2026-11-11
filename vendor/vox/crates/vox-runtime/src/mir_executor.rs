@@ -1,0 +1,1762 @@
+use std::collections::{BTreeMap, HashMap};
+
+use vox_core::{
+    builtins::{self, BuiltinReceiver},
+    host::ParameterSpec,
+    ids::ArtifactId,
+    mir::{
+        MirBlockId, MirBody, MirBodyKind, MirModule, MirOp, MirOpKind, MirPathSegment,
+        MirProjection, MirTerminator, MirValueDefinition, MirValueId, MirVersionId,
+    },
+    plan::CompiledArtifact,
+    source::ModulePath,
+    value::{HandleData, HandleSummary, InlineValue, NOMINAL_TYPE_FIELD, RuntimeValue},
+};
+
+use crate::{HostCallArgument, Runtime};
+
+struct IteratorState {
+    items: Vec<InlineValue>,
+    position: usize,
+}
+
+pub struct MirExecutor<'a> {
+    runtime: &'a mut Runtime,
+    module: &'a MirModule,
+    values: Vec<Option<InlineValue>>,
+    versions: Vec<Option<InlineValue>>,
+    version_to_binding: Vec<MirValueId>,
+    iterators: BTreeMap<MirValueId, IteratorState>,
+    function_index: HashMap<String, usize>,
+    block_index: Vec<usize>,
+    max_value_id: usize,
+    max_version_id: usize,
+}
+
+const UNINIT_VALUE: MirValueId = MirValueId(u32::MAX);
+
+impl<'a> MirExecutor<'a> {
+    pub fn new(runtime: &'a mut Runtime, _artifact_id: ArtifactId, module: &'a MirModule) -> Self {
+        let function_index = module
+            .bodies
+            .iter()
+            .enumerate()
+            .filter(|(_, body)| matches!(body.kind, MirBodyKind::Function))
+            .map(|(index, body)| (body.name.clone(), index))
+            .collect();
+        Self {
+            runtime,
+            module,
+            values: Vec::new(),
+            versions: Vec::new(),
+            version_to_binding: Vec::new(),
+            iterators: BTreeMap::new(),
+            function_index,
+            block_index: Vec::new(),
+            max_value_id: 0,
+            max_version_id: 0,
+        }
+    }
+
+    pub fn run_script(
+        &mut self,
+        artifact: &CompiledArtifact,
+        arguments: &[RuntimeValue],
+    ) -> Result<RuntimeValue, String> {
+        let body_index = self
+            .module
+            .bodies
+            .iter()
+            .position(|body| matches!(body.kind, MirBodyKind::ScriptEntry))
+            .ok_or_else(|| "MIR module does not contain a script entry body".to_owned())?;
+        let arguments = arguments
+            .iter()
+            .map(inline_value_from_runtime)
+            .collect::<Vec<_>>();
+        let module = self.module;
+        let body = &module.bodies[body_index];
+        self.run_body(body, &arguments, Some(&artifact.parameters))
+            .map(runtime_value_from_inline)
+    }
+
+    fn run_body(
+        &mut self,
+        body: &MirBody,
+        arguments: &[InlineValue],
+        parameter_specs: Option<&[ParameterSpec]>,
+    ) -> Result<InlineValue, String> {
+        let mv = body
+            .values
+            .iter()
+            .map(|v| v.id.0 as usize)
+            .max()
+            .unwrap_or(0);
+        let mp = body
+            .parameters
+            .iter()
+            .map(|p| p.0 as usize)
+            .max()
+            .unwrap_or(0);
+        self.max_value_id = mv.max(mp);
+        self.max_version_id = body
+            .versions
+            .iter()
+            .map(|v| v.id.0 as usize)
+            .max()
+            .unwrap_or(0);
+        self.values = vec![None; self.max_value_id + 1];
+        self.versions = vec![None; self.max_version_id + 1];
+        self.version_to_binding = vec![UNINIT_VALUE; self.max_version_id + 1];
+        self.iterators.clear();
+
+        for binding in &body.bindings {
+            if let Some(first_version) = binding.versions.first() {
+                if let Some(binding_version) = body.versions.iter().find(|v| v.id == *first_version)
+                {
+                    let identity_value = binding_version.value;
+                    for &version_id in &binding.versions {
+                        let idx = version_id.0 as usize;
+                        if idx < self.version_to_binding.len() {
+                            self.version_to_binding[idx] = identity_value;
+                        }
+                    }
+                }
+            }
+        }
+
+        self.block_index = vec![0; body.blocks.len()];
+        for (i, b) in body.blocks.iter().enumerate() {
+            let bid = b.id.0 as usize;
+            if bid < self.block_index.len() {
+                self.block_index[bid] = i;
+            }
+        }
+
+        if arguments.len() > body.parameters.len() {
+            return Err(format!(
+                "script expects at most {} argument(s), but received {}",
+                body.parameters.len(),
+                arguments.len()
+            ));
+        }
+        if arguments.len() < body.parameters.len() {
+            let missing = parameter_specs
+                .and_then(|parameters| parameters.get(arguments.len()))
+                .map(|parameter| (parameter.name.as_str(), parameter.has_default));
+            if missing.is_some_and(|(_, has_default)| has_default) {
+                return Err(
+                    "MIR execution does not evaluate script parameter defaults yet".to_owned(),
+                );
+            }
+            let missing = missing.map(|(name, _)| name).unwrap_or("<unknown>");
+            return Err(format!("missing required script parameter `{missing}`"));
+        }
+
+        for (value, argument) in body.parameters.iter().zip(arguments) {
+            let idx = value.0 as usize;
+            if idx < self.values.len() {
+                self.values[idx] = Some(argument.clone());
+            }
+        }
+
+        let mut current = body
+            .blocks
+            .first()
+            .map(|block| block.id)
+            .ok_or_else(|| "MIR body does not contain an entry block".to_owned())?;
+        loop {
+            let block = &body.blocks[self.block_index[current.0 as usize]];
+            for op in &block.ops {
+                self.eval_op(op)?;
+            }
+
+            match &block.terminator {
+                MirTerminator::Jump { target, args } => {
+                    if !args.is_empty() {
+                        self.bind_block_args(body, *target, args)?;
+                    }
+                    current = *target;
+                }
+                MirTerminator::Branch {
+                    condition,
+                    then_target,
+                    then_args,
+                    else_target,
+                    else_args,
+                } => {
+                    let condition = expect_bool(self.value(*condition)?, "branch condition")?;
+                    if condition {
+                        if !then_args.is_empty() {
+                            self.bind_block_args(body, *then_target, then_args)?;
+                        }
+                        current = *then_target;
+                    } else {
+                        if !else_args.is_empty() {
+                            self.bind_block_args(body, *else_target, else_args)?;
+                        }
+                        current = *else_target;
+                    }
+                }
+                MirTerminator::Return(value) => return self.value(*value),
+                MirTerminator::Panic(message) => return Err(format!("panic: {message}")),
+                MirTerminator::Unreachable => {
+                    return Err(format!(
+                        "MIR reached unreachable block %bb{} in body @{}",
+                        block.id.0, body.name
+                    ));
+                }
+            }
+        }
+    }
+
+    fn bind_block_args(
+        &mut self,
+        body: &MirBody,
+        target: MirBlockId,
+        args: &[MirValueId],
+    ) -> Result<(), String> {
+        let block = &body.blocks[self.block_index[target.0 as usize]];
+        if block.parameters.len() != args.len() {
+            return Err(format!(
+                "block %bb{} expects {} argument(s), received {}",
+                target.0,
+                block.parameters.len(),
+                args.len()
+            ));
+        }
+
+        let values = args
+            .iter()
+            .map(|arg| self.value(*arg))
+            .collect::<Result<Vec<_>, _>>()?;
+        for (parameter, value) in block.parameters.iter().zip(values) {
+            let idx = parameter.0 as usize;
+            if idx < self.values.len() {
+                self.values[idx] = Some(value);
+            }
+        }
+        Ok(())
+    }
+
+    fn eval_op(&mut self, op: &MirOp) -> Result<(), String> {
+        let result = match &op.kind {
+            MirOpKind::Literal(value) => Some(value.clone()),
+            MirOpKind::Unit => Some(InlineValue::Tuple(Vec::new())),
+            MirOpKind::IntegerWiden(ty) => Some(InlineValue::from_integer(
+                self.single_arg_ref(op)?
+                    .integer()
+                    .and_then(|v| v.convert(*ty))
+                    .ok_or("invalid integer widening")?,
+            )),
+            MirOpKind::Use(version) => Some(self.version(*version)?),
+            MirOpKind::Bind(version) => {
+                let value = op
+                    .args
+                    .first()
+                    .copied()
+                    .ok_or_else(|| "bind op missing source value".to_owned())
+                    .and_then(|value| self.value(value))?;
+                let vidx = version.0 as usize;
+                let bv = self
+                    .version_to_binding
+                    .get(vidx)
+                    .copied()
+                    .unwrap_or(UNINIT_VALUE);
+                if bv != UNINIT_VALUE {
+                    let bidx = bv.0 as usize;
+                    if bidx < self.values.len() && vidx < self.versions.len() {
+                        self.values[bidx] = Some(value.clone());
+                        self.versions[vidx] = self.values[bidx].clone();
+                    }
+                }
+                None
+            }
+            MirOpKind::Unary(name) => {
+                let value = self.single_arg_ref(op)?;
+                Some(eval_unary_ref(
+                    name,
+                    value,
+                    self.module.skip_overflow_check,
+                )?)
+            }
+            MirOpKind::Binary(name) => {
+                let (left, right) = self.two_args_ref(op)?;
+                Some(eval_binary_ref(
+                    name,
+                    left,
+                    right,
+                    self.module.skip_overflow_check,
+                )?)
+            }
+            MirOpKind::Tuple { .. } => Some(InlineValue::Tuple(self.arg_values(op)?)),
+            MirOpKind::Record { fields } => {
+                let values = self.arg_values(op)?;
+                if fields.len() != values.len() {
+                    return Err("record op field count does not match argument count".to_owned());
+                }
+                Some(InlineValue::Record(
+                    fields.iter().cloned().zip(values).collect(),
+                ))
+            }
+            MirOpKind::Struct { type_name, fields } => {
+                let values = self.arg_values(op)?;
+                Some(self.materialize_struct(type_name, fields, values)?)
+            }
+            MirOpKind::StructSet { field } => {
+                let (target, replacement) = self.two_args(op)?;
+                self.set_struct_field(target, field, replacement)?;
+                Some(InlineValue::Tuple(Vec::new()))
+            }
+            MirOpKind::TraitCall { targets, .. } => {
+                let receiver = op
+                    .args
+                    .first()
+                    .copied()
+                    .ok_or_else(|| "trait call requires a receiver".to_owned())?;
+                let receiver = self.value(receiver)?;
+                let type_name = match receiver {
+                    InlineValue::Handle(handle) => self
+                        .runtime
+                        .describe_handle(handle)
+                        .map(|summary| summary.type_name)
+                        .ok_or_else(|| format!("handle {} does not exist", handle.0))?,
+                    other => {
+                        return Err(format!(
+                            "trait call requires a nominal receiver, found {}",
+                            type_name(&other)
+                        ));
+                    }
+                };
+                let callee = targets
+                    .iter()
+                    .find(|target| nominal_type_name_matches(&type_name, &target.type_name))
+                    .map(|target| target.callee.clone())
+                    .ok_or_else(|| format!("no trait dispatch target for `{type_name}`"))?;
+                Some(self.eval_call(&callee, &op.args)?)
+            }
+            MirOpKind::List => Some(self.materialize_list(self.arg_values(op)?)),
+            MirOpKind::StringInterpolate { text } => {
+                Some(eval_string_interpolation(text, self.arg_values(op)?)?)
+            }
+            MirOpKind::Project(projection) => {
+                let value = self.single_arg(op)?;
+                Some(self.project_value(value, projection)?)
+            }
+            MirOpKind::Index => {
+                let (target, index) = self.two_args(op)?;
+                if let InlineValue::Handle(handle) = target {
+                    let InlineValue::Int(index) = index else {
+                        return Err("index expressions require an Int index".to_owned());
+                    };
+                    let index = usize::try_from(index).map_err(|_| "index must be non-negative")?;
+                    let items = match self.runtime.get_handle_data(handle)? {
+                        HandleData::List(items) | HandleData::Tuple(items) => items,
+                        _ => return Err("indexing requires a list or tuple".to_owned()),
+                    };
+                    Some(
+                        self.value_from_handle_data(
+                            items
+                                .get(index)
+                                .cloned()
+                                .ok_or_else(|| format!("index {index} is out of bounds"))?,
+                        )?,
+                    )
+                } else {
+                    Some(index_value(target, index)?)
+                }
+            }
+            MirOpKind::Updated { path } => {
+                let [target, replacement] = op.args.as_slice() else {
+                    return Err("`with` update expects target and replacement values".to_owned());
+                };
+                let target = self.value(*target)?;
+                let replacement = self.value(*replacement)?;
+                Some(self.apply_updated_path(target, path, replacement)?)
+            }
+            MirOpKind::Call { callee, purity } => {
+                let _ = purity;
+                Some(self.eval_call(callee, &op.args)?)
+            }
+            MirOpKind::Lambda { parameters, .. } => Some(self.materialize_lambda(parameters)),
+            MirOpKind::Econ { .. } => Some(self.materialize_econ(self.single_arg(op)?)),
+            MirOpKind::NonNull => {
+                let value = self.single_arg(op)?;
+                if matches!(value, InlineValue::Null) {
+                    return Err("cannot unwrap null value".to_owned());
+                }
+                Some(value)
+            }
+            MirOpKind::SafeProject(field) => {
+                let value = self.single_arg(op)?;
+                if matches!(value, InlineValue::Null) {
+                    Some(InlineValue::Null)
+                } else {
+                    Some(self.project_value(value, &MirProjection::Field(field.clone()))?)
+                }
+            }
+            MirOpKind::TypeTest(ty) => {
+                let value = self.single_arg(op)?;
+                Some(InlineValue::Bool(matches_type_name(self, &value, ty)))
+            }
+            MirOpKind::TypeRefine(_) => Some(self.single_arg(op)?),
+            MirOpKind::CacheGet(_) => None,
+            MirOpKind::CachePut(_) => None,
+            MirOpKind::Drop => None,
+            MirOpKind::Iterator => {
+                let rid = op
+                    .result
+                    .ok_or_else(|| "iterator op missing result".to_owned())?;
+                Some(self.eval_iterator(rid, &op.args)?)
+            }
+            MirOpKind::IteratorNext => {
+                let [iter] = op.args.as_slice() else {
+                    return Err("iterator_next expects one argument".to_owned());
+                };
+                Some(self.eval_iterator_next(*iter)?)
+            }
+            MirOpKind::Unknown(_) => {
+                return Err(format!("unsupported MIR op `{}`", op_kind_label(&op.kind)));
+            }
+        };
+
+        if let Some(result_id) = op.result {
+            let value = result.ok_or_else(|| {
+                format!(
+                    "MIR op `{}` did not produce value %{}",
+                    op_kind_label(&op.kind),
+                    result_id.0
+                )
+            })?;
+            let idx = result_id.0 as usize;
+            if idx < self.values.len() {
+                self.values[idx] = Some(value);
+            }
+        }
+        Ok(())
+    }
+
+    fn eval_call(&mut self, callee: &str, args: &[MirValueId]) -> Result<InlineValue, String> {
+        let runtime_args = args
+            .iter()
+            .map(|arg| self.value(*arg))
+            .collect::<Result<Vec<_>, _>>()?;
+        if let Some((receiver, method)) = builtins::split_builtin_callee(callee) {
+            return self.eval_builtin_call(receiver, method, runtime_args);
+        }
+        if let Some(&function_index) = self.function_index.get(callee) {
+            let module = self.module;
+            let function = &module.bodies[function_index];
+            let saved_values = std::mem::take(&mut self.values);
+            let saved_versions = std::mem::take(&mut self.versions);
+            let saved_v2b = std::mem::take(&mut self.version_to_binding);
+            let saved_iters = std::mem::take(&mut self.iterators);
+            let saved_blocks = std::mem::take(&mut self.block_index);
+            let result = self.run_body(function, &runtime_args, None);
+            self.values = saved_values;
+            self.versions = saved_versions;
+            self.version_to_binding = saved_v2b;
+            self.iterators = saved_iters;
+            self.block_index = saved_blocks;
+            return result;
+        }
+
+        if let Some((package, function)) = split_qualified_host_name(callee) {
+            let arguments = runtime_args
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| HostCallArgument {
+                    name: format!("arg{index}"),
+                    value: Some(runtime_value_from_inline(value)),
+                })
+                .collect::<Vec<_>>();
+            let result = self
+                .runtime
+                .invoke_host_function(&package, &function, &arguments)?;
+            return Ok(inline_value_from_runtime(&result));
+        }
+
+        Err(format!("MIR call target `{callee}` is not executable yet"))
+    }
+
+    fn eval_builtin_call(
+        &mut self,
+        receiver: BuiltinReceiver,
+        method: &str,
+        args: Vec<InlineValue>,
+    ) -> Result<InlineValue, String> {
+        let Some((first, rest)) = args.split_first() else {
+            return Err(format!(
+                "builtin `{}.{method}` expects a receiver",
+                receiver.name()
+            ));
+        };
+        if let Some(value) = vox_core::numeric::builtin(first, method) {
+            expect_builtin_arg_count(method, rest, 0)?;
+            return Ok(value);
+        }
+        match receiver {
+            BuiltinReceiver::Integer(_) => unknown_mir_builtin(receiver, method),
+            BuiltinReceiver::Int => {
+                let InlineValue::Int(value) = first else {
+                    return Err("Int builtin receiver mismatch".to_owned());
+                };
+                expect_builtin_arg_count(method, rest, 0)?;
+                match method {
+                    "toString" => Ok(InlineValue::String(value.to_string())),
+                    "toFloat" => Ok(InlineValue::Float(*value as f64)),
+                    "toUInt" => Ok(if *value < 0 {
+                        InlineValue::Null
+                    } else {
+                        InlineValue::UInt(*value as u64)
+                    }),
+                    _ => unknown_mir_builtin(receiver, method),
+                }
+            }
+            BuiltinReceiver::UInt => {
+                let InlineValue::UInt(value) = first else {
+                    return Err("UInt builtin receiver mismatch".to_owned());
+                };
+                expect_builtin_arg_count(method, rest, 0)?;
+                match method {
+                    "toString" => Ok(InlineValue::String(value.to_string())),
+                    "toFloat" => Ok(InlineValue::Float(*value as f64)),
+                    "toInt" => Ok(i64::try_from(*value)
+                        .map(InlineValue::Int)
+                        .unwrap_or(InlineValue::Null)),
+                    _ => unknown_mir_builtin(receiver, method),
+                }
+            }
+            BuiltinReceiver::Float => {
+                let InlineValue::Float(value) = first else {
+                    return Err("Float builtin receiver mismatch".to_owned());
+                };
+                expect_builtin_arg_count(method, rest, 0)?;
+                match method {
+                    "toString" => Ok(InlineValue::String(value.to_string())),
+                    "toInt" => Ok(float_to_int_inline(*value)),
+                    "round" => checked_f64_to_i64((*value + 0.5).floor()).map(InlineValue::Int),
+                    "floor" => checked_f64_to_i64(value.floor()).map(InlineValue::Int),
+                    "ceil" => checked_f64_to_i64(value.ceil()).map(InlineValue::Int),
+                    _ => unknown_mir_builtin(receiver, method),
+                }
+            }
+            BuiltinReceiver::Bool => {
+                let InlineValue::Bool(value) = first else {
+                    return Err("Bool builtin receiver mismatch".to_owned());
+                };
+                expect_builtin_arg_count(method, rest, 0)?;
+                match method {
+                    "toString" => Ok(InlineValue::String(value.to_string())),
+                    _ => unknown_mir_builtin(receiver, method),
+                }
+            }
+            BuiltinReceiver::String => {
+                let value = inline_string(self.runtime, first)?;
+                eval_string_builtin_inline(self.runtime, &value, method, rest)
+            }
+            BuiltinReceiver::List => {
+                let items = inline_list(self.runtime, first)?;
+                eval_list_builtin_inline(self.runtime, &items, method, rest)
+            }
+            BuiltinReceiver::Econ => unknown_mir_builtin(receiver, method),
+        }
+    }
+
+    fn eval_iterator(
+        &mut self,
+        result: MirValueId,
+        args: &[MirValueId],
+    ) -> Result<InlineValue, String> {
+        let [iterable] = args else {
+            return Err("iterator expects one argument".to_owned());
+        };
+        let iterable_value = self.value(*iterable)?;
+        let items = if let InlineValue::Handle(handle) = iterable_value {
+            let data = self.runtime.get_handle_data(handle)?;
+            let items = match data {
+                HandleData::List(items) => items,
+                _ => return Err("iteration requires a list".to_owned()),
+            };
+            items
+                .into_iter()
+                .map(|item| self.value_from_handle_data(item))
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            expand_iterable(&iterable_value)?
+        };
+        self.iterators
+            .insert(result, IteratorState { items, position: 0 });
+        Ok(InlineValue::Tuple(Vec::new()))
+    }
+
+    fn eval_iterator_next(&mut self, iter: MirValueId) -> Result<InlineValue, String> {
+        let state = self
+            .iterators
+            .get_mut(&iter)
+            .ok_or_else(|| "iterator_next on unknown iterator".to_owned())?;
+        if state.position < state.items.len() {
+            let item = state.items[state.position].clone();
+            state.position += 1;
+            Ok(item)
+        } else {
+            Ok(InlineValue::Null)
+        }
+    }
+
+    fn materialize_struct(
+        &mut self,
+        type_name: &str,
+        fields: &[String],
+        values: Vec<InlineValue>,
+    ) -> Result<InlineValue, String> {
+        if fields.len() != values.len() {
+            return Err(format!(
+                "struct `{type_name}` expected {} fields, received {}",
+                fields.len(),
+                values.len()
+            ));
+        }
+        let mut data = BTreeMap::new();
+        data.insert(
+            NOMINAL_TYPE_FIELD.to_owned(),
+            HandleData::String(type_name.to_owned()),
+        );
+        for (field, value) in fields.iter().zip(values) {
+            data.insert(field.clone(), self.handle_data_from_value(&value)?);
+        }
+        let data = HandleData::Record(data);
+        let summary = HandleSummary {
+            type_name: type_name.to_owned(),
+            summary: render_handle_data(&data),
+            bytes: None,
+        };
+        Ok(InlineValue::Handle(
+            self.runtime.allocate_serializable_handle(summary, data),
+        ))
+    }
+
+    fn handle_data_from_value(&self, value: &InlineValue) -> Result<HandleData, String> {
+        match value {
+            InlineValue::Handle(handle) => self.runtime.get_handle_data(*handle),
+            other => handle_data_from_inline_value(other),
+        }
+    }
+
+    fn value_from_handle_data(&mut self, data: HandleData) -> Result<InlineValue, String> {
+        match data {
+            HandleData::List(values) => Ok(InlineValue::Handle(allocate_handle_data(
+                self.runtime,
+                "List",
+                HandleData::List(values),
+            ))),
+            HandleData::Record(fields) if nominal_name_from_fields(&fields).is_some() => {
+                let type_name = nominal_name_from_fields(&fields)
+                    .expect("nominal field was checked")
+                    .to_owned();
+                Ok(InlineValue::Handle(allocate_handle_data(
+                    self.runtime,
+                    &type_name,
+                    HandleData::Record(fields),
+                )))
+            }
+            other => inline_value_from_data(other),
+        }
+    }
+
+    fn project_value(
+        &mut self,
+        value: InlineValue,
+        projection: &MirProjection,
+    ) -> Result<InlineValue, String> {
+        let InlineValue::Handle(handle) = value else {
+            return project_value(value, projection);
+        };
+        let data = self.runtime.get_handle_data(handle)?;
+        match (data, projection) {
+            (HandleData::Record(fields), MirProjection::Field(field)) => {
+                let value = fields
+                    .get(field)
+                    .cloned()
+                    .ok_or_else(|| format!("struct does not contain field `{field}`"))?;
+                self.value_from_handle_data(value)
+            }
+            (other, _) => Err(format!(
+                "projection is not supported for {}",
+                handle_data_type(&other)
+            )),
+        }
+    }
+
+    fn set_struct_field(
+        &mut self,
+        target: InlineValue,
+        field: &str,
+        replacement: InlineValue,
+    ) -> Result<(), String> {
+        let InlineValue::Handle(handle) = target else {
+            return Err("field assignment requires a native struct value".to_owned());
+        };
+        let HandleData::Record(mut fields) = self.runtime.get_handle_data(handle)? else {
+            return Err("field assignment requires a native struct value".to_owned());
+        };
+        if nominal_name_from_fields(&fields).is_none() {
+            return Err("field assignment requires a native struct value".to_owned());
+        }
+        if !fields.contains_key(field) {
+            return Err(format!("struct does not contain field `{field}`"));
+        }
+        fields.insert(field.to_owned(), self.handle_data_from_value(&replacement)?);
+        self.runtime
+            .replace_serializable_handle(handle, HandleData::Record(fields))
+    }
+
+    fn apply_updated_path(
+        &mut self,
+        target: InlineValue,
+        path: &[MirPathSegment],
+        replacement: InlineValue,
+    ) -> Result<InlineValue, String> {
+        let InlineValue::Handle(handle) = target else {
+            return apply_updated_path(target, path, replacement);
+        };
+        let summary = self
+            .runtime
+            .describe_handle(handle)
+            .ok_or_else(|| format!("handle {} does not exist", handle.0))?;
+        let data = self.runtime.get_handle_data(handle)?;
+        let replacement = self.handle_data_from_value(&replacement)?;
+        let updated = apply_updated_data_path(data, path, replacement)?;
+        Ok(InlineValue::Handle(
+            self.runtime.allocate_serializable_handle(
+                HandleSummary {
+                    type_name: summary.type_name,
+                    summary: render_handle_data(&updated),
+                    bytes: None,
+                },
+                updated,
+            ),
+        ))
+    }
+
+    fn materialize_list(&mut self, values: Vec<InlineValue>) -> InlineValue {
+        let summary = HandleSummary {
+            type_name: "List".to_owned(),
+            summary: render_delimited_inline("[", "]", &values),
+            bytes: None,
+        };
+        let handle = if let Some(data) = handle_data_from_inline_list(&values) {
+            self.runtime.allocate_serializable_handle(summary, data)
+        } else {
+            self.runtime.allocate_handle(summary)
+        };
+        InlineValue::Handle(handle)
+    }
+
+    fn materialize_econ(&mut self, value: InlineValue) -> InlineValue {
+        let summary = HandleSummary {
+            type_name: "Econ".to_owned(),
+            summary: format!("econ({})", render_inline_value(&value)),
+            bytes: None,
+        };
+        InlineValue::Handle(self.runtime.allocate_handle(summary))
+    }
+
+    fn materialize_lambda(&mut self, parameters: &[String]) -> InlineValue {
+        let signature = if parameters.is_empty() {
+            "()".to_owned()
+        } else {
+            parameters.join(", ")
+        };
+        let summary = HandleSummary {
+            type_name: "Function".to_owned(),
+            summary: format!("<function <lambda> ({signature})>"),
+            bytes: None,
+        };
+        InlineValue::Handle(self.runtime.allocate_handle(summary))
+    }
+
+    fn arg_values(&self, op: &MirOp) -> Result<Vec<InlineValue>, String> {
+        if op.args.is_empty() {
+            return Ok(Vec::new());
+        }
+        op.args
+            .iter()
+            .map(|arg| self.value(*arg))
+            .collect::<Result<Vec<_>, _>>()
+    }
+
+    fn single_arg(&self, op: &MirOp) -> Result<InlineValue, String> {
+        let [value] = op.args.as_slice() else {
+            return Err(format!(
+                "MIR op `{}` expects one argument",
+                op_kind_label(&op.kind)
+            ));
+        };
+        self.value(*value)
+    }
+
+    fn single_arg_ref(&self, op: &MirOp) -> Result<&InlineValue, String> {
+        let [value] = op.args.as_slice() else {
+            return Err(format!(
+                "MIR op `{}` expects one argument",
+                op_kind_label(&op.kind)
+            ));
+        };
+        let idx = value.0 as usize;
+        if idx < self.values.len() {
+            if let Some(v) = &self.values[idx] {
+                return Ok(v);
+            }
+        }
+        Err(format!(
+            "MIR op `{}` value not defined",
+            op_kind_label(&op.kind)
+        ))
+    }
+
+    fn two_args(&self, op: &MirOp) -> Result<(InlineValue, InlineValue), String> {
+        let [left, right] = op.args.as_slice() else {
+            return Err(format!(
+                "MIR op `{}` expects two arguments",
+                op_kind_label(&op.kind)
+            ));
+        };
+        let l = self.value(*left)?;
+        let r = self.value(*right)?;
+        Ok((l, r))
+    }
+
+    fn two_args_ref(&self, op: &MirOp) -> Result<(&InlineValue, &InlineValue), String> {
+        let [left, right] = op.args.as_slice() else {
+            return Err(format!(
+                "MIR op `{}` expects two arguments",
+                op_kind_label(&op.kind)
+            ));
+        };
+        let li = left.0 as usize;
+        let ri = right.0 as usize;
+        if li < self.values.len() && ri < self.values.len() {
+            if let (Some(l), Some(r)) = (&self.values[li], &self.values[ri]) {
+                return Ok((l, r));
+            }
+        }
+        Err(format!(
+            "MIR op `{}` value not defined",
+            op_kind_label(&op.kind)
+        ))
+    }
+
+    #[inline(always)]
+    fn value(&self, id: MirValueId) -> Result<InlineValue, String> {
+        let idx = id.0 as usize;
+        if idx < self.values.len() {
+            if let Some(value) = &self.values[idx] {
+                return Ok(value.clone());
+            }
+        }
+        self.module
+            .bodies
+            .iter()
+            .find_map(|body| {
+                body.values
+                    .iter()
+                    .find(|value| value.id == id)
+                    .and_then(|value| match &value.definition {
+                        MirValueDefinition::Unit => Some(InlineValue::Tuple(Vec::new())),
+                        _ => None,
+                    })
+            })
+            .ok_or_else(|| format!("MIR value %{} is not defined", id.0))
+    }
+
+    #[inline(always)]
+    fn version(&self, id: MirVersionId) -> Result<InlineValue, String> {
+        let idx = id.0 as usize;
+        self.versions
+            .get(idx)
+            .and_then(|v| v.clone())
+            .ok_or_else(|| format!("MIR binding version %v{} is not defined", id.0))
+    }
+}
+
+fn inline_value_from_runtime(value: &RuntimeValue) -> InlineValue {
+    match value {
+        RuntimeValue::Inline(value) => value.clone(),
+        RuntimeValue::Handle(handle) => InlineValue::Handle(*handle),
+    }
+}
+
+fn runtime_value_from_inline(value: InlineValue) -> RuntimeValue {
+    match value {
+        InlineValue::Handle(handle) => RuntimeValue::Handle(handle),
+        value => RuntimeValue::Inline(value),
+    }
+}
+
+fn handle_data_from_inline_list(values: &[InlineValue]) -> Option<HandleData> {
+    values
+        .iter()
+        .map(handle_data_from_inline)
+        .collect::<Option<Vec<_>>>()
+        .map(HandleData::List)
+}
+
+fn handle_data_from_inline(value: &InlineValue) -> Option<HandleData> {
+    match value {
+        InlineValue::Null => Some(HandleData::Null),
+        InlineValue::Bool(value) => Some(HandleData::Bool(*value)),
+        InlineValue::Int(value) => Some(HandleData::Int(*value)),
+        InlineValue::UInt(value) => Some(HandleData::UInt(*value)),
+        InlineValue::Integer(value) => Some(HandleData::Integer(*value)),
+        InlineValue::Float(value) => Some(HandleData::Float(*value)),
+        InlineValue::String(value) => Some(HandleData::String(value.clone())),
+        InlineValue::Tuple(values) => values
+            .iter()
+            .map(handle_data_from_inline)
+            .collect::<Option<Vec<_>>>()
+            .map(HandleData::Tuple),
+        InlineValue::Record(fields) => fields
+            .iter()
+            .map(|(name, value)| Some((name.clone(), handle_data_from_inline(value)?)))
+            .collect::<Option<BTreeMap<_, _>>>()
+            .map(HandleData::Record),
+        InlineValue::Handle(_) => None,
+    }
+}
+
+fn eval_unary_ref(name: &str, value: &InlineValue, skip: bool) -> Result<InlineValue, String> {
+    if let Some(result) = vox_core::numeric::unary(name, value, skip) {
+        return result;
+    }
+    match (name, value) {
+        ("negate", InlineValue::Float(v)) => Ok(InlineValue::Float(-v)),
+        ("not", InlineValue::Bool(v)) => Ok(InlineValue::Bool(!v)),
+        ("negate", other) => Err(format!("unary `-` is not defined for {}", type_name(other))),
+        ("not", other) => Err(format!("unary `!` is not defined for {}", type_name(other))),
+        (name, _) => Err(format!("unsupported unary MIR op `{name}`")),
+    }
+}
+
+fn eval_binary_ref(
+    name: &str,
+    left: &InlineValue,
+    right: &InlineValue,
+    skip_overflow_check: bool,
+) -> Result<InlineValue, String> {
+    eval_binary_impl(name, left, right, skip_overflow_check)
+}
+
+fn eval_binary_impl(
+    name: &str,
+    left: &InlineValue,
+    right: &InlineValue,
+    skip_overflow_check: bool,
+) -> Result<InlineValue, String> {
+    if let Some(result) = vox_core::numeric::binary(name, left, right, skip_overflow_check) {
+        return result;
+    }
+    match (name, left, right) {
+        ("add", InlineValue::String(left), InlineValue::String(right)) => {
+            Ok(InlineValue::String(left.clone() + right))
+        }
+        ("range", left, right) => expand_range_ref(left, right, false),
+        ("range_inclusive", left, right) => expand_range_ref(left, right, true),
+        ("equal", left, right) => Ok(InlineValue::Bool(left == right)),
+        ("not_equal", left, right) => Ok(InlineValue::Bool(left != right)),
+        ("less", left, right) => compare_values_ref(left, right, |o| o.is_lt()),
+        ("less_equal", left, right) => compare_values_ref(left, right, |o| !o.is_gt()),
+        ("greater", left, right) => compare_values_ref(left, right, |o| o.is_gt()),
+        ("greater_equal", left, right) => compare_values_ref(left, right, |o| !o.is_lt()),
+        (name, left, right) => Err(format!(
+            "binary `{name}` is not defined for {} and {}",
+            type_name(&left),
+            type_name(&right)
+        )),
+    }
+}
+
+fn compare_values_ref(
+    left: &InlineValue,
+    right: &InlineValue,
+    predicate: impl FnOnce(std::cmp::Ordering) -> bool,
+) -> Result<InlineValue, String> {
+    let ordering = match (left, right) {
+        (InlineValue::UInt(l), InlineValue::UInt(r)) => l.cmp(r),
+        (InlineValue::UInt(l), InlineValue::Float(r)) => {
+            return Ok(InlineValue::Bool(
+                (*l as f64).partial_cmp(r).is_some_and(predicate),
+            ));
+        }
+        (InlineValue::Float(l), InlineValue::UInt(r)) => {
+            return Ok(InlineValue::Bool(
+                l.partial_cmp(&(*r as f64)).is_some_and(predicate),
+            ));
+        }
+        (InlineValue::Int(l), InlineValue::Int(r)) => l.cmp(r),
+        (InlineValue::String(l), InlineValue::String(r)) => l.cmp(r),
+        _ => {
+            return Err(format!(
+                "comparison is not defined for {} and {}",
+                type_name(left),
+                type_name(right)
+            ));
+        }
+    };
+    Ok(InlineValue::Bool(predicate(ordering)))
+}
+
+fn eval_string_interpolation(
+    text: &[String],
+    values: Vec<InlineValue>,
+) -> Result<InlineValue, String> {
+    if text.len() != values.len() + 1 {
+        return Err(
+            "string interpolation text segment count does not match argument count".to_owned(),
+        );
+    }
+
+    let mut rendered = String::new();
+    for (index, value) in values.into_iter().enumerate() {
+        rendered.push_str(&text[index]);
+        rendered.push_str(&render_inline_value(&value));
+    }
+    rendered.push_str(
+        text.last()
+            .expect("string interpolation should have trailing text segment"),
+    );
+    Ok(InlineValue::String(rendered))
+}
+
+fn render_inline_value(value: &InlineValue) -> String {
+    match value {
+        InlineValue::Null => "null".to_owned(),
+        InlineValue::Bool(value) => value.to_string(),
+        InlineValue::Int(value) => value.to_string(),
+        InlineValue::UInt(value) => value.to_string(),
+        InlineValue::Integer(value) => value.number().to_string(),
+        InlineValue::Float(value) => value.to_string(),
+        InlineValue::String(value) => value.clone(),
+        InlineValue::Handle(handle) => format!("<handle {}>", handle.0),
+        InlineValue::Tuple(values) => match values.as_slice() {
+            [] => "()".to_owned(),
+            [single] => format!("({},)", render_inline_value(single)),
+            _ => render_delimited_inline("(", ")", values),
+        },
+        InlineValue::Record(fields) => {
+            let entries = fields
+                .iter()
+                .map(|(name, value)| format!("{name} = {}", render_inline_value(value)))
+                .collect::<Vec<_>>();
+            format!("{{{}}}", entries.join(", "))
+        }
+    }
+}
+
+fn render_delimited_inline(prefix: &str, suffix: &str, values: &[InlineValue]) -> String {
+    format!(
+        "{prefix}{}{suffix}",
+        values
+            .iter()
+            .map(render_inline_value)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn project_value(value: InlineValue, projection: &MirProjection) -> Result<InlineValue, String> {
+    match (value, projection) {
+        (InlineValue::Record(fields), MirProjection::Field(field)) => fields
+            .get(field)
+            .cloned()
+            .ok_or_else(|| format!("record does not contain field `{field}`")),
+        (InlineValue::Tuple(items), MirProjection::Slot(slot)) => items
+            .get(*slot)
+            .cloned()
+            .ok_or_else(|| format!("tuple index {slot} is out of bounds")),
+        (other, MirProjection::Field(field)) => Err(format!(
+            "field `{field}` is not supported for {}",
+            type_name(&other)
+        )),
+        (other, MirProjection::Slot(slot)) => Err(format!(
+            "slot `{slot}` is not supported for {}",
+            type_name(&other)
+        )),
+    }
+}
+
+fn index_value(target: InlineValue, index: InlineValue) -> Result<InlineValue, String> {
+    let InlineValue::Int(index) = index else {
+        return Err("index expressions require an `Int` index".to_owned());
+    };
+    let index = usize::try_from(index)
+        .map_err(|_| "index expressions require a non-negative index".to_owned())?;
+    match target {
+        InlineValue::Tuple(items) => items
+            .get(index)
+            .cloned()
+            .ok_or_else(|| format!("tuple index {index} is out of bounds")),
+        other => Err(format!(
+            "indexing is not supported for {}",
+            type_name(&other)
+        )),
+    }
+}
+
+fn apply_updated_path(
+    target: InlineValue,
+    path: &[MirPathSegment],
+    replacement: InlineValue,
+) -> Result<InlineValue, String> {
+    let Some((segment, rest)) = path.split_first() else {
+        return Err("`with` update path cannot be empty".to_owned());
+    };
+    match (target, segment) {
+        (InlineValue::Record(mut fields), MirPathSegment::Field(name)) => {
+            let current = fields
+                .get(name)
+                .cloned()
+                .ok_or_else(|| format!("record does not contain field `{name}`"))?;
+            let next = if rest.is_empty() {
+                replacement
+            } else {
+                apply_updated_path(current, rest, replacement)?
+            };
+            fields.insert(name.clone(), next);
+            Ok(InlineValue::Record(fields))
+        }
+        (InlineValue::Tuple(mut items), MirPathSegment::Index(index)) => {
+            let slot = items
+                .get_mut(*index)
+                .ok_or_else(|| format!("tuple index {index} is out of bounds"))?;
+            *slot = if rest.is_empty() {
+                replacement
+            } else {
+                apply_updated_path(slot.clone(), rest, replacement)?
+            };
+            Ok(InlineValue::Tuple(items))
+        }
+        (other, _) => Err(format!("`with` is not supported for {}", type_name(&other))),
+    }
+}
+
+fn apply_updated_data_path(
+    target: HandleData,
+    path: &[MirPathSegment],
+    replacement: HandleData,
+) -> Result<HandleData, String> {
+    let Some((segment, rest)) = path.split_first() else {
+        return Err("`with` update path cannot be empty".to_owned());
+    };
+    match (target, segment) {
+        (HandleData::Record(mut fields), MirPathSegment::Field(name)) => {
+            let current = fields
+                .get(name)
+                .cloned()
+                .ok_or_else(|| format!("record does not contain field `{name}`"))?;
+            let next = if rest.is_empty() {
+                replacement
+            } else {
+                apply_updated_data_path(current, rest, replacement)?
+            };
+            fields.insert(name.clone(), next);
+            Ok(HandleData::Record(fields))
+        }
+        (HandleData::Tuple(mut items), MirPathSegment::Index(index)) => {
+            let slot = items
+                .get_mut(*index)
+                .ok_or_else(|| format!("index {index} is out of bounds"))?;
+            *slot = if rest.is_empty() {
+                replacement
+            } else {
+                apply_updated_data_path(slot.clone(), rest, replacement)?
+            };
+            Ok(HandleData::Tuple(items))
+        }
+        (HandleData::List(mut items), MirPathSegment::Index(index)) => {
+            let slot = items
+                .get_mut(*index)
+                .ok_or_else(|| format!("index {index} is out of bounds"))?;
+            *slot = if rest.is_empty() {
+                replacement
+            } else {
+                apply_updated_data_path(slot.clone(), rest, replacement)?
+            };
+            Ok(HandleData::List(items))
+        }
+        (other, _) => Err(format!(
+            "`with` is not supported for {}",
+            handle_data_type(&other)
+        )),
+    }
+}
+
+fn nominal_name_from_fields(fields: &BTreeMap<String, HandleData>) -> Option<&str> {
+    match fields.get(NOMINAL_TYPE_FIELD) {
+        Some(HandleData::String(name)) => Some(name),
+        _ => None,
+    }
+}
+
+fn expect_bool(value: InlineValue, label: &str) -> Result<bool, String> {
+    if let InlineValue::Bool(value) = value {
+        Ok(value)
+    } else {
+        Err(format!("{label} must evaluate to `Bool`"))
+    }
+}
+
+fn matches_type_name(executor: &MirExecutor<'_>, value: &InlineValue, ty: &str) -> bool {
+    if let Some(integer) = vox_core::integer::IntegerType::from_name(ty) {
+        return value.integer().is_some_and(|value| value.ty() == integer);
+    }
+
+    match (ty, value) {
+        ("Int", InlineValue::Int(_))
+        | ("UInt", InlineValue::UInt(_))
+        | ("Float", InlineValue::Float(_))
+        | ("Bool", InlineValue::Bool(_))
+        | ("String", InlineValue::String(_))
+        | ("Null", InlineValue::Null) => return true,
+        ("Unit", InlineValue::Tuple(items)) => return items.is_empty(),
+        _ => {}
+    }
+
+    let InlineValue::Handle(handle_id) = value else {
+        return false;
+    };
+
+    let Some(summary) = executor.runtime.describe_handle(*handle_id) else {
+        return false;
+    };
+    let handle_type = &summary.type_name;
+
+    if handle_type == ty
+        || handle_type.ends_with(&format!(".{}", ty))
+        || ty.ends_with(&format!(".{}", handle_type))
+    {
+        return true;
+    }
+
+    if executor.module.nominal_types.iter().any(|nominal| {
+        (nominal.name == *handle_type
+            || nominal.name.ends_with(&format!(".{handle_type}"))
+            || handle_type.ends_with(&format!(".{}", nominal.name)))
+            && nominal.traits.iter().any(|implemented| {
+                implemented == ty
+                    || implemented.ends_with(&format!(".{ty}"))
+                    || ty.ends_with(&format!(".{implemented}"))
+            })
+    }) {
+        return true;
+    }
+
+    for manifest in executor.runtime.host.packages() {
+        for (trait_qt, impl_types) in &manifest.trait_impls {
+            let full_trait_name = format!("{}.{}", trait_qt.module.as_str(), trait_qt.name);
+            if full_trait_name == ty || trait_qt.name == ty {
+                for impl_qt in impl_types {
+                    let full_impl_name = format!("{}.{}", impl_qt.module.as_str(), impl_qt.name);
+                    if *handle_type == full_impl_name || *handle_type == impl_qt.name {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    false
+}
+
+fn nominal_type_name_matches(actual: &str, expected: &str) -> bool {
+    actual == expected
+        || actual.ends_with(&format!(".{expected}"))
+        || expected.ends_with(&format!(".{actual}"))
+}
+
+fn split_qualified_host_name(callee: &str) -> Option<(ModulePath, String)> {
+    let (package, function) = callee.rsplit_once('.')?;
+    Some((ModulePath::parse(package).ok()?, function.to_owned()))
+}
+
+fn type_name(value: &InlineValue) -> &'static str {
+    match value {
+        InlineValue::Int(_) => "Int",
+        InlineValue::UInt(_) => "UInt",
+        InlineValue::Integer(value) => value.ty().name(),
+        InlineValue::Float(_) => "Float",
+        InlineValue::Bool(_) => "Bool",
+        InlineValue::String(_) => "String",
+        InlineValue::Handle(_) => "Handle",
+        InlineValue::Tuple(_) => "Tuple",
+        InlineValue::Record(_) => "Record",
+        InlineValue::Null => "Null",
+    }
+}
+
+fn op_kind_label(kind: &MirOpKind) -> &'static str {
+    match kind {
+        MirOpKind::Literal(_) => "literal",
+        MirOpKind::Unit => "unit",
+        MirOpKind::IntegerWiden(_) => "integer_widen",
+        MirOpKind::Use(_) => "use",
+        MirOpKind::Bind(_) => "bind",
+        MirOpKind::Unary(_) => "unary",
+        MirOpKind::Binary(_) => "binary",
+        MirOpKind::Tuple { .. } => "tuple",
+        MirOpKind::Record { .. } => "record",
+        MirOpKind::Struct { .. } => "struct",
+        MirOpKind::StructSet { .. } => "struct_set",
+        MirOpKind::TraitCall { .. } => "trait_call",
+        MirOpKind::List => "list",
+        MirOpKind::StringInterpolate { .. } => "string_interpolate",
+        MirOpKind::Project(_) => "project",
+        MirOpKind::Index => "index",
+        MirOpKind::Updated { .. } => "updated",
+        MirOpKind::Call { .. } => "call",
+        MirOpKind::Lambda { .. } => "lambda",
+        MirOpKind::Econ { .. } => "econ",
+        MirOpKind::NonNull => "non_null",
+        MirOpKind::SafeProject(_) => "safe_project",
+        MirOpKind::TypeTest(_) => "type_test",
+        MirOpKind::TypeRefine(_) => "type_refine",
+        MirOpKind::Iterator => "iterator",
+        MirOpKind::IteratorNext => "iterator_next",
+        MirOpKind::CacheGet(_) => "cache_get",
+        MirOpKind::CachePut(_) => "cache_put",
+        MirOpKind::Drop => "drop",
+        MirOpKind::Unknown(_) => "unknown",
+    }
+}
+
+fn eval_string_builtin_inline(
+    runtime: &mut Runtime,
+    value: &str,
+    method: &str,
+    args: &[InlineValue],
+) -> Result<InlineValue, String> {
+    match method {
+        "length" => {
+            expect_builtin_arg_count(method, args, 0)?;
+            Ok(InlineValue::Int(value.chars().count() as i64))
+        }
+        "isEmpty" => {
+            expect_builtin_arg_count(method, args, 0)?;
+            Ok(InlineValue::Bool(value.is_empty()))
+        }
+        "toInt" => {
+            expect_builtin_arg_count(method, args, 0)?;
+            Ok(value
+                .parse::<i64>()
+                .map(InlineValue::Int)
+                .unwrap_or(InlineValue::Null))
+        }
+        "toFloat" => {
+            expect_builtin_arg_count(method, args, 0)?;
+            Ok(value
+                .parse::<f64>()
+                .map(InlineValue::Float)
+                .unwrap_or(InlineValue::Null))
+        }
+        "startsWith" => Ok(InlineValue::Bool(
+            value.starts_with(&expect_string_arg_inline(runtime, method, args, 0)?),
+        )),
+        "endsWith" => Ok(InlineValue::Bool(
+            value.ends_with(&expect_string_arg_inline(runtime, method, args, 0)?),
+        )),
+        "contains" => Ok(InlineValue::Bool(
+            value.contains(&expect_string_arg_inline(runtime, method, args, 0)?),
+        )),
+        "indexOf" => {
+            let sub = expect_string_arg_inline(runtime, method, args, 0)?;
+            Ok(value
+                .find(&sub)
+                .map(|byte_index| InlineValue::Int(value[..byte_index].chars().count() as i64))
+                .unwrap_or(InlineValue::Null))
+        }
+        "substring" => {
+            expect_builtin_arg_count(method, args, 2)?;
+            let start = expect_int_inline(&args[0], method)?;
+            let end = expect_int_inline(&args[1], method)?;
+            substring_chars_inline(value, start, end).map(InlineValue::String)
+        }
+        "replace" => {
+            expect_builtin_arg_count(method, args, 2)?;
+            let old = inline_string(runtime, &args[0])?;
+            let new = inline_string(runtime, &args[1])?;
+            Ok(InlineValue::String(value.replace(&old, &new)))
+        }
+        "split" => {
+            let delim = expect_string_arg_inline(runtime, method, args, 0)?;
+            Ok(InlineValue::Handle(allocate_handle_data(
+                runtime,
+                "List",
+                HandleData::List(
+                    value
+                        .split(&delim)
+                        .map(|part| HandleData::String(part.to_owned()))
+                        .collect(),
+                ),
+            )))
+        }
+        "toLower" => {
+            expect_builtin_arg_count(method, args, 0)?;
+            Ok(InlineValue::String(value.to_lowercase()))
+        }
+        "toUpper" => {
+            expect_builtin_arg_count(method, args, 0)?;
+            Ok(InlineValue::String(value.to_uppercase()))
+        }
+        "trim" => {
+            expect_builtin_arg_count(method, args, 0)?;
+            Ok(InlineValue::String(value.trim().to_owned()))
+        }
+        "repeat" => {
+            let count = expect_int_arg_inline(method, args, 0)?;
+            if count < 0 {
+                return Err("repeat count must be non-negative".to_owned());
+            }
+            Ok(InlineValue::String(value.repeat(count as usize)))
+        }
+        _ => unknown_mir_builtin(BuiltinReceiver::String, method),
+    }
+}
+
+fn eval_list_builtin_inline(
+    runtime: &mut Runtime,
+    items: &[InlineValue],
+    method: &str,
+    args: &[InlineValue],
+) -> Result<InlineValue, String> {
+    match method {
+        "length" | "size" => {
+            expect_builtin_arg_count(method, args, 0)?;
+            Ok(InlineValue::Int(items.len() as i64))
+        }
+        "isEmpty" => {
+            expect_builtin_arg_count(method, args, 0)?;
+            Ok(InlineValue::Bool(items.is_empty()))
+        }
+        "first" => {
+            expect_builtin_arg_count(method, args, 0)?;
+            Ok(items.first().cloned().unwrap_or(InlineValue::Null))
+        }
+        "last" => {
+            expect_builtin_arg_count(method, args, 0)?;
+            Ok(items.last().cloned().unwrap_or(InlineValue::Null))
+        }
+        "get" => {
+            let index = expect_int_arg_inline(method, args, 0)?;
+            Ok(list_get_inline(items, index).unwrap_or(InlineValue::Null))
+        }
+        "contains" => {
+            expect_builtin_arg_count(method, args, 1)?;
+            Ok(InlineValue::Bool(items.iter().any(|item| item == &args[0])))
+        }
+        "indexOf" => {
+            expect_builtin_arg_count(method, args, 1)?;
+            Ok(items
+                .iter()
+                .position(|item| item == &args[0])
+                .map(|index| InlineValue::Int(index as i64))
+                .unwrap_or(InlineValue::Null))
+        }
+        "slice" => {
+            expect_builtin_arg_count(method, args, 2)?;
+            let from = expect_int_inline(&args[0], method)?;
+            let to = expect_int_inline(&args[1], method)?;
+            let data = slice_inline(items, from, to)?;
+            Ok(InlineValue::Handle(allocate_handle_data(
+                runtime,
+                "List",
+                HandleData::List(
+                    data.iter()
+                        .map(handle_data_from_inline_value)
+                        .collect::<Result<_, _>>()?,
+                ),
+            )))
+        }
+        "reversed" => Ok(InlineValue::Handle(allocate_handle_data(
+            runtime,
+            "List",
+            HandleData::List(
+                items
+                    .iter()
+                    .rev()
+                    .map(handle_data_from_inline_value)
+                    .collect::<Result<_, _>>()?,
+            ),
+        ))),
+        "fold" | "foldRight" | "map" | "filter" | "flatMap" | "zip" => Err(format!(
+            "List.{method} is not supported by the MIR executor yet"
+        )),
+        _ => unknown_mir_builtin(BuiltinReceiver::List, method),
+    }
+}
+
+fn inline_string(runtime: &Runtime, value: &InlineValue) -> Result<String, String> {
+    match value {
+        InlineValue::String(value) => Ok(value.clone()),
+        InlineValue::Handle(handle) => match runtime.get_handle_data(*handle)? {
+            HandleData::String(value) => Ok(value),
+            other => Err(format!(
+                "expected String handle, found {}",
+                handle_data_type(&other)
+            )),
+        },
+        other => Err(format!("expected String, found {}", type_name(other))),
+    }
+}
+
+fn inline_list(runtime: &Runtime, value: &InlineValue) -> Result<Vec<InlineValue>, String> {
+    match value {
+        InlineValue::Handle(handle) => match runtime.get_handle_data(*handle)? {
+            HandleData::List(items) => items.into_iter().map(inline_value_from_data).collect(),
+            other => Err(format!(
+                "expected List handle, found {}",
+                handle_data_type(&other)
+            )),
+        },
+        other => Err(format!("expected List, found {}", type_name(other))),
+    }
+}
+
+fn inline_value_from_data(data: HandleData) -> Result<InlineValue, String> {
+    match data {
+        HandleData::Null => Ok(InlineValue::Null),
+        HandleData::Bool(value) => Ok(InlineValue::Bool(value)),
+        HandleData::Int(value) => Ok(InlineValue::Int(value)),
+        HandleData::UInt(value) => Ok(InlineValue::UInt(value)),
+        HandleData::Integer(value) => Ok(InlineValue::from_integer(value)),
+        HandleData::Float(value) => Ok(InlineValue::Float(value)),
+        HandleData::String(value) => Ok(InlineValue::String(value)),
+        HandleData::Tuple(values) => values
+            .into_iter()
+            .map(inline_value_from_data)
+            .collect::<Result<Vec<_>, _>>()
+            .map(InlineValue::Tuple),
+        HandleData::Record(fields) => fields
+            .into_iter()
+            .map(|(name, value)| Ok((name, inline_value_from_data(value)?)))
+            .collect::<Result<BTreeMap<_, _>, String>>()
+            .map(InlineValue::Record),
+        HandleData::List(_) => Err("nested List values are not inline in MIR executor".to_owned()),
+    }
+}
+
+fn handle_data_from_inline_value(value: &InlineValue) -> Result<HandleData, String> {
+    match value {
+        InlineValue::Null => Ok(HandleData::Null),
+        InlineValue::Bool(value) => Ok(HandleData::Bool(*value)),
+        InlineValue::Int(value) => Ok(HandleData::Int(*value)),
+        InlineValue::UInt(value) => Ok(HandleData::UInt(*value)),
+        InlineValue::Integer(value) => Ok(HandleData::Integer(*value)),
+        InlineValue::Float(value) => Ok(HandleData::Float(*value)),
+        InlineValue::String(value) => Ok(HandleData::String(value.clone())),
+        InlineValue::Tuple(values) => values
+            .iter()
+            .map(handle_data_from_inline_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map(HandleData::Tuple),
+        InlineValue::Record(fields) => fields
+            .iter()
+            .map(|(name, value)| Ok((name.clone(), handle_data_from_inline_value(value)?)))
+            .collect::<Result<BTreeMap<_, _>, String>>()
+            .map(HandleData::Record),
+        InlineValue::Handle(handle) => Err(format!(
+            "cannot copy opaque handle {} into List builtin result",
+            handle.0
+        )),
+    }
+}
+
+fn allocate_handle_data(
+    runtime: &mut Runtime,
+    type_name: &str,
+    data: HandleData,
+) -> vox_core::ids::HandleId {
+    let summary = HandleSummary {
+        type_name: type_name.to_owned(),
+        summary: render_handle_data(&data),
+        bytes: None,
+    };
+    runtime.allocate_serializable_handle(summary, data)
+}
+
+fn expect_builtin_arg_count(
+    method: &str,
+    args: &[InlineValue],
+    expected: usize,
+) -> Result<(), String> {
+    if args.len() == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{method}` expects {expected} argument(s), got {}",
+            args.len()
+        ))
+    }
+}
+
+fn expect_int_arg_inline(method: &str, args: &[InlineValue], index: usize) -> Result<i64, String> {
+    expect_builtin_arg_count(method, args, index + 1)?;
+    expect_int_inline(&args[index], method)
+}
+
+fn expect_string_arg_inline(
+    runtime: &Runtime,
+    method: &str,
+    args: &[InlineValue],
+    index: usize,
+) -> Result<String, String> {
+    expect_builtin_arg_count(method, args, index + 1)?;
+    inline_string(runtime, &args[index])
+}
+
+fn expect_int_inline(value: &InlineValue, method: &str) -> Result<i64, String> {
+    let InlineValue::Int(value) = value else {
+        return Err(format!("`{method}` expected Int argument"));
+    };
+    Ok(*value)
+}
+
+fn list_get_inline(items: &[InlineValue], index: i64) -> Option<InlineValue> {
+    if index < 0 {
+        return None;
+    }
+    items.get(index as usize).cloned()
+}
+
+fn slice_inline(items: &[InlineValue], from: i64, to: i64) -> Result<Vec<InlineValue>, String> {
+    if from < 0 || to < from {
+        return Err("slice bounds must satisfy 0 <= from <= to".to_owned());
+    }
+    let from = from as usize;
+    let to = to as usize;
+    if to > items.len() {
+        return Err("slice end is out of bounds".to_owned());
+    }
+    Ok(items[from..to].to_vec())
+}
+
+fn substring_chars_inline(value: &str, start: i64, end: i64) -> Result<String, String> {
+    if start < 0 || end < start {
+        return Err("substring bounds must satisfy 0 <= start <= end".to_owned());
+    }
+    let start = start as usize;
+    let end = end as usize;
+    let len = value.chars().count();
+    if end > len {
+        return Err("substring end is out of bounds".to_owned());
+    }
+    Ok(value.chars().skip(start).take(end - start).collect())
+}
+
+fn float_to_int_inline(value: f64) -> InlineValue {
+    if !value.is_finite() || value < i64::MIN as f64 || value > i64::MAX as f64 {
+        InlineValue::Null
+    } else {
+        InlineValue::Int(value.trunc() as i64)
+    }
+}
+
+fn checked_f64_to_i64(value: f64) -> Result<i64, String> {
+    if !value.is_finite() || value < i64::MIN as f64 || value > i64::MAX as f64 {
+        return Err("Float value is out of Int range".to_owned());
+    }
+    Ok(value as i64)
+}
+
+fn unknown_mir_builtin(receiver: BuiltinReceiver, method: &str) -> Result<InlineValue, String> {
+    Err(format!(
+        "unknown builtin method `{}.{method}`",
+        receiver.name()
+    ))
+}
+
+fn handle_data_type(data: &HandleData) -> &'static str {
+    match data {
+        HandleData::Null => "Null",
+        HandleData::Bool(_) => "Bool",
+        HandleData::Int(_) => "Int",
+        HandleData::UInt(_) => "UInt",
+        HandleData::Integer(value) => value.ty().name(),
+        HandleData::Float(_) => "Float",
+        HandleData::String(_) => "String",
+        HandleData::List(_) => "List",
+        HandleData::Tuple(_) => "Tuple",
+        HandleData::Record(_) => "Record",
+    }
+}
+
+fn render_handle_data(value: &HandleData) -> String {
+    match value {
+        HandleData::Null => "null".to_owned(),
+        HandleData::Bool(value) => value.to_string(),
+        HandleData::Int(value) => value.to_string(),
+        HandleData::UInt(value) => value.to_string(),
+        HandleData::Integer(value) => value.number().to_string(),
+        HandleData::Float(value) => value.to_string(),
+        HandleData::String(value) => value.clone(),
+        HandleData::List(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(render_handle_data)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        HandleData::Tuple(values) => format!(
+            "({})",
+            values
+                .iter()
+                .map(render_handle_data)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        HandleData::Record(fields) => format!(
+            "{{{}}}",
+            fields
+                .iter()
+                .map(|(name, value)| format!("{name}: {}", render_handle_data(value)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn expand_range_ref(
+    start: &InlineValue,
+    end: &InlineValue,
+    inclusive: bool,
+) -> Result<InlineValue, String> {
+    Ok(InlineValue::Tuple(vec![
+        start.clone(),
+        end.clone(),
+        InlineValue::Bool(inclusive),
+    ]))
+}
+
+fn expand_iterable(value: &InlineValue) -> Result<Vec<InlineValue>, String> {
+    match value {
+        InlineValue::Tuple(items) if items.len() == 3 => {
+            if let (InlineValue::Int(start), InlineValue::Int(end), InlineValue::Bool(inclusive)) =
+                (&items[0], &items[1], &items[2])
+            {
+                let end = if *inclusive { *end + 1 } else { *end };
+                let count = (end - *start).max(0) as usize;
+                Ok((0..count)
+                    .map(|i| InlineValue::Int(*start + i as i64))
+                    .collect())
+            } else {
+                Err("range requires Int bounds".to_owned())
+            }
+        }
+        InlineValue::Handle(_) => {
+            Err("Handle-backed iterables are not supported by the MIR executor yet".to_owned())
+        }
+        _ => Err(format!(
+            "iteration is not supported for {}",
+            type_name(value)
+        )),
+    }
+}

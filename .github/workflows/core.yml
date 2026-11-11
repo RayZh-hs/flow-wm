@@ -1,0 +1,13 @@
+name: portable core
+on: [push, pull_request]
+jobs:
+  core:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p flow-core --locked
+      - run: cargo clippy -p flow-core --all-targets --locked -- -D warnings

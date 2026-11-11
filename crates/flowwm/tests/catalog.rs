@@ -81,7 +81,7 @@ fn catalog_subscription_does_not_block_commands_and_updates_on_graph_changes() {
     let store = Store::new(directory.path().join("data")).unwrap();
     let state = State::empty(directory.path().into());
     let workspace = state.selected_workspace.clone();
-    let (engine, _commands) = Engine::new(state, store);
+    let (engine, _commands) = engine_with_worker(state, store);
     ipc::serve(
         ipc::bind(&socket).unwrap(),
         engine.clone(),
@@ -141,7 +141,7 @@ fn catalog_subscription_does_not_block_commands_and_updates_on_graph_changes() {
 fn launcher_requests_share_the_subscription_without_catalog_changes_or_replay() {
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("flowwm.sock");
-    let (engine, _) = Engine::new(
+    let (engine, _) = engine_with_worker(
         State::empty(directory.path().into()),
         Store::new(directory.path().join("data")).unwrap(),
     );
@@ -198,7 +198,7 @@ fn alerts_mark_the_owning_workspace_and_clear_without_changing_execution_status(
     let id = node.id.clone();
     state.nodes.push(node);
     let directory = tempfile::tempdir().unwrap();
-    let (engine, _) = Engine::new(state, Store::new(directory.path().into()).unwrap());
+    let (engine, _) = engine_with_worker(state, Store::new(directory.path().into()).unwrap());
     engine
         .request(Control::Alert {
             id: id.clone(),
@@ -222,4 +222,18 @@ fn alerts_mark_the_owning_workspace_and_clear_without_changing_execution_status(
         0
     );
     engine.shutdown();
+}
+
+fn engine_with_worker(
+    state: flowwm::model::State,
+    store: flowwm::store::Store,
+) -> (
+    flowwm::engine::Engine,
+    std::sync::mpsc::Receiver<flowwm::engine::UiCommand>,
+) {
+    Engine::with_worker(
+        state,
+        store,
+        Some(std::path::PathBuf::from(env!("CARGO_BIN_EXE_flowwm"))),
+    )
 }
