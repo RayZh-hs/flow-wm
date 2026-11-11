@@ -2,7 +2,7 @@
 
 Traditional window managers treat windows as the primary unit of interaction. In contrast, Flow-WM introduces the concept of "nodes" as the fundamental building blocks of the user interface. Running applications are treated as one type of running node, and the work being done by the computer is mapped to actively running nodes in a workspace, and the user can interact with both windows directly and plot nodes to formulate complex workflows that rely on signals and data from nodes.
 
-Flow-WM inherits its window management capabilities from niri and dms, see [Flow Project](../design/flow.md).
+Flow-WM inherits its window management capabilities from niri and dms, see [Flow Project](flow-project.md).
 
 ## Nodes: Inputs and Outputs
 
