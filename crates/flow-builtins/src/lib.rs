@@ -26,8 +26,16 @@ pub fn evaluate(
     signal: Option<(&str, Value)>,
     cancel: Arc<AtomicBool>,
 ) -> Result<Evaluation> {
-    evaluate_with(state, root, signal, cancel, Arc::new(Scripts))
+    flow_core::scheduler::evaluate(
+        state,
+        root,
+        signal,
+        cancel,
+        local::registry(local::Limits::default())?,
+        Arc::new(Scripts),
+    )
 }
 pub mod agent;
 pub mod local;
 pub mod process;
+pub mod sessions;

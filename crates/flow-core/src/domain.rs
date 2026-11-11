@@ -352,6 +352,7 @@ impl RuntimeState {
             !self.workflows.contains_key(&workflow.id),
             "Duplicate workflow ID"
         );
+        self.validate_node_identity(&workflow.id, &workflow.graph)?;
         if let Some(workspace) = &workflow.workspace {
             self.workspaces.require_active(workspace)?;
         }
@@ -369,6 +370,18 @@ impl RuntimeState {
         self.destroyed.remove(&workflow.id);
         self.workflows.insert(workflow.id.clone(), workflow);
         self.revision += 1;
+        Ok(())
+    }
+    pub fn validate_node_identity(&self, workflow: &WorkflowId, graph: &FlowNet) -> Result<()> {
+        let nodes: BTreeSet<_> = graph.nodes.iter().map(|n| &n.id).collect();
+        ensure!(
+            !self
+                .workflows
+                .values()
+                .filter(|w| &w.id != workflow)
+                .any(|w| w.graph.nodes.iter().any(|node| nodes.contains(&node.id))),
+            "Node identity already belongs to another workflow"
+        );
         Ok(())
     }
     pub fn reference(&mut self, parent: &WorkflowId, target: &WorkflowId) -> Result<()> {

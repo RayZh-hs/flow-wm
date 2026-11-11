@@ -71,6 +71,12 @@ pub fn evaluate(
 }
 
 pub trait ScriptEvaluator: Send + Sync {
+    fn behavior(&self, _node: &Node) -> Option<crate::providers::Behavior> {
+        None
+    }
+    fn compute(&self, _node: &Node, _bindings: &Record, _args: &Value) -> Option<Result<Value>> {
+        None
+    }
     fn evaluate(
         &self,
         node: &Node,
@@ -375,7 +381,15 @@ impl ContextData {
                 self.stack.push(a.into());
                 Ok(String::new())
             }
-            "kind" => Ok(type_id(self.node(a)?).into()),
+            "kind" => {
+                let node = self.node(a)?;
+                Ok(match self.scripts.behavior(node) {
+                    Some(crate::providers::Behavior::Lazy) => "provider",
+                    Some(_) => "workflow",
+                    None => type_id(node),
+                }
+                .into())
+            }
             "next" => {
                 let (node, args, ty) = self.queue.pop_front().context("Empty signal queue")?;
                 self.current_args = args;
@@ -674,7 +688,9 @@ impl ContextData {
             ("args".into(), args.clone()),
             ("properties".into(), serde_json::to_value(properties)?),
         ]);
-        let value = if node.kind == NodeKind::Python {
+        let value = if let Some(value) = self.scripts.compute(node, &bindings, &args) {
+            value?
+        } else if node.kind == NodeKind::Python {
             self.scripts
                 .evaluate(node, &bindings, &args, &self.cancel)?
         } else {

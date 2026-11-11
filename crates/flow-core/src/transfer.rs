@@ -60,6 +60,7 @@ impl RuntimeState {
         })
     }
     pub fn stage_transfer(&mut self, bundle: TransferBundle) -> Result<()> {
+        self.validate_node_identity(&bundle.workflow.id, &bundle.workflow.graph)?;
         let transfer = &bundle.transfer;
         ensure!(
             transfer.destination.host() == self.host_id.0,

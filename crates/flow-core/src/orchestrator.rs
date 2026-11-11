@@ -106,13 +106,25 @@ impl Orchestrator {
                 Ok(serde_json::to_value(snapshot)?)
             }
             Command::Workspaces => Ok(serde_json::to_value(&self.state.workspaces)?),
-            Command::Create { workflow } => {
+            Command::Create { mut workflow } => {
+                ensure!(
+                    workflow.authority == self.state.host_id,
+                    "Create workflows at their authoritative host"
+                );
+                ensure!(
+                    workflow
+                        .workspace
+                        .as_ref()
+                        .is_none_or(|w| w.host() == self.state.host_id.0),
+                    "Remote workspace assignment requires a host handoff"
+                );
                 if let Some(owner) = &workflow.owner {
                     ensure!(
                         caller == Some(owner),
                         "Private workflow creation requires its owner"
                     );
                 }
+                self.registry.prepare_graph(&mut workflow.graph);
                 workflow.graph.validate()?;
                 let id = workflow.id.clone();
                 self.state.create(workflow)?;
@@ -205,7 +217,10 @@ impl Orchestrator {
                 self.state.revision += 1;
                 Ok(Value::Null)
             }
-            Command::ReplaceGraph { workflow, graph } => {
+            Command::ReplaceGraph {
+                workflow,
+                mut graph,
+            } => {
                 self.state.lookup(&workflow, caller)?;
                 ensure!(
                     !self
@@ -215,7 +230,9 @@ impl Orchestrator {
                         .any(|e| e.workflow == workflow && e.active()),
                     "Graph edits affecting running nodes require interruption first"
                 );
+                self.registry.prepare_graph(&mut graph);
                 graph.validate()?;
+                self.state.validate_node_identity(&workflow, &graph)?;
                 self.state.workflows.get_mut(&workflow).unwrap().graph = graph;
                 self.state.revision += 1;
                 Ok(Value::Null)
@@ -225,94 +242,7 @@ impl Orchestrator {
                 node,
                 invocation,
                 args,
-            } => {
-                let w = self.state.lookup(&workflow, caller)?;
-                if let Some(execution) = self.state.executions.get(&invocation) {
-                    ensure!(
-                        execution.workflow == workflow && execution.node == node,
-                        "Invocation ID already belongs to another node"
-                    );
-                    return Ok(serde_json::to_value(execution)?);
-                }
-                ensure!(w.transfer.is_none(), "Workflow handoff is in progress");
-                ensure!(
-                    w.authority == self.state.host_id,
-                    "Workflow authority moved to another host"
-                );
-                let workspace = w
-                    .workspace
-                    .as_ref()
-                    .context("Assign the workflow to an available workspace first")?;
-                self.state.workspaces.require_active(workspace)?;
-                let spec = w
-                    .graph
-                    .nodes
-                    .iter()
-                    .find(|n| n.id == node)
-                    .context("Node not found")?;
-                let definition = self.registry.definition(&spec.type_id)?;
-                ensure!(
-                    !matches!(
-                        definition.behavior,
-                        Behavior::Source | Behavior::Application
-                    ),
-                    "This provider does not support manual invocation"
-                );
-                let workspace_def = self.state.workspaces.definition(workspace)?;
-                ensure!(
-                    definition
-                        .capabilities
-                        .is_subset(&workspace_def.capabilities),
-                    "Destination workspace is missing required capabilities"
-                );
-                crate::graph::signal_environment(&args)?;
-                let provider = self.registry.provider(&definition.owner)?;
-                let generation = self.state.revision + 1;
-                let request = Invocation {
-                    id: invocation.clone(),
-                    workflow: workflow.clone(),
-                    node: node.clone(),
-                    type_id: spec.type_id.clone(),
-                    properties: spec.flow.properties.clone(),
-                    args,
-                    generation,
-                };
-                let execution = Execution {
-                    id: invocation.clone(),
-                    workflow,
-                    node,
-                    generation,
-                    host: workspace.host().into(),
-                    provider: definition.owner.clone(),
-                    handle: invocation.0.clone(),
-                    status: ExecutionStatus::Running,
-                    result: Value::Null,
-                };
-                let previous_revision = self.state.revision;
-                self.state.executions.insert(invocation.clone(), execution);
-                self.state.revision += 1;
-                if let Some(storage) = &self.storage
-                    && let Err(error) = storage.save(&self.state)
-                {
-                    self.state.executions.remove(&invocation);
-                    self.state.revision = previous_revision;
-                    return Err(error);
-                }
-                match provider.invoke_observed(request, events, self.output.clone()) {
-                    Ok(handle) => {
-                        self.state.executions.get_mut(&invocation).unwrap().handle = handle
-                    }
-                    Err(error) => {
-                        self.state.executions.get_mut(&invocation).unwrap().status =
-                            ExecutionStatus::Failed;
-                        self.state.executions.get_mut(&invocation).unwrap().result =
-                            json!({"error":error.to_string()});
-                        self.state.revision += 1;
-                        return Err(error);
-                    }
-                }
-                Ok(serde_json::to_value(&self.state.executions[&invocation])?)
-            }
+            } => self.run(workflow, node, invocation, args, None, caller, events),
             Command::Resolve {
                 invocation,
                 accepted,
@@ -407,6 +337,146 @@ impl Orchestrator {
                 Ok(Value::Null)
             }
         }
+    }
+    /// Invoke work deferred by a provider-aware delivery frame, preserving resolved data
+    /// and property inputs without modifying the graph's saved local properties.
+    pub fn invoke_activation(
+        &mut self,
+        workflow: WorkflowId,
+        invocation: InvocationId,
+        activation: crate::graph::Activation,
+        caller: Option<&WorkflowId>,
+        events: EventSink,
+    ) -> Result<Value> {
+        self.run(
+            workflow,
+            activation.id.into(),
+            invocation,
+            activation.args,
+            Some(activation.inputs),
+            caller,
+            events,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn run(
+        &mut self,
+        workflow: WorkflowId,
+        node: NodeId,
+        invocation: InvocationId,
+        args: Value,
+        inputs: Option<Value>,
+        caller: Option<&WorkflowId>,
+        events: EventSink,
+    ) -> Result<Value> {
+        let w = self.state.lookup(&workflow, caller)?;
+        if let Some(execution) = self.state.executions.get(&invocation) {
+            ensure!(
+                execution.workflow == workflow && execution.node == node,
+                "Invocation ID already belongs to another node"
+            );
+            return Ok(serde_json::to_value(execution)?);
+        }
+        ensure!(w.transfer.is_none(), "Workflow handoff is in progress");
+        ensure!(
+            w.authority == self.state.host_id,
+            "Workflow authority moved to another host"
+        );
+        let workspace = w
+            .workspace
+            .as_ref()
+            .context("Assign the workflow to an available workspace first")?;
+        self.state.workspaces.require_active(workspace)?;
+        let spec = w
+            .graph
+            .nodes
+            .iter()
+            .find(|n| n.id == node)
+            .context("Node not found")?;
+        let definition = self.registry.definition(&spec.type_id)?;
+        ensure!(
+            !matches!(
+                definition.behavior,
+                Behavior::Source | Behavior::Application
+            ),
+            "This provider does not support manual invocation"
+        );
+        let workspace_def = self.state.workspaces.definition(workspace)?;
+        ensure!(
+            definition
+                .capabilities
+                .is_subset(&workspace_def.capabilities),
+            "Destination workspace is missing required capabilities"
+        );
+        crate::graph::signal_environment(&args)?;
+        let provider = self.registry.provider(&definition.owner)?;
+        let generation = self.state.revision + 1;
+        let mut properties = spec.flow.properties.clone();
+        if let Some(inputs) = inputs {
+            let schema = w.graph.node_types.iter().find(|d| d.id == spec.type_id);
+            if let Some(schema) = schema {
+                for (name, property) in &schema.properties {
+                    if let Some(default) = &property.default {
+                        properties.entry(name.clone()).or_insert(default.clone());
+                    }
+                }
+            }
+            for pin in definition
+                .inputs
+                .iter()
+                .chain(spec.flow.inputs.iter())
+                .chain(schema.into_iter().flat_map(|d| d.inputs.iter()))
+            {
+                if let Some(property) = &pin.property
+                    && let Some(value) = inputs.get(&pin.name)
+                {
+                    properties.insert(property.clone(), value.clone());
+                }
+            }
+            properties.insert("data_inputs".into(), inputs);
+        }
+        let request = Invocation {
+            id: invocation.clone(),
+            workflow: workflow.clone(),
+            node: node.clone(),
+            type_id: spec.type_id.clone(),
+            properties,
+            args,
+            generation,
+        };
+        let execution = Execution {
+            id: invocation.clone(),
+            workflow,
+            node,
+            generation,
+            host: workspace.host().into(),
+            provider: definition.owner.clone(),
+            handle: invocation.0.clone(),
+            status: ExecutionStatus::Running,
+            result: Value::Null,
+        };
+        let previous_revision = self.state.revision;
+        self.state.executions.insert(invocation.clone(), execution);
+        self.state.revision += 1;
+        if let Some(storage) = &self.storage
+            && let Err(error) = storage.save(&self.state)
+        {
+            self.state.executions.remove(&invocation);
+            self.state.revision = previous_revision;
+            return Err(error);
+        }
+        match provider.invoke_observed(request, events, self.output.clone()) {
+            Ok(handle) => self.state.executions.get_mut(&invocation).unwrap().handle = handle,
+            Err(error) => {
+                self.state.executions.get_mut(&invocation).unwrap().status =
+                    ExecutionStatus::Failed;
+                self.state.executions.get_mut(&invocation).unwrap().result =
+                    json!({"error":error.to_string()});
+                self.state.revision += 1;
+                return Err(error);
+            }
+        }
+        Ok(serde_json::to_value(&self.state.executions[&invocation])?)
     }
 }
 impl FlowNet {

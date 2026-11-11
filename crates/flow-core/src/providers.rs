@@ -118,6 +118,10 @@ pub struct Output {
 }
 pub type OutputSink = Arc<dyn Fn(Output) + Send + Sync>;
 pub trait ExecutionProvider: Send + Sync {
+    /// Read lazy data for one delivery frame. This must never emit signals or start work.
+    fn read(&self, _invocation: Invocation) -> Result<Value> {
+        anyhow::bail!("This provider does not publish lazy computations")
+    }
     fn invoke(&self, invocation: Invocation, events: EventSink) -> Result<String>;
     fn invoke_observed(
         &self,
@@ -145,12 +149,32 @@ pub trait Clock: Send + Sync {
 pub trait Storage: Send + Sync {
     fn save(&self, state: &RuntimeState) -> Result<()>;
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Registry {
     definitions: BTreeMap<String, Definition>,
     providers: BTreeMap<ProviderId, Arc<dyn ExecutionProvider>>,
 }
 impl Registry {
+    pub fn definitions(&self) -> impl Iterator<Item = &Definition> {
+        self.definitions.values()
+    }
+    pub fn prepare_graph(&self, graph: &mut FlowNet) {
+        for definition in self.definitions() {
+            if graph.nodes.iter().any(|n| n.type_id == definition.id)
+                && !graph.node_types.iter().any(|d| d.id == definition.id)
+            {
+                graph.node_types.push(crate::graph::NodeDefinition {
+                    id: definition.id.clone(),
+                    name: definition.id.clone(),
+                    inputs: definition.inputs.clone(),
+                    outputs: definition.outputs.clone(),
+                    properties: Default::default(),
+                    source: String::new(),
+                    window: definition.window.clone(),
+                });
+            }
+        }
+    }
     pub fn mount(
         &mut self,
         owner: ProviderId,

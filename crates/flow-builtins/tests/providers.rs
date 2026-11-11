@@ -139,3 +139,54 @@ fn decisions_wait_for_resolution_and_interruption_releases_the_registration() {
         ExecutionStatus::Interrupted
     );
 }
+
+#[test]
+fn local_session_provider_activates_user_and_only_valid_service_incarnations() {
+    use flow_builtins::sessions::LocalSessions;
+    let mut runtime = flow_core::domain::RuntimeState::local();
+    LocalSessions::new("local".into(), "user-1".into(), Some("invalid".into()))
+        .unwrap()
+        .activate(&mut runtime.workspaces)
+        .unwrap();
+    assert!(
+        runtime
+            .workspaces
+            .require_active(&"local:user".into())
+            .is_ok()
+    );
+    assert!(
+        runtime
+            .workspaces
+            .require_active(&"local:systemd".into())
+            .is_err()
+    );
+    let service = "0123456789abcdef0123456789abcdef";
+    LocalSessions::new("local".into(), "user-2".into(), Some(service.into()))
+        .unwrap()
+        .activate(&mut runtime.workspaces)
+        .unwrap();
+    assert_eq!(
+        runtime
+            .workspaces
+            .availability(&"local:systemd".into())
+            .unwrap()
+            .incarnation,
+        service
+    );
+    assert!(
+        runtime
+            .workspaces
+            .require_active(&"local:desktop".into())
+            .is_err()
+    );
+    LocalSessions::new("local".into(), "user-3".into(), None)
+        .unwrap()
+        .activate(&mut runtime.workspaces)
+        .unwrap();
+    assert!(
+        runtime
+            .workspaces
+            .require_active(&"local:systemd".into())
+            .is_err()
+    );
+}

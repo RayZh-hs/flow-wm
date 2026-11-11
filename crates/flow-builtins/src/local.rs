@@ -15,6 +15,7 @@ use std::{
 #[serde(default)]
 pub struct Limits {
     pub desktop_branches_follow_rows: bool,
+    pub systemd_workspace: bool,
     pub serialize_working_directories: bool,
     pub max_concurrent: usize,
     pub execution_timeout_secs: u64,
@@ -24,11 +25,15 @@ pub struct Limits {
     pub terminate_grace_ms: u64,
     pub signal_queue_capacity: usize,
     pub replay_capacity: usize,
+    pub remote_retry_secs: u64,
+    pub remote_timeout_secs: u64,
+    pub remote_batch_size: usize,
 }
 impl Default for Limits {
     fn default() -> Self {
         Self {
             desktop_branches_follow_rows: false,
+            systemd_workspace: true,
             serialize_working_directories: true,
             max_concurrent: 8,
             execution_timeout_secs: 3600,
@@ -38,6 +43,9 @@ impl Default for Limits {
             terminate_grace_ms: 1000,
             signal_queue_capacity: 4096,
             replay_capacity: 65536,
+            remote_retry_secs: 2,
+            remote_timeout_secs: 10,
+            remote_batch_size: 4,
         }
     }
 }
@@ -46,10 +54,17 @@ impl Limits {
         ensure!(
             self.max_concurrent > 0
                 && self.execution_timeout_secs > 0
+                && self.metric_timeout_secs > 0
                 && self.evaluator_timeout_secs > 0
                 && self.signal_queue_capacity > 0
                 && self.replay_capacity > 0,
             "Runtime limits must be positive"
+        );
+        ensure!(
+            self.remote_retry_secs > 0
+                && self.remote_timeout_secs > 0
+                && self.remote_batch_size > 0,
+            "Remote runtime limits must be positive"
         );
         Ok(())
     }
@@ -95,6 +110,13 @@ impl Default for Local {
     }
 }
 impl ExecutionProvider for Local {
+    fn read(&self, invocation: Invocation) -> Result<Value> {
+        ensure!(
+            invocation.type_id == "local.constant",
+            "Unsupported lazy computation"
+        );
+        Ok(json!({"value":invocation.properties.get("value")}))
+    }
     fn invoke(&self, invocation: Invocation, events: EventSink) -> Result<String> {
         self.invoke_observed(invocation, events, None)
     }

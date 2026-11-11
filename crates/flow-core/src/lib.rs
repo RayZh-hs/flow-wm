@@ -6,4 +6,5 @@ pub mod model;
 pub mod orchestrator;
 pub mod protocol;
 pub mod providers;
+pub mod scheduler;
 pub mod transfer;

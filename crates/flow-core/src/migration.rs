@@ -5,6 +5,49 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 pub const STATE_VERSION: u32 = 2;
+pub const LEGACY_NODE_PROPERTY: &str = "flowwm.compatibility.v1";
+/// Transitional completion-barrier and application state, without desktop handles or layout.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LegacyNode {
+    pub title: String,
+    pub dependencies: Vec<String>,
+    pub run_when: crate::model::RunWhen,
+    pub review: bool,
+    pub writable: bool,
+    pub status: crate::model::Status,
+    pub output: String,
+    pub metric: crate::model::Metric,
+    pub chat: Vec<crate::model::ChatMessage>,
+    pub agent_session: Option<String>,
+}
+impl LegacyNode {
+    pub fn capture(node: &crate::model::Node) -> Self {
+        Self {
+            title: node.title.clone(),
+            dependencies: node.dependencies.clone(),
+            run_when: node.run_when,
+            review: node.review,
+            writable: node.writable,
+            status: node.status,
+            output: node.output.clone(),
+            metric: node.metric.clone(),
+            chat: node.chat.clone(),
+            agent_session: node.agent_session.clone(),
+        }
+    }
+    pub fn apply(self, node: &mut crate::model::Node) {
+        node.title = self.title;
+        node.dependencies = self.dependencies;
+        node.run_when = self.run_when;
+        node.review = self.review;
+        node.writable = self.writable;
+        node.status = self.status;
+        node.output = self.output;
+        node.metric = self.metric;
+        node.chat = self.chat;
+        node.agent_session = self.agent_session;
+    }
+}
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PresentationDocument {
     pub selected_workflow: WorkflowId,
@@ -95,6 +138,18 @@ impl Envelope {
                                 .insert("command".into(), serde_json::json!(n.command));
                             flow.properties
                                 .insert("cwd".into(), serde_json::json!(n.cwd));
+                            flow.properties
+                                .insert("writable".into(), serde_json::json!(n.writable));
+                            flow.properties
+                                .insert("agent_session".into(), serde_json::json!(n.agent_session));
+                            flow.properties.insert(
+                                "conversational".into(),
+                                serde_json::json!(!n.chat.is_empty()),
+                            );
+                            flow.properties.insert(
+                                LEGACY_NODE_PROPERTY.into(),
+                                serde_json::to_value(LegacyNode::capture(n)).unwrap(),
+                            );
                             flow
                         },
                     })
@@ -114,8 +169,10 @@ impl Envelope {
                 node_types: state.node_types.clone(),
             };
             if let Some(workflow) = runtime.workflows.get_mut(&id) {
-                workflow.name = row.name.clone();
-                workflow.graph = graph;
+                if workflow.authority == runtime.host_id {
+                    workflow.name = row.name.clone();
+                    workflow.graph = graph;
+                }
             } else {
                 runtime.workflows.insert(
                     id.clone(),
