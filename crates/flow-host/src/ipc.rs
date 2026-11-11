@@ -92,6 +92,9 @@ fn serve_client(mut stream: UnixStream, engine: Engine, macros: &[Macro]) {
                 error: reply.error,
             })?);
         }
+        if value["op"] == "data_directory" {
+            return Ok(serde_json::to_value(engine.data_directory()?)?);
+        }
         if value["op"] == "snapshot" {
             return Ok(serde_json::to_value(engine.snapshot())?);
         }

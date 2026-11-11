@@ -73,8 +73,12 @@ The same `state.lock` protects migration and the host writer. On first load:
 Desktop-bound graphs are assigned to predefined `local:desktop`; unbound graphs
 remain unassigned until a user chooses an available workspace. Unknown newer
 versions are rejected. Later saves use the versioned files and preserve the old
-file for an older installed snapshot. Presentation has a separate document;
-the compatibility adapter currently coordinates writes to both documents.
+file for an older installed snapshot. In independent-host mode the host writes
+runtime state and GTK holds a separate presentation-writer lock and atomically
+writes `presentation-v2.json`. The client learns the data directory from the host,
+so a custom host data path is respected. Runtime-only activity leaves this file
+untouched; host restart restores the desktop's saved presentation. Embedded
+compatibility mode coordinates both writes in one process.
 
 ## Workspaces and ownership
 

@@ -331,10 +331,13 @@ struct WindowProcess {
     pending: bool,
 }
 
+pub type SnapshotObserver = Arc<dyn Fn(&Snapshot) -> Result<()> + Send + Sync>;
 #[derive(Clone)]
 pub struct Engine {
     pub performance: crate::performance::Performance,
     remote: Option<PathBuf>,
+    storage_directory: Option<PathBuf>,
+    observer: Option<SnapshotObserver>,
     frontend: Arc<Mutex<Option<mpsc::Sender<UiCommand>>>>,
     remote_stream: Arc<Mutex<Option<std::os::unix::net::UnixStream>>>,
     tx: mpsc::Sender<Message>,
@@ -420,6 +423,7 @@ impl Engine {
                 ui_notifier.signal();
             }
         });
+        let storage_directory = Some(store.directory().to_path_buf());
         let worker_notifier = notifier.clone();
         let join = thread::spawn(move || {
             let process_sender = sender.clone();
@@ -493,6 +497,8 @@ impl Engine {
             Self {
                 performance: crate::performance::Performance::default(),
                 remote: None,
+                storage_directory,
+                observer: None,
                 frontend,
                 remote_stream: Arc::new(Mutex::new(None)),
                 tx,
@@ -515,6 +521,23 @@ impl Engine {
     }
     /// The compatibility client uses snapshots and commands; native frame traffic stays local.
     pub fn connect(socket: PathBuf) -> Result<(Self, mpsc::Receiver<UiCommand>)> {
+        Self::connect_observed(socket, None)
+    }
+    pub fn data_directory(&self) -> Result<PathBuf> {
+        if let Some(socket) = &self.remote {
+            return Ok(serde_json::from_value(crate::ipc::send(
+                socket,
+                &json!({"op":"data_directory"}),
+            )?)?);
+        }
+        self.storage_directory
+            .clone()
+            .context("Runtime data directory is unavailable")
+    }
+    pub fn connect_observed(
+        socket: PathBuf,
+        observer: Option<SnapshotObserver>,
+    ) -> Result<(Self, mpsc::Receiver<UiCommand>)> {
         use std::os::unix::net::UnixStream;
         let state: State = serde_json::from_value(crate::ipc::send(&socket, &Control::Status)?)?;
         let snapshot = Arc::new(Mutex::new(Snapshot {
@@ -533,6 +556,10 @@ impl Engine {
         let (ui_tx, ui_rx) = mpsc::channel();
         let shared = snapshot.clone();
         let changed = notifier.clone();
+        if let Some(observer) = &observer {
+            observer(&snapshot.lock().unwrap())?;
+        }
+        let subscription_observer = observer.clone();
         thread::spawn(move || {
             for line in BufReader::new(stream).lines() {
                 if changed.closed.load(Ordering::Acquire) {
@@ -544,6 +571,9 @@ impl Engine {
                         let mut current = shared.lock().unwrap();
                         if next.revision >= current.revision {
                             *current = next;
+                            if let Some(observer) = &subscription_observer {
+                                observer(&current)?;
+                            }
                         }
                     }
                     for command in frame.commands {
@@ -585,6 +615,8 @@ impl Engine {
             Self {
                 performance: Default::default(),
                 remote: Some(socket),
+                storage_directory: None,
+                observer,
                 frontend: Arc::new(Mutex::new(None)),
                 remote_stream,
                 tx,
@@ -601,6 +633,11 @@ impl Engine {
         let mut current = self.snapshot.lock().unwrap();
         if next.revision >= current.revision {
             *current = next;
+            if let Some(observer) = &self.observer
+                && let Err(error) = observer(&current)
+            {
+                current.error = Some(format!("Save desktop presentation: {error:#}"));
+            }
             drop(current);
             self.notifier.signal();
         }

@@ -29,7 +29,12 @@ fn main() -> Result<()> {
     let extensions = extensions::load_bundle(&flowwm::config::directory().join("extensions"))?;
     let macros = extensions.macros.clone();
     let (engine, events) = if let Some(host_socket) = cli.host_socket {
-        Engine::connect(host_socket)?
+        let directory = serde_json::from_value(ipc::send(
+            &host_socket,
+            &serde_json::json!({"op":"data_directory"}),
+        )?)?;
+        let observer = flowwm::presentation::Writer::new(directory)?.observer();
+        Engine::connect_observed(host_socket, Some(observer))?
     } else {
         let config = directories::ProjectDirs::from("dev", "flowwm", "FlowWM")
             .context("Home directory unavailable")?;

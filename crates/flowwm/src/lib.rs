@@ -9,5 +9,6 @@ pub mod ipc;
 pub mod model;
 pub mod niri;
 pub mod performance;
+pub mod presentation;
 pub mod store;
 pub mod ui;

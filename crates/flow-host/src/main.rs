@@ -35,7 +35,7 @@ fn main() -> Result<()> {
             .data_local_dir()
             .to_path_buf()
     });
-    let store = Store::new(directory)?;
+    let store = Store::new(directory)?.with_client_presentation();
     let mut state = store.load(std::env::current_dir()?)?;
     if let Some(runtime) = &mut state.orchestration {
         runtime.bind_host(config::host_id()?)?;

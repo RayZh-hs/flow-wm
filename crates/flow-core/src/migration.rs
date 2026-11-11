@@ -5,11 +5,47 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 pub const STATE_VERSION: u32 = 2;
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PresentationDocument {
     pub selected_workflow: WorkflowId,
     pub workflows: BTreeMap<WorkflowId, Value>,
     pub nodes: BTreeMap<NodeId, Value>,
+}
+impl PresentationDocument {
+    pub fn capture(state: &State) -> Self {
+        Self {
+            selected_workflow: state.selected_workspace.clone().into(),
+            workflows: state.workspaces.iter().map(|row| (row.id.clone().into(),
+                serde_json::json!({"row":row.row,"view":row.view,"window_array":row.window_array,"graph_arranged":row.graph_arranged}))).collect(),
+            nodes: state.nodes.iter().map(|node| (node.id.clone().into(),
+                serde_json::json!({"position":node.position,"column":node.column,"column_mode":node.column_mode}))).collect(),
+        }
+    }
+    pub fn apply(&self, state: &mut State) -> Result<()> {
+        for row in &mut state.workspaces {
+            if let Some(value) = self.workflows.get(&row.id.clone().into()) {
+                row.row = serde_json::from_value(value["row"].clone())?;
+                row.view = serde_json::from_value(value["view"].clone())?;
+                row.window_array = serde_json::from_value(value["window_array"].clone())?;
+                row.graph_arranged = serde_json::from_value(value["graph_arranged"].clone())?;
+            }
+        }
+        for node in &mut state.nodes {
+            if let Some(value) = self.nodes.get(&node.id.clone().into()) {
+                node.position = serde_json::from_value(value["position"].clone())?;
+                node.column = serde_json::from_value(value["column"].clone())?;
+                node.column_mode = serde_json::from_value(value["column_mode"].clone())?;
+            }
+        }
+        if state
+            .workspaces
+            .iter()
+            .any(|w| w.id == self.selected_workflow.0)
+        {
+            state.selected_workspace = self.selected_workflow.0.clone();
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Envelope {

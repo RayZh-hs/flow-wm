@@ -12,6 +12,7 @@ use std::{
 pub struct Store {
     directory: PathBuf,
     _lock: Arc<File>,
+    client_presentation: bool,
 }
 impl Store {
     pub fn new(directory: PathBuf) -> Result<Self> {
@@ -33,7 +34,12 @@ impl Store {
         Ok(Self {
             directory,
             _lock: Arc::new(lock),
+            client_presentation: false,
         })
+    }
+    pub fn with_client_presentation(mut self) -> Self {
+        self.client_presentation = true;
+        self
     }
     pub fn directory(&self) -> &Path {
         &self.directory
@@ -58,6 +64,13 @@ impl Store {
             self.write_json("runtime-v2.json", &envelope)?;
             envelope.into_compatibility()?
         };
+        let presentation = self.directory.join("presentation-v2.json");
+        if presentation.exists() {
+            let document: flow_core::migration::PresentationDocument =
+                serde_json::from_slice(&fs::read(presentation)?)
+                    .context("Read desktop presentation")?;
+            document.apply(&mut state)?;
+        }
         restore_window_bindings(&mut state, std::env::var("NIRI_SOCKET").ok().as_deref());
         if let Some(runtime) = &mut state.orchestration {
             for execution in runtime.executions.values_mut().filter(|e| e.active()) {
@@ -89,7 +102,9 @@ impl Store {
     pub fn save(&self, state: &State) -> Result<()> {
         let (envelope, presentation) = flow_core::migration::Envelope::from_v1(state.clone())?;
         envelope.validate()?;
-        self.write_json("presentation-v2.json", &presentation)?;
+        if !self.client_presentation {
+            self.write_json("presentation-v2.json", &presentation)?;
+        }
         self.write_json("runtime-v2.json", &envelope)
     }
     pub fn write_json(&self, name: &str, value: &impl serde::Serialize) -> Result<()> {
