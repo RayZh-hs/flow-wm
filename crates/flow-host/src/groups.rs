@@ -27,6 +27,15 @@ pub(crate) fn synchronize_with_processes(
     desktop: &Desktop,
     retained: &HashSet<String>,
 ) -> bool {
+    let follow = state.orchestration.is_none();
+    synchronize_with_policy(state, desktop, retained, follow)
+}
+pub(crate) fn synchronize_with_policy(
+    state: &mut State,
+    desktop: &Desktop,
+    retained: &HashSet<String>,
+    follow_rows: bool,
+) -> bool {
     if !desktop.connected
         || !desktop.windows_ready
         || !desktop.workspaces_ready
@@ -242,7 +251,33 @@ pub(crate) fn synchronize_with_processes(
             changed = true;
             state.nodes.len() - 1
         });
-        let relocated = state.nodes[index].workspace != group_id;
+        let node_id = &state.nodes[index].id;
+        let standalone = state.nodes[index].desktop_window
+            && !state
+                .connections
+                .iter()
+                .any(|e| &e.source.node == node_id || &e.target.node == node_id)
+            && !state.nodes.iter().any(|n| {
+                if &n.id == node_id {
+                    !n.dependencies.is_empty()
+                } else {
+                    n.dependencies.contains(node_id)
+                }
+            })
+            && !state
+                .watchers
+                .iter()
+                .any(|w| &w.source == node_id || &w.target == node_id)
+            && state.orchestration.as_ref().is_none_or(|r| {
+                r.workflows
+                    .get(&state.nodes[index].workspace.clone().into())
+                    .is_none_or(|w| {
+                        w.workspace
+                            .as_ref()
+                            .is_none_or(|s| s.0.ends_with(":desktop"))
+                    })
+            });
+        let relocated = state.nodes[index].workspace != group_id && (follow_rows || standalone);
         if relocated {
             let node_id = state.nodes[index].id.clone();
             relocate_component(state, &node_id, &group_id);

@@ -55,6 +55,7 @@ pub fn run_worker() -> Result<()> {
 
 pub fn evaluate_isolated(
     executable: &std::path::Path,
+    limits: &crate::local::Limits,
     mut state: State,
     root: &str,
     signal: Option<(String, Value)>,
@@ -110,11 +111,30 @@ pub fn evaluate_isolated(
     });
     let start = Instant::now();
     let mut interrupted = false;
+    let mut interrupted_at = None;
     let status = loop {
-        if cancel.load(Ordering::Relaxed) || start.elapsed() > Duration::from_secs(60) {
+        if (cancel.load(Ordering::Relaxed)
+            || start.elapsed() > Duration::from_secs(limits.evaluator_timeout_secs))
+            && interrupted_at.is_none()
+        {
             interrupted = true;
+            interrupted_at = Some(Instant::now());
             unsafe {
-                libc::kill(-(child.id() as i32), libc::SIGKILL);
+                libc::kill(-(child.id() as i32), libc::SIGINT);
+            }
+        }
+        if let Some(at) = interrupted_at {
+            if at.elapsed() >= Duration::from_millis(limits.interrupt_grace_ms) {
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGTERM);
+                }
+            }
+            if at.elapsed()
+                >= Duration::from_millis(limits.interrupt_grace_ms + limits.terminate_grace_ms)
+            {
+                unsafe {
+                    libc::kill(-(child.id() as i32), libc::SIGKILL);
+                }
             }
         }
         if let Some(status) = child.try_wait()? {

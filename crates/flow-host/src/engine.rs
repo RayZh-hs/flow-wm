@@ -538,7 +538,10 @@ impl Engine {
                 let result = (|| -> Result<()> {
                     let frame: crate::ipc::ClientFrame = serde_json::from_str(&line?)?;
                     if let Some(next) = frame.snapshot {
-                        *shared.lock().unwrap() = next;
+                        let mut current = shared.lock().unwrap();
+                        if next.revision >= current.revision {
+                            *current = next;
+                        }
                     }
                     for command in frame.commands {
                         let _ = ui_tx.send(command);
@@ -590,6 +593,14 @@ impl Engine {
             },
             ui_rx,
         ))
+    }
+    fn accept_snapshot(&self, next: Snapshot) {
+        let mut current = self.snapshot.lock().unwrap();
+        if next.revision >= current.revision {
+            *current = next;
+            drop(current);
+            self.notifier.signal();
+        }
     }
     pub fn snapshot(&self) -> Snapshot {
         self.snapshot.lock().unwrap().clone()
@@ -645,7 +656,11 @@ impl Engine {
     }
     pub fn request(&self, control: Control) -> Result<Value> {
         if let Some(socket) = &self.remote {
-            return crate::ipc::send(socket, &control);
+            let result = crate::ipc::send(socket, &control)?;
+            let fresh: Snapshot =
+                serde_json::from_value(crate::ipc::send(socket, &json!({"op":"snapshot"}))?)?;
+            self.accept_snapshot(fresh);
+            return Ok(result);
         }
         let (tx, rx) = mpsc::channel();
         self.tx
@@ -793,6 +808,12 @@ impl Runtime {
                     control: Control::Shutdown,
                     reply,
                 })) => {
+                    let owned_invocations = self
+                        .orchestrator
+                        .state
+                        .executions
+                        .values()
+                        .any(|e| e.active() && e.host == self.orchestrator.state.host_id);
                     for execution in self
                         .orchestrator
                         .state
@@ -820,6 +841,19 @@ impl Runtime {
                             );
                         }
                     }
+                    for execution in self
+                        .orchestrator
+                        .state
+                        .executions
+                        .values_mut()
+                        .filter(|e| e.active())
+                    {
+                        if execution.host == self.orchestrator.state.host_id {
+                            execution.status = flow_core::domain::ExecutionStatus::Interrupted;
+                            execution.result = json!({"error":"Runtime host stopped"});
+                        }
+                    }
+                    self.state.orchestration = Some(self.orchestrator.state.clone());
                     if let Err(error) = self.store.save(&self.state) {
                         eprintln!("Save state: {error:#}");
                     }
@@ -827,7 +861,7 @@ impl Runtime {
                         let _ = reply.send(Ok(json!({"ok":true})));
                     }
                     // Process workers observe cancellation and reap their process group.
-                    if !self.runs.is_empty() {
+                    if !self.runs.is_empty() || owned_invocations {
                         thread::sleep(Duration::from_millis(
                             self.limits.interrupt_grace_ms + self.limits.terminate_grace_ms + 200,
                         ));
@@ -900,10 +934,11 @@ impl Runtime {
                         .map(|(id, _)| id.clone())
                         .chain(self.exit_pending.iter().cloned())
                         .collect();
-                    let mut changed = crate::groups::synchronize_with_processes(
+                    let mut changed = crate::groups::synchronize_with_policy(
                         &mut self.state,
                         &desktop,
                         &retained,
+                        self.limits.desktop_branches_follow_rows,
                     );
                     changed |= self.observe_window_processes(&desktop);
                     if changed {
@@ -1418,7 +1453,20 @@ impl Runtime {
                     .state
                     .end_session(&workspace, &incarnation)?;
                 for execution in cleanup {
-                    if let Ok(provider) = self.orchestrator.registry.provider(&execution.provider) {
+                    if execution.host != self.orchestrator.state.host_id {
+                        self.orchestrator.state.pending_remote.push_back(
+                            flow_core::transfer::RemoteCommand {
+                                host: execution.host,
+                                caller: None,
+                                command: flow_core::protocol::Command::OriginInterrupt {
+                                    invocation: execution.id,
+                                    generation: execution.generation,
+                                },
+                            },
+                        );
+                    } else if let Ok(provider) =
+                        self.orchestrator.registry.provider(&execution.provider)
+                    {
                         let _ = provider.interrupt(&execution.handle);
                     }
                 }

@@ -22,8 +22,16 @@ pub mod graph {
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> anyhow::Result<Evaluation> {
         let executable = crate::config::worker_executable()?;
-        flow_builtins::worker::evaluate_isolated(&executable, state, root, signal, cancel)
+        flow_builtins::worker::evaluate_isolated(
+            &executable,
+            &crate::config::runtime_limits()?,
+            state,
+            root,
+            signal,
+            cancel,
+        )
     }
 }
+pub mod desktop_provider;
 mod projection;
 pub mod remote;

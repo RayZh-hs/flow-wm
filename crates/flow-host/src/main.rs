@@ -24,6 +24,8 @@ fn main() -> Result<()> {
     if args.stdio {
         return flow_host::remote::stdio(&args.socket.unwrap_or_else(ipc::host_socket));
     }
+    config::runtime_limits()?;
+    flow_host::remote::configured()?;
     config::set_worker_executable(std::env::current_exe()?);
     let socket = args.socket.unwrap_or_else(ipc::host_socket);
     let listener = ipc::bind(&socket)?;
@@ -35,10 +37,16 @@ fn main() -> Result<()> {
     });
     let store = Store::new(directory)?;
     let mut state = store.load(std::env::current_dir()?)?;
+    if let Some(runtime) = &mut state.orchestration {
+        runtime.bind_host(config::host_id()?)?;
+    }
     let extensions = extensions::load_bundle(&config::directory().join("extensions"))?;
     extensions.apply(&mut state)?;
     let (engine, _) = Engine::new(state, store);
     ipc::serve(listener, engine.clone(), extensions.macros);
+    for (host, remote) in flow_host::remote::configured()? {
+        engine.dispatch(flow_host::engine::Control::ConnectHost { host, remote });
+    }
     let mut signals = signal_hook::iterator::Signals::new([
         signal_hook::consts::SIGTERM,
         signal_hook::consts::SIGINT,

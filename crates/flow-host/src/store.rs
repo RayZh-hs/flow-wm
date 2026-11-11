@@ -59,6 +59,22 @@ impl Store {
             envelope.into_compatibility()?
         };
         restore_window_bindings(&mut state, std::env::var("NIRI_SOCKET").ok().as_deref());
+        if let Some(runtime) = &mut state.orchestration {
+            for execution in runtime.executions.values_mut().filter(|e| e.active()) {
+                if execution.host == runtime.host_id {
+                    execution.status = flow_core::domain::ExecutionStatus::Unavailable;
+                    execution.result = serde_json::json!({"error":"The originating host restarted; this invocation will not be executed again automatically"});
+                    if let Some(destination) = runtime.forwarding_targets.get(&execution.id) {
+                        runtime
+                            .forwarding
+                            .push_back(flow_core::transfer::ForwardedCompletion {
+                                destination: destination.clone(),
+                                execution: execution.clone(),
+                            });
+                    }
+                }
+            }
+        }
         for node in &mut state.nodes {
             if !node.desktop_window && matches!(node.status, Status::Running | Status::Queued) {
                 node.status = Status::Stopped;

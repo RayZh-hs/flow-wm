@@ -195,3 +195,19 @@ impl Registry {
         Ok(schemas)
     }
 }
+
+/// Platform attachments expose only operations the provider can perform precisely.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ApplicationOperations {
+    pub open: bool,
+    pub close_window: bool,
+    pub interrupt: bool,
+    pub disown: bool,
+}
+pub trait ApplicationProvider: Send + Sync {
+    fn operations(&self, handle: &str) -> Result<ApplicationOperations>;
+    fn open(&self, handle: &str) -> Result<()>;
+    fn close_window(&self, handle: &str) -> Result<()>;
+    fn interrupt(&self, handle: &str) -> Result<()>;
+    fn disown(&self, handle: &str) -> Result<()>;
+}

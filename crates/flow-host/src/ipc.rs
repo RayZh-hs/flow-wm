@@ -62,6 +62,9 @@ fn serve_client(mut stream: UnixStream, engine: Engine, macros: &[Macro]) {
             "Request is too large or incomplete"
         );
         let value: Value = serde_json::from_slice(&bytes)?;
+        if value["op"] == "snapshot" {
+            return Ok(serde_json::to_value(engine.snapshot())?);
+        }
         if value["op"] == "attach" {
             ensure!(value["protocol"] == 2, "Unsupported client protocol");
             let commands = engine.connect_frontend();

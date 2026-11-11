@@ -324,3 +324,56 @@ fn cross_host_handoff_preserves_real_execution_and_forwards_interrupt_and_result
     a.shutdown();
     b.shutdown();
 }
+
+#[test]
+fn synchronous_client_commands_see_fresh_state_and_late_frames_cannot_roll_it_back() {
+    use std::{
+        io::{BufRead, BufReader, Write},
+        sync::{Arc, Mutex, mpsc},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("snapshot.sock");
+    let listener = ipc::bind(&socket).unwrap();
+    let base = State::empty(dir.path().into());
+    let current = Arc::new(Mutex::new(base.clone()));
+    let (release, gate) = mpsc::channel();
+    let gate = Arc::new(Mutex::new(Some(gate)));
+    let server = thread::spawn(move || {
+        for _ in 0..4 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let state = current.clone();
+            let old = base.clone();
+            let gate = gate.clone();
+            thread::spawn(move || {
+                let mut line = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                match request["op"].as_str().unwrap(){
+                    "status"=>writeln!(stream,"{}",json!({"ok":&*state.lock().unwrap()})).unwrap(),
+                    "notes"=>{state.lock().unwrap().workspaces[0].notes="fresh".into();writeln!(stream,"{}",json!({"ok":null})).unwrap();},
+                    "snapshot"=>writeln!(stream,"{}",json!({"ok":flow_host::engine::Snapshot{state:Arc::new(state.lock().unwrap().clone()),revision:2,error:None}})).unwrap(),
+                    "attach"=>{gate.lock().unwrap().take().unwrap().recv().unwrap();writeln!(stream,"{}",serde_json::to_string(&ipc::ClientFrame{snapshot:Some(flow_host::engine::Snapshot{state:Arc::new(old),revision:1,error:None}),commands:vec![flow_host::engine::UiCommand::Help]}).unwrap()).unwrap();},
+                    _=>panic!("Unexpected request")
+                }
+            });
+        }
+    });
+    let (client, commands) = Engine::connect(socket).unwrap();
+    client
+        .request(Control::Notes {
+            text: "fresh".into(),
+        })
+        .unwrap();
+    assert_eq!(client.snapshot().state.workspace().notes, "fresh");
+    release.send(()).unwrap();
+    assert!(matches!(
+        commands.recv_timeout(Duration::from_secs(2)).unwrap(),
+        flow_host::engine::UiCommand::Help
+    ));
+    assert_eq!(client.snapshot().revision, 2);
+    assert_eq!(client.snapshot().state.workspace().notes, "fresh");
+    client.shutdown();
+    server.join().unwrap();
+}

@@ -18,6 +18,7 @@ use std::{
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Limits {
+    pub desktop_branches_follow_rows: bool,
     pub max_concurrent: usize,
     pub execution_timeout_secs: u64,
     pub metric_timeout_secs: u64,
@@ -30,6 +31,7 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
+            desktop_branches_follow_rows: false,
             max_concurrent: 8,
             execution_timeout_secs: 3600,
             metric_timeout_secs: 20,
