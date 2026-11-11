@@ -97,3 +97,6 @@ describes typed connections and extensions.
 
 FlowWM builds on the work of niri and Dux contributors. It is licensed under
 [GPL-3.0-or-later](LICENSE); bundled components retain their own licenses.
+
+Runtime architecture, versioned migration, host supervision, and optional extension
+windows are documented in [docs/runtime.md](docs/runtime.md).

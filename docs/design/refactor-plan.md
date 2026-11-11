@@ -1,5 +1,9 @@
 # Flow refactor plan
 
+The implementation and remaining compatibility boundaries are recorded in
+[Runtime and extension interfaces](../runtime.md). The phase descriptions below
+remain the architectural completion criteria.
+
 This proposal maps the [project](flow-project.md), [workflow](workflows.md),
 [node](nodes-and-windows.md), and [extension](extensions.md) designs onto the
 current implementation. It incorporates the clarified workspace and execution

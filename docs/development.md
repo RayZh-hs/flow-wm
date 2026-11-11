@@ -6,7 +6,10 @@ commit here records all three source trees together; ordinary Niri and DMS
 installations remain independent.
 
 ```text
-crates/flowwm/       workflow engine, CLI, GTK canvas, application tests
+crates/flow-core/    portable contracts, ownership, types and Vox evaluator
+crates/flow-builtins/ platform providers and evaluator workers
+crates/flow-host/    independent runtime, transports, storage, compatibility engine
+crates/flowwm/       CLI, GTK canvas, compatibility exports, application tests
 components/niri/    RayZh-hs/niri, based on feature/tab-animations
 components/dms/     RayZh-hs/DankMaterialShell, based on master, including OCR
 config/             bindings and isolated nested-session configuration
@@ -17,20 +20,19 @@ target/niri/        independent niri build cache
 
 Niri and DMS are squashed Git subtrees. Their upstream layout, licenses, and Cargo
 or Go manifests remain intact. Development changes are ordinary commits in this
-repository. The root Rust workspace contains only FlowWM; niri keeps its own
+repository. The root Rust workspace contains the four Flow packages; niri keeps its own
 workspace and lockfile. FlowWM uses the exact `niri-ipc` source in the niri subtree,
 so client and compositor changes are checked together.
 
 DMS's shared QML library remains a pinned submodule, registered in the root
-`.gitmodules`. It is the only recursive checkout needed for the compositor and
-shell sources.
+`.gitmodules`. The optional upstream Qt runtime is also pinned as `components/dms/dux-qt-base`; bootstrap initializes both submodules. The installed launcher defaults to Quickshell via upstream's `--qs-child` option. Set `FLOWWM_SHELL_RUNTIME=embedded` to use an installed or embedded Dux Qt runtime.
 
-FlowWM currently uses path dependencies from a sibling `../Vox` checkout for
-fixed-width integer support. The integration is validated against Vox commit
-`1d028fac2a6d30e642208a3e5bbc6db43019e0a4`, which adds `UInt8` and the other
-fixed-width primitives. That commit is not yet published on Vox's GitHub branch;
-until it is published and pinned as a Git dependency, builds require this local
-checkout. FlowWM does not modify the Vox sources or integration files.
+Flow's runtime and provider contracts now live in `crates/flow-core`,
+`crates/flow-builtins`, and `crates/flow-host`. The latter builds the independent
+`flow-core` executable. See [runtime architecture, migration, and extension
+interfaces](runtime.md) for the current boundaries and compatibility adapter.
+Vox is vendored at the validated fixed-width integer revision; no sibling checkout
+is required.
 
 Automatic window `on_exit(exit_code: UInt8)` observation requires Linux 6.15+
 for pidfd exit information. The process-exit integration tests exercise real
@@ -130,7 +132,7 @@ the snapshot, and attempts to restore
 the previous services if replacement fails. It requires an active installed FlowWM
 session and checks that the same compositor is still running before reloading.
 The compositor and application windows keep running; compositor updates require
-another login. Restarting FlowWM stops its active workflow subprocesses. Existing
+another login. Installed GTK restarts leave the independent `flowwm-core.service` and its executions running. Restarting the runtime itself, or an embedded development engine, stops its owned subprocesses. Existing
 application processes retain their inherited environment.
 
 FlowWM uses `flowwm-compositor.service`, `flowwm-session.target`, `flowwm.service`,
