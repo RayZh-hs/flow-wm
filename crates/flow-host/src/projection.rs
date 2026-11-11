@@ -113,6 +113,15 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
                 ExecutionStatus::Interrupted | ExecutionStatus::Unavailable => Status::Stopped,
             };
             if !execution.active() {
+                if let Some(compatibility) = execution.result.get("compatibility") {
+                    if let Ok(status) = serde_json::from_value(compatibility["status"].clone()) {
+                        node.status = status;
+                    }
+                    if let Some(output) = compatibility["output"].as_str() {
+                        node.output = output.into();
+                    }
+                    continue;
+                }
                 if let Some(values) = execution.result.as_object() {
                     node.flow.values.extend(
                         values

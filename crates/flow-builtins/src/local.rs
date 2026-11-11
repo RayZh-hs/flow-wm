@@ -1,24 +1,21 @@
-//! Owned Linux execution provider. Interrupt is SIGINT followed by configured escalation.
+//! Registered Linux builtin providers. Process supervision is shared across node types.
+use crate::process::{Process, Supervisor};
 use anyhow::{Context, Result, ensure};
-use flow_core::{domain::*, providers::*};
+use flow_core::{graph::Record, providers::*};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
-    io::Read,
-    os::unix::process::CommandExt,
-    process::{Command, Stdio},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread,
-    time::{Duration, Instant},
+    path::PathBuf,
+    process::Command,
+    sync::{Arc, Mutex},
+    time::Duration,
 };
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Limits {
     pub desktop_branches_follow_rows: bool,
+    pub serialize_working_directories: bool,
     pub max_concurrent: usize,
     pub execution_timeout_secs: u64,
     pub metric_timeout_secs: u64,
@@ -32,6 +29,7 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             desktop_branches_follow_rows: false,
+            serialize_working_directories: true,
             max_concurrent: 8,
             execution_timeout_secs: 3600,
             metric_timeout_secs: 20,
@@ -56,178 +54,234 @@ impl Limits {
         Ok(())
     }
 }
-#[derive(Default)]
+
+#[derive(Clone, Default)]
+pub struct Environment {
+    pub config_directory: Option<PathBuf>,
+    pub data_directory: Option<PathBuf>,
+    pub control_socket: Option<PathBuf>,
+    pub cli: Option<PathBuf>,
+}
+type Factory = fn(&Invocation, &Environment, &Limits) -> Result<Process>;
 pub struct Local {
     limits: Limits,
-    runs: Arc<Mutex<BTreeMap<String, Arc<AtomicBool>>>>,
+    environment: Environment,
+    processes: Supervisor,
+    factories: BTreeMap<String, Factory>,
+    decisions: Mutex<BTreeMap<String, (Invocation, EventSink)>>,
 }
 impl Local {
     pub fn new(limits: Limits) -> Self {
+        Self::with_environment(limits, Environment::default())
+    }
+    pub fn with_environment(limits: Limits, environment: Environment) -> Self {
         Self {
+            decisions: Mutex::new(BTreeMap::new()),
             limits,
-            ..Default::default()
+            environment,
+            processes: Supervisor::default(),
+            factories: BTreeMap::from([
+                ("local.shell".into(), shell as Factory),
+                ("local.metric".into(), metric as Factory),
+                ("local.agent".into(), crate::agent::process as Factory),
+                ("local.application".into(), application as Factory),
+            ]),
         }
+    }
+}
+impl Default for Local {
+    fn default() -> Self {
+        Self::new(Limits::default())
     }
 }
 impl ExecutionProvider for Local {
     fn invoke(&self, invocation: Invocation, events: EventSink) -> Result<String> {
-        let handle = invocation.id.0.clone();
+        self.invoke_observed(invocation, events, None)
+    }
+    fn invoke_observed(
+        &self,
+        invocation: Invocation,
+        events: EventSink,
+        output: Option<OutputSink>,
+    ) -> Result<String> {
+        if matches!(invocation.type_id.as_str(), "local.human" | "local.gate") {
+            let handle = invocation.id.0.clone();
+            let mut decisions = self.decisions.lock().unwrap();
+            ensure!(
+                !decisions.contains_key(&handle),
+                "Invocation is already awaiting a decision"
+            );
+            decisions.insert(handle.clone(), (invocation, events));
+            return Ok(handle);
+        }
         if invocation.type_id == "local.constant" {
+            let handle = invocation.id.0.clone();
             events(Completion {
                 invocation: invocation.id,
                 generation: invocation.generation,
-                status: ExecutionStatus::Complete,
+                status: flow_core::domain::ExecutionStatus::Complete,
                 result: json!({"value":invocation.properties.get("value")}),
             });
             return Ok(handle);
         }
-        ensure!(
-            invocation.type_id == "local.shell",
-            "Unsupported local provider node"
+        let factory = self
+            .factories
+            .get(&invocation.type_id)
+            .context("Unsupported local provider node")?;
+        let mut process = factory(&invocation, &self.environment, &self.limits)?;
+        process.command.env(
+            "FLOWWM_INPUTS",
+            invocation
+                .properties
+                .get("inputs")
+                .unwrap_or(&json!([]))
+                .to_string(),
         );
-        let cancel = Arc::new(AtomicBool::new(false));
-        let mut runs = self.runs.lock().unwrap();
-        ensure!(
-            runs.len() < self.limits.max_concurrent,
-            "Execution concurrency limit reached"
-        );
-        ensure!(!runs.contains_key(&handle), "Invocation is already running");
-        let source = invocation
-            .properties
-            .get("command")
-            .and_then(|v| v.as_str())
-            .context("Shell requires a command")?;
-        let mut command = Command::new("/bin/sh");
-        command
-            .args(["-lc", source])
-            .process_group(0)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if let Some(cwd) = invocation.properties.get("cwd").and_then(|v| v.as_str()) {
-            command.current_dir(cwd);
+        if let Some(socket) = &self.environment.control_socket {
+            process.command.env("FLOWWM_SOCKET", socket);
         }
-        for (key, _) in
-            std::env::vars_os().filter(|(k, _)| k.as_encoded_bytes().starts_with(b"FLOWWM_ARG_"))
-        {
-            command.env_remove(key);
+        if let Some(cli) = &self.environment.cli {
+            process.command.env("FLOWWM_CLI", cli);
         }
-        command.envs(flow_core::graph::signal_environment(&invocation.args)?);
-        command.env("FLOWWM_NODE_ID", &invocation.node.0);
-        let mut child = command.spawn().context("Start shell invocation")?;
-        let pid = child.id();
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
-        let out = thread::spawn(move || {
-            let mut bytes = Vec::new();
-            let _ = stdout.take(1_048_577).read_to_end(&mut bytes);
-            bytes
-        });
-        let err = thread::spawn(move || {
-            let mut bytes = Vec::new();
-            let _ = stderr.take(65537).read_to_end(&mut bytes);
-            bytes
-        });
-        runs.insert(handle.clone(), cancel.clone());
-        drop(runs);
-        let runs = self.runs.clone();
-        let handle_copy = handle.clone();
-        let limits = self.limits.clone();
-        thread::spawn(move || {
-            let start = Instant::now();
-            let mut interrupted = None;
-            let mut terminated = false;
-            let result = loop {
-                if interrupted.is_none()
-                    && (cancel.load(Ordering::Acquire)
-                        || start.elapsed() >= Duration::from_secs(limits.execution_timeout_secs))
-                {
-                    unsafe {
-                        libc::kill(-(pid as i32), libc::SIGINT);
-                    }
-                    interrupted = Some(Instant::now());
-                }
-                if let Some(at) = interrupted {
-                    if !terminated
-                        && at.elapsed() >= Duration::from_millis(limits.interrupt_grace_ms)
-                    {
-                        unsafe {
-                            libc::kill(-(pid as i32), libc::SIGTERM);
-                        }
-                        terminated = true;
-                    }
-                    if at.elapsed()
-                        >= Duration::from_millis(
-                            limits.interrupt_grace_ms + limits.terminate_grace_ms,
-                        )
-                    {
-                        unsafe {
-                            libc::kill(-(pid as i32), libc::SIGKILL);
-                        }
-                    }
-                }
-                match child.try_wait() {
-                    Ok(Some(status)) => break Ok(status),
-                    Err(error) => break Err(error),
-                    Ok(None) => thread::sleep(Duration::from_millis(20)),
-                }
-            };
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
-            }
-            let stdout = out.join().unwrap_or_default();
-            let stderr = err.join().unwrap_or_default();
-            let status = if interrupted.is_some() {
-                ExecutionStatus::Interrupted
-            } else if result.as_ref().is_ok_and(|s| s.success()) {
-                ExecutionStatus::Complete
-            } else {
-                ExecutionStatus::Failed
-            };
-            runs.lock().unwrap().remove(&handle_copy);
+        if let Some(inputs) = invocation.properties.get("data_inputs") {
+            process
+                .command
+                .env("FLOWWM_DATA_INPUTS", inputs.to_string());
+        }
+        self.processes
+            .start(process, invocation, &self.limits, events, output)
+    }
+    fn interrupt(&self, handle: &str) -> Result<()> {
+        if let Some((invocation, events)) = self.decisions.lock().unwrap().remove(handle) {
             events(Completion {
                 invocation: invocation.id,
                 generation: invocation.generation,
-                status,
-                result: json!({"stdout":String::from_utf8_lossy(&stdout),"stderr":String::from_utf8_lossy(&stderr), "exit_code":result.ok().and_then(|s|s.code())}),
+                status: flow_core::domain::ExecutionStatus::Interrupted,
+                result: json!({}),
             });
-        });
-        Ok(handle)
-    }
-    fn interrupt(&self, handle: &str) -> Result<()> {
-        if let Some(cancel) = self.runs.lock().unwrap().get(handle) {
-            cancel.store(true, Ordering::Release);
         }
+        self.processes.interrupt(handle)
+    }
+    fn resolve(&self, handle: &str, accepted: bool, result: Value) -> Result<()> {
+        let (invocation, events) = self
+            .decisions
+            .lock()
+            .unwrap()
+            .remove(handle)
+            .context("Decision is no longer active")?;
+        events(Completion {
+            invocation: invocation.id,
+            generation: invocation.generation,
+            status: if accepted {
+                flow_core::domain::ExecutionStatus::Complete
+            } else {
+                flow_core::domain::ExecutionStatus::Failed
+            },
+            result,
+        });
         Ok(())
     }
 }
+pub(crate) fn text<'a>(properties: &'a Record, name: &str) -> Option<&'a str> {
+    properties.get(name).and_then(Value::as_str)
+}
+pub(crate) fn directory(invocation: &Invocation) -> PathBuf {
+    text(&invocation.properties, "cwd")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+fn shell(invocation: &Invocation, _: &Environment, limits: &Limits) -> Result<Process> {
+    let source = text(&invocation.properties, "command").context("Shell requires a command")?;
+    let mut command = Command::new("/bin/sh");
+    command.args(["-lc", source]);
+    Ok(Process {
+        command,
+        input: None,
+        stdout_stream: "stdout",
+        timeout: Duration::from_secs(limits.execution_timeout_secs),
+        directory: directory(invocation),
+        writer: true,
+        decode: |stdout| Ok(json!({"stdout":stdout})),
+    })
+}
+fn metric(invocation: &Invocation, environment: &Environment, limits: &Limits) -> Result<Process> {
+    let mut process = shell(invocation, environment, limits)?;
+    process.timeout = Duration::from_secs(limits.metric_timeout_secs);
+    process.writer = false;
+    process.decode = |stdout| {
+        let last = stdout.trim().lines().last().unwrap_or("");
+        let value = last.parse::<f64>().ok().or_else(|| {
+            serde_json::from_str::<Value>(last)
+                .ok()
+                .and_then(|v| v["value"].as_f64())
+        });
+        let value = value
+            .filter(|v| v.is_finite())
+            .context("Metric command must end with a number or {\"value\": number}.")?;
+        Ok(json!({"stdout":stdout,"value":value}))
+    };
+    Ok(process)
+}
+fn application(invocation: &Invocation, _: &Environment, limits: &Limits) -> Result<Process> {
+    let application = text(&invocation.properties, "application")
+        .context("Application identifier is required")?;
+    let mut command = Command::new("gtk-launch");
+    command.arg(application);
+    for key in [
+        "XDG_CONFIG_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+        "QT_PLUGIN_PATH",
+        "NIXPKGS_QT6_QML_IMPORT_PATH",
+    ] {
+        if let Some(original) = std::env::var_os(format!("DMS_ORIG_{key}")) {
+            if original.is_empty() {
+                command.env_remove(key);
+            } else {
+                command.env(key, original);
+            }
+        }
+    }
+    Ok(Process {
+        command,
+        input: None,
+        stdout_stream: "stdout",
+        timeout: Duration::from_secs(limits.execution_timeout_secs),
+        directory: directory(invocation),
+        writer: false,
+        decode: |stdout| Ok(json!({"stdout":stdout})),
+    })
+}
 pub fn registry(limits: Limits) -> Result<Registry> {
+    registry_with_environment(limits, Environment::default())
+}
+pub fn registry_with_environment(limits: Limits, environment: Environment) -> Result<Registry> {
     let mut registry = Registry::default();
+    let definitions = [
+        ("shell", Behavior::Invoked, vec!["shell"]),
+        ("constant", Behavior::Lazy, vec![]),
+        ("metric", Behavior::Invoked, vec!["shell"]),
+        ("agent", Behavior::Invoked, vec!["shell"]),
+        ("application", Behavior::Invoked, vec!["desktop"]),
+        ("human", Behavior::Invoked, vec![]),
+        ("gate", Behavior::Invoked, vec![]),
+    ]
+    .into_iter()
+    .map(|(name, behavior, capabilities)| Definition {
+        id: format!("local.{name}"),
+        owner: "local".into(),
+        behavior,
+        inputs: vec![],
+        outputs: vec![],
+        capabilities: capabilities.into_iter().map(String::from).collect(),
+        window: None,
+        renderer: None,
+    })
+    .collect();
     registry.mount(
         "local".into(),
-        vec![
-            Definition {
-                id: "local.shell".into(),
-                owner: "local".into(),
-                behavior: Behavior::Invoked,
-                inputs: vec![],
-                outputs: vec![],
-                capabilities: std::collections::BTreeSet::from(["shell".into()]),
-                window: None,
-                renderer: None,
-            },
-            Definition {
-                id: "local.constant".into(),
-                owner: "local".into(),
-                behavior: Behavior::Lazy,
-                inputs: vec![],
-                outputs: vec![],
-                capabilities: Default::default(),
-                window: None,
-                renderer: None,
-            },
-        ],
-        Arc::new(Local::new(limits)),
+        definitions,
+        Arc::new(Local::with_environment(limits, environment)),
     )?;
     Ok(registry)
 }

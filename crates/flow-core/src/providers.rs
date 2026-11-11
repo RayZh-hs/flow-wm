@@ -109,9 +109,28 @@ pub struct Completion {
     pub result: Value,
 }
 pub type EventSink = Arc<dyn Fn(Completion) + Send + Sync>;
+#[derive(Clone, Debug)]
+pub struct Output {
+    pub invocation: InvocationId,
+    pub generation: u64,
+    pub stream: String,
+    pub line: String,
+}
+pub type OutputSink = Arc<dyn Fn(Output) + Send + Sync>;
 pub trait ExecutionProvider: Send + Sync {
     fn invoke(&self, invocation: Invocation, events: EventSink) -> Result<String>;
+    fn invoke_observed(
+        &self,
+        invocation: Invocation,
+        events: EventSink,
+        _output: Option<OutputSink>,
+    ) -> Result<String> {
+        self.invoke(invocation, events)
+    }
     fn interrupt(&self, handle: &str) -> Result<()>;
+    fn resolve(&self, _handle: &str, _accepted: bool, _result: Value) -> Result<()> {
+        anyhow::bail!("This provider does not accept a human resolution")
+    }
     fn release(&self, _handle: &str) -> Result<()> {
         Ok(())
     }

@@ -235,105 +235,124 @@ fn named_host(name: &str) -> (Engine, tempfile::TempDir, std::path::PathBuf) {
 }
 #[test]
 fn cross_host_handoff_preserves_real_execution_and_forwards_interrupt_and_result() {
-    let (a, ad, asock) = named_host("a");
-    let ready = ad.path().join("ready");
-    let (b, _bd, bsock) = named_host("b");
-    a.request(Control::ConnectHost {
-        host: "b".into(),
-        remote: flow_host::remote::Remote::Unix { socket: bsock },
-    })
-    .unwrap();
-    b.request(Control::ConnectHost {
-        host: "a".into(),
-        remote: flow_host::remote::Remote::Unix {
-            socket: asock.clone(),
-        },
-    })
-    .unwrap();
-    let graph = FlowNet {
-        nodes: vec![NodeSpec {
-            id: "worker".into(),
-            type_id: "local.shell".into(),
-            flow: flow_core::graph::Flow {
-                properties: std::collections::BTreeMap::from([(
-                    "command".into(),
-                    json!(format!(
-                        "trap 'echo origin-interrupted; exit 0' INT; printf ready > '{}'; while :; do sleep 0.05; done",
-                        ready.display()
-                    )),
-                )]),
-                ..Default::default()
+    for legacy in [false, true] {
+        let (a, ad, asock) = named_host("a");
+        let ready = ad.path().join("ready");
+        let (b, _bd, bsock) = named_host("b");
+        a.request(Control::ConnectHost {
+            host: "b".into(),
+            remote: flow_host::remote::Remote::Unix { socket: bsock },
+        })
+        .unwrap();
+        b.request(Control::ConnectHost {
+            host: "a".into(),
+            remote: flow_host::remote::Remote::Unix {
+                socket: asock.clone(),
             },
-        }],
-        ..Default::default()
-    };
-    call(
-        &a,
-        Command::Create {
-            workflow: Workflow {
-                id: "remote-work".into(),
-                name: "Remote work".into(),
-                workspace: Some("a:user".into()),
-                visibility: Visibility::Public,
-                owner: None,
-                references: Default::default(),
-                graph,
-                authority: "a".into(),
-                transfer: None,
+        })
+        .unwrap();
+        let graph = FlowNet {
+            nodes: vec![NodeSpec {
+                id: "worker".into(),
+                type_id: "local.shell".into(),
+                flow: flow_core::graph::Flow {
+                    properties: std::collections::BTreeMap::from([(
+                        "command".into(),
+                        json!(format!(
+                            "trap 'echo origin-interrupted; exit 0' INT; printf ready > '{}'; while :; do sleep 0.05; done",
+                            ready.display()
+                        )),
+                    )]),
+                    ..Default::default()
+                },
+            }],
+            ..Default::default()
+        };
+        call(
+            &a,
+            Command::Create {
+                workflow: Workflow {
+                    id: "remote-work".into(),
+                    name: "Remote work".into(),
+                    workspace: Some("a:user".into()),
+                    visibility: Visibility::Public,
+                    owner: None,
+                    references: Default::default(),
+                    graph,
+                    authority: "a".into(),
+                    transfer: None,
+                },
             },
-        },
-        None,
-    );
-    b.request(Control::ConnectHost {
-        host: "a".into(),
-        remote: flow_host::remote::Remote::Unix { socket: asock },
-    })
-    .unwrap();
-    assert_eq!(
-        call(&b, Command::Snapshot, None)["workflows"]["remote-work"]["authority"],
-        "a"
-    );
-    let first = call(
-        &a,
-        Command::Run {
-            workflow: "remote-work".into(),
-            node: "worker".into(),
-            invocation: "stable-run".into(),
-            args: json!({}),
-        },
-        None,
-    );
-    until(|| ready.is_file());
-    call(
-        &a,
-        Command::Move {
-            workflow: "remote-work".into(),
-            workspace: "b:user".into(),
-        },
-        None,
-    );
-    let moved = call(&b, Command::Snapshot, None);
-    assert_eq!(moved["workflows"]["remote-work"]["authority"], "b");
-    assert_eq!(moved["executions"]["stable-run"]["host"], "a");
-    assert_eq!(moved["executions"]["stable-run"]["handle"], first["handle"]);
-    call(
-        &b,
-        Command::Interrupt {
-            invocation: "stable-run".into(),
-        },
-        None,
-    );
-    until(|| {
-        call(&b, Command::Snapshot, None)["executions"]["stable-run"]["status"] == "interrupted"
-    });
-    assert!(
-        call(&b, Command::Snapshot, None)["executions"]["stable-run"]["result"]["stdout"]
-            .as_str()
-            .unwrap()
-            .contains("origin-interrupted")
-    );
-    a.shutdown();
-    b.shutdown();
+            None,
+        );
+        b.request(Control::ConnectHost {
+            host: "a".into(),
+            remote: flow_host::remote::Remote::Unix { socket: asock },
+        })
+        .unwrap();
+        assert_eq!(
+            call(&b, Command::Snapshot, None)["workflows"]["remote-work"]["authority"],
+            "a"
+        );
+        let first = if legacy {
+            a.request(Control::Run {
+                id: "worker".into(),
+                downstream: false,
+            })
+            .unwrap();
+            let snapshot = call(&a, Command::Snapshot, None);
+            snapshot["executions"]
+                .as_object()
+                .unwrap()
+                .values()
+                .find(|e| e["node"] == "worker")
+                .unwrap()
+                .clone()
+        } else {
+            call(
+                &a,
+                Command::Run {
+                    workflow: "remote-work".into(),
+                    node: "worker".into(),
+                    invocation: "stable-run".into(),
+                    args: json!({}),
+                },
+                None,
+            )
+        };
+        let invocation = first["id"].as_str().unwrap().to_string();
+        until(|| ready.is_file());
+        call(
+            &a,
+            Command::Move {
+                workflow: "remote-work".into(),
+                workspace: "b:user".into(),
+            },
+            None,
+        );
+        let moved = call(&b, Command::Snapshot, None);
+        assert_eq!(moved["workflows"]["remote-work"]["authority"], "b");
+        assert_eq!(moved["executions"][&invocation]["host"], "a");
+        assert_eq!(moved["executions"][&invocation]["handle"], first["handle"]);
+        call(
+            &b,
+            Command::Interrupt {
+                invocation: invocation.clone().into(),
+            },
+            None,
+        );
+        until(|| {
+            call(&b, Command::Snapshot, None)["executions"][&invocation]["status"] == "interrupted"
+        });
+        assert!(
+            call(&b, Command::Snapshot, None)["executions"][&invocation]["result"]["stdout"]
+                .as_str()
+                .unwrap()
+                .contains("origin-interrupted")
+        );
+        a.shutdown();
+        b.shutdown();
+    }
 }
 
 #[test]

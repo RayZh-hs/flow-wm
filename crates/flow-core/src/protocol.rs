@@ -68,6 +68,11 @@ pub enum Command {
     Interrupt {
         invocation: InvocationId,
     },
+    Resolve {
+        invocation: InvocationId,
+        accepted: bool,
+        result: Value,
+    },
     ReplaceGraph {
         workflow: WorkflowId,
         graph: FlowNet,

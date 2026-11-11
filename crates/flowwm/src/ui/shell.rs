@@ -3142,7 +3142,7 @@ impl Shell {
             "Executable and fixed arguments as a JSON array",
             "hint",
         ));
-        let config = crate::agent::Config::load()
+        let config = crate::agent::config()
             .map(|c| c.command)
             .unwrap_or_else(|_| vec!["codex".into()]);
         let command = entry(&serde_json::to_string(&config).unwrap());

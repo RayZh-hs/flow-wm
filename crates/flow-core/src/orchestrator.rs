@@ -8,6 +8,7 @@ pub struct Orchestrator {
     pub state: RuntimeState,
     pub registry: Registry,
     pub storage: Option<std::sync::Arc<dyn Storage>>,
+    pub output: Option<OutputSink>,
     pub signal_capacity: usize,
     pub replay_capacity: usize,
 }
@@ -17,6 +18,7 @@ impl Orchestrator {
             state,
             registry,
             storage: None,
+            output: None,
             signal_capacity: 4096,
             replay_capacity: 65536,
         }
@@ -286,14 +288,17 @@ impl Orchestrator {
                     status: ExecutionStatus::Running,
                     result: Value::Null,
                 };
+                let previous_revision = self.state.revision;
                 self.state.executions.insert(invocation.clone(), execution);
+                self.state.revision += 1;
                 if let Some(storage) = &self.storage
                     && let Err(error) = storage.save(&self.state)
                 {
                     self.state.executions.remove(&invocation);
+                    self.state.revision = previous_revision;
                     return Err(error);
                 }
-                match provider.invoke(request, events) {
+                match provider.invoke_observed(request, events, self.output.clone()) {
                     Ok(handle) => {
                         self.state.executions.get_mut(&invocation).unwrap().handle = handle
                     }
@@ -306,8 +311,33 @@ impl Orchestrator {
                         return Err(error);
                     }
                 }
-                self.state.revision += 1;
                 Ok(serde_json::to_value(&self.state.executions[&invocation])?)
+            }
+            Command::Resolve {
+                invocation,
+                accepted,
+                result,
+            } => {
+                let execution = self
+                    .state
+                    .executions
+                    .get(&invocation)
+                    .context("Invocation not found")?;
+                self.state.lookup(&execution.workflow, caller)?;
+                ensure!(
+                    execution.active(),
+                    "Invocation is no longer awaiting a resolution"
+                );
+                ensure!(
+                    execution.host == self.state.host_id,
+                    "Resolve the invocation at its originating host"
+                );
+                self.registry.provider(&execution.provider)?.resolve(
+                    &execution.handle,
+                    accepted,
+                    result,
+                )?;
+                Ok(Value::Null)
             }
             Command::Interrupt { invocation } => {
                 let execution = self

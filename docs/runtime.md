@@ -11,13 +11,15 @@ currently published source URLs are recorded in `components.json`.
   provider contracts, protocol types, and the existing Vox graph evaluator.
   It has no GTK, niri, Wayland, systemd, socket, or process dependency.
 - `flow-builtins` supplies Linux execution, Python bindings, evaluator workers,
-  limits, and the registered `local.shell` and `local.constant` providers.
+  limits, and registered shell, constant, agent, metric-sample, application-launch,
+  human-task and decision providers. Owned process supervision is shared by desktop
+  and protocol invocations; agent commands come from `agent.json`.
 - `flow-host` builds the `flow-core` executable. It owns storage, local/SSH
   transports, provider supervision, and the compatibility engine. The legacy
-  agents, decisions, metrics, application observation, graph execution, catalog,
-  and desktop reconciliation remain behind that adapter to retain their existing
-  behavior while their provider conversion proceeds. In particular, legacy
-  all-parent and failure barriers and stoppable metrics retain their semantics.
+  completion barriers, review, repeating metrics, application observation, catalog,
+  and desktop reconciliation remain in `engine/compatibility.rs` to retain their
+  existing behavior. Execution implementations use registered builtin providers;
+  the adapter retains all-parent/failure barriers and stoppable metric scheduling.
 - `flowwm` builds the existing CLI and GTK shell. Its public module paths forward
   to the extracted implementations. GTK can use either the embedded development
   engine or a snapshot/command client connected to the independent host.
@@ -26,8 +28,8 @@ The portable domain model is separate from the old `model::State`, which remains
 as a lossless compatibility document. Its historical `Workspace` and `Node.workspace`
 fields identify workflow rows; they do not create host/session environments.
 The compatibility snapshot still carries native bindings and presentation for
-existing clients. Provider conversion and removing these fields from that adapter
-are subsequent extraction work, not changes to the portable model.
+existing clients. Removing these projection fields from the compatibility wire
+format is separate from the portable domain model.
 
 Vox is vendored at revision `1d028fac2a6d30e642208a3e5bbc6db43019e0a4` with its licenses.
 There is no dependency on a sibling checkout. The evaluator receives its worker
@@ -115,7 +117,8 @@ transport's `ok` envelope. UI operations stay on the compatibility WM command AP
 
 Use `snapshot` after reconnect. `subscribe` sends authorized snapshots as revisions
 change; reads do not generate revisions or storage writes. Invocation IDs make
-run retries idempotent. Generation checks reject late results. Execution placement
+run retries idempotent. Human tasks and gates wait until `resolve` supplies an
+accepted/rejected result. Generation checks reject late results. Execution placement
 is independent of workflow assignment. Source/application definitions cannot be
 invoked as ordinary jobs through the new execution API.
 

@@ -1,42 +1,11 @@
 //! The graph assistant uses the user's CLI account; it has no separate API credentials.
-use crate::model::{Node, State};
-use anyhow::{Context, Result, ensure};
-use serde::Deserialize;
+use crate::model::State;
+use anyhow::Result;
+pub use flow_builtins::agent::Config;
 use serde_json::json;
-use std::{path::PathBuf, process::Command};
-
-#[derive(Deserialize)]
-pub struct Config {
-    /// Executable and fixed arguments, passed directly (never evaluated by a shell).
-    pub command: Vec<String>,
-}
-impl Config {
-    pub fn load() -> Result<Self> {
-        let file = crate::config::directory().join("agent.json");
-        let config = if file.exists() {
-            serde_json::from_slice(&std::fs::read(&file)?).context("Read flowwm/agent.json")?
-        } else {
-            Self {
-                command: vec!["codex".into()],
-            }
-        };
-        ensure!(
-            !config.command.is_empty() && !config.command[0].is_empty(),
-            "Agent command is empty"
-        );
-        Ok(config)
-    }
-    pub fn process(&self, node: &Node) -> Command {
-        let mut command = Command::new(&self.command[0]);
-        command
-            .args(&self.command[1..])
-            .args(["exec", "--json", "--skip-git-repo-check"]);
-        if let Some(session) = &node.agent_session {
-            command.args(["resume", session]);
-        }
-        command.arg("-");
-        command
-    }
+use std::path::PathBuf;
+pub fn config() -> Result<Config> {
+    Config::from_directory(Some(&crate::config::directory()))
 }
 
 pub fn socket() -> PathBuf {

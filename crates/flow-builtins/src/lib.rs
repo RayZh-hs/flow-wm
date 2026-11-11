@@ -28,4 +28,6 @@ pub fn evaluate(
 ) -> Result<Evaluation> {
     evaluate_with(state, root, signal, cancel, Arc::new(Scripts))
 }
+pub mod agent;
 pub mod local;
+pub mod process;
