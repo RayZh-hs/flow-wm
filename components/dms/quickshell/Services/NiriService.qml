@@ -71,6 +71,7 @@ Singleton {
     property bool suppressNextConfigToast: false
     property bool matugenSuppression: false
     property bool configGenerationPending: false
+    readonly property int configUnchangedExitCode: 3
     property int _layoutRequestRevision: 0
     property int _layoutAppliedRevision: 0
     property int _frameTransitionRevision: 0
@@ -203,19 +204,7 @@ Singleton {
         property string configPath: ""
         property int requestRevision: 0
 
-        onExited: exitCode => {
-            if (exitCode === 0) {
-                log.info("Generated layout config at", configPath);
-            } else {
-                if (root._awaitingLayoutReloadRevision === requestRevision)
-                    root._awaitingLayoutReloadRevision = 0;
-                // Best-effort ack so a failed write can't wedge frame transitions
-                root._layoutAppliedRevision = Math.max(root._layoutAppliedRevision, requestRevision);
-                log.warn("Failed to write layout config, exit code:", exitCode);
-            }
-            if (root.configGenerationPending && root._awaitingLayoutReloadRevision <= root._layoutAppliedRevision)
-                configGenerationAction.schedule();
-        }
+        onExited: exitCode => root.handleLayoutConfigWritten(exitCode, requestRevision)
     }
 
     Process {
@@ -224,6 +213,8 @@ Singleton {
         property string alttabPath: ""
 
         onExited: exitCode => {
+            if (exitCode === root.configUnchangedExitCode)
+                return;
             if (exitCode === 0) {
                 log.info("Generated alttab config at", alttabPath);
                 return;
@@ -237,6 +228,8 @@ Singleton {
         property string blurrulePath: ""
 
         onExited: exitCode => {
+            if (exitCode === root.configUnchangedExitCode)
+                return;
             if (exitCode === 0) {
                 log.info("Generated wpblur config at", blurrulePath);
                 return;
@@ -251,6 +244,8 @@ Singleton {
         property string inputPath: ""
 
         onExited: exitCode => {
+            if (exitCode === root.configUnchangedExitCode)
+                return;
             if (exitCode === 0) {
                 log.info("Generated input config at", inputPath);
                 return;
@@ -265,6 +260,8 @@ Singleton {
         property string cursorPath: ""
 
         onExited: exitCode => {
+            if (exitCode === root.configUnchangedExitCode)
+                return;
             if (exitCode === 0) {
                 log.info("Generated cursor config at", cursorPath);
                 return;
@@ -278,13 +275,7 @@ Singleton {
         path: root.socketPath
         connected: CompositorService.isNiri
 
-        onConnectionStateChanged: {
-            root._touchpadStateInitialized = false;
-            if (linkUp) {
-                send('"EventStream"');
-                fetchOutputs();
-            }
-        }
+        onConnectionStateChanged: root.handleEventStreamConnection(linkUp)
 
         parser: SplitParser {
             onRead: line => {
@@ -317,6 +308,18 @@ Singleton {
 
     function acknowledgeKeyboardFocus(namespace: string) {
         requestSocket.send(JSON.stringify({KeyboardFocusReady: {namespace: namespace}}));
+    }
+
+    function handleEventStreamConnection(linkUp) {
+        _touchpadStateInitialized = false;
+        // Each subscription starts with ConfigLoaded describing the current state.
+        hasInitialConnection = false;
+        suppressConfigToast = true;
+        suppressToastTimer.stop();
+        if (!linkUp)
+            return;
+        eventStreamSocket.send('"EventStream"');
+        fetchOutputs();
     }
 
     function fetchOutputs() {
@@ -1264,9 +1267,23 @@ Singleton {
         _layoutRequestRevision++;
         if (frameTransition === true)
             _frameTransitionRevision = _layoutRequestRevision;
-        suppressNextToast();
         configGenerationPending = true;
         configGenerationAction.schedule();
+    }
+
+    function handleLayoutConfigWritten(exitCode, requestRevision) {
+        if (exitCode === 0) {
+            log.info("Generated layout config at", writeConfigProcess.configPath);
+        } else {
+            if (_awaitingLayoutReloadRevision === requestRevision)
+                _awaitingLayoutReloadRevision = 0;
+            // Unchanged files won't trigger ConfigLoaded; failed writes must also release frames.
+            _layoutAppliedRevision = Math.max(_layoutAppliedRevision, requestRevision);
+            if (exitCode !== configUnchangedExitCode)
+                log.warn("Failed to write layout config, exit code:", exitCode);
+        }
+        if (configGenerationPending && _awaitingLayoutReloadRevision <= _layoutAppliedRevision)
+            configGenerationAction.schedule();
     }
 
     // niri's own defaults stay untouched until the user moves the shell-wide slider
@@ -1371,6 +1388,7 @@ window-rule {
         writeConfigProcess.requestRevision = _layoutRequestRevision;
         writeConfigProcess.command = ["sh", "-c", replaceFileCommand(configPath, configContent)];
         _awaitingLayoutReloadRevision = Math.max(_awaitingLayoutReloadRevision, _layoutRequestRevision);
+        suppressNextToast();
         writeConfigProcess.running = true;
 
         if (_lastGeneratedAlttabContent !== alttabContent) {
@@ -1406,7 +1424,8 @@ window-rule {
         const sourceBlurrulePath = Paths.strip(Qt.resolvedUrl("niri-wpblur.kdl"));
 
         writeBlurruleProcess.blurrulePath = blurrulePath;
-        writeBlurruleProcess.command = ["sh", "-c", `${targetFileCommand(blurrulePath)} && cp --no-preserve=mode "${sourceBlurrulePath}" "$target.$$.tmp" && mv -f "$target.$$.tmp" "$target"`];
+        writeBlurruleProcess.command = ["sh", "-c", `${targetFileCommand(blurrulePath)} && cp --no-preserve=mode ${shellQuote(sourceBlurrulePath)} "$target.$$.tmp" && ${finishConfigWriteCommand()}`];
+        suppressNextToast();
         writeBlurruleProcess.running = true;
     }
 
@@ -1424,7 +1443,8 @@ window-rule {
         if (!settings) {
             writeCursorProcess.cursorContent = "";
             writeCursorProcess.cursorPath = cursorPath;
-            writeCursorProcess.command = ["sh", "-c", `mkdir -p "${niriDmsDir}" && : > "${cursorPath}"`];
+            writeCursorProcess.command = ["sh", "-c", replaceFileCommand(cursorPath, "")];
+            suppressNextToast();
             writeCursorProcess.running = true;
             return;
         }
@@ -1438,7 +1458,8 @@ window-rule {
         if (isDefaultConfig) {
             writeCursorProcess.cursorContent = "";
             writeCursorProcess.cursorPath = cursorPath;
-            writeCursorProcess.command = ["sh", "-c", `mkdir -p "${niriDmsDir}" && : > "${cursorPath}"`];
+            writeCursorProcess.command = ["sh", "-c", replaceFileCommand(cursorPath, "")];
+            suppressNextToast();
             writeCursorProcess.running = true;
             return;
         }
@@ -1469,16 +1490,26 @@ window-rule {
         writeCursorProcess.cursorPath = cursorPath;
 
         writeCursorProcess.command = ["sh", "-c", replaceFileCommand(cursorPath, cursorContent)];
+        suppressNextToast();
         writeCursorProcess.running = true;
     }
 
+    function shellQuote(value) {
+        return "'" + value.replace(/'/g, "'\\''") + "'";
+    }
+
     function targetFileCommand(path) {
-        return `mkdir -p "$(dirname "${path}")" && target="$(readlink -f "${path}")"`;
+        const quotedPath = shellQuote(path);
+        return `mkdir -p "$(dirname -- ${quotedPath})" && target="$(readlink -f -- ${quotedPath})"`;
+    }
+
+    function finishConfigWriteCommand() {
+        return `if cmp -s "$target" "$target.$$.tmp"; then rm -f "$target.$$.tmp" && exit ${configUnchangedExitCode}; else mv -f "$target.$$.tmp" "$target"; fi`;
     }
 
     function replaceFileCommand(path, content) {
-        const body = content.endsWith("\n") ? content : content + "\n";
-        return `${targetFileCommand(path)} && cat > "$target.$$.tmp" << 'EOF' && mv -f "$target.$$.tmp" "$target"\n${body}EOF`;
+        const body = content === "" || content.endsWith("\n") ? content : content + "\n";
+        return `${targetFileCommand(path)} && printf '%s' ${shellQuote(body)} > "$target.$$.tmp" && ${finishConfigWriteCommand()}`;
     }
 
     function applyOutputConfig(outputName, config, callback) {
@@ -1643,7 +1674,13 @@ window-rule {
         const niriDmsDir = configDir + "/niri/dms";
         const outputsPath = niriDmsDir + "/outputs.kdl";
 
+        suppressNextToast();
         Proc.runCommand("niri-write-outputs", ["sh", "-c", replaceFileCommand(outputsPath, kdlContent)], (output, exitCode) => {
+            if (exitCode === configUnchangedExitCode) {
+                if (callback)
+                    callback(true, "");
+                return;
+            }
             if (exitCode !== 0) {
                 log.warn("Failed to write outputs config:", output);
                 if (callback)
@@ -1918,6 +1955,7 @@ window-rule {
         writeInputProcess.inputContent = inputContent;
         writeInputProcess.inputPath = inputPath;
         writeInputProcess.command = ["sh", "-c", replaceFileCommand(inputPath, inputContent)];
+        suppressNextToast();
         writeInputProcess.running = true;
     }
 
