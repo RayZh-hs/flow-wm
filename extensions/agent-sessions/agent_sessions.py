@@ -19,23 +19,12 @@ SIGNAL_TYPE = {"kind": "signal", "args": {"ERROR": ERROR_TYPE}, "open": True}
 TERMINALS = ("alacritty", "kitty", "foot", "wezterm", "konsole", "gnome-terminal", "org.gnome.terminal", "ptyxis", "ghostty", "tilix", "xterm", "st-", "com.mitchellh.ghostty", "dev.zed.zed")
 
 
-def exchange(path, request):
-    with socket.socket(socket.AF_UNIX) as channel:
-        channel.settimeout(2)
-        channel.connect(str(path))
-        channel.sendall((json.dumps(request) + "\n").encode())
-        line = channel.makefile().readline(8 * 1024 * 1024)
-        if not line:
-            raise RuntimeError("FlowWM closed the connection")
-        return json.loads(line)
+sys.path.insert(0, str(HERE.parents[1] / "sdk/python"))
+from flow_sdk import Client, exchange
 
 
 def flow(request):
-    path = os.environ.get("FLOWWM_SOCKET", str(Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "flowwm.sock"))
-    reply = exchange(path, request)
-    if "error" in reply:
-        raise RuntimeError(reply["error"])
-    return reply["ok"]
+    return Client().control(request)
 
 
 def windows():

@@ -440,7 +440,7 @@ class InstallReplace(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.home = self.root / 'home'
         self.repo = self.root / 'repo'
-        for relative in ('target/release/flowwm', 'target/release/flowwm-shell',
+        for relative in ('target/release/flowwm', 'target/release/flow-core', 'target/release/flowwm-shell',
                          'target/niri/release/niri', 'components/dms/core/bin/dms',
                          'components/dms/quickshell/PLUGINS/FlowWM/manifest.json',
                          'scripts/session.py', 'scripts/configuration.py', 'config/dms-niri.kdl'):

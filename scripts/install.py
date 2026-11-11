@@ -134,11 +134,24 @@ Wants=flowwm.service flowwm-dms.service flowwm-agent-sessions.service
 After=flowwm-compositor.service graphical-session.target
 PartOf=graphical-session.target
 ''')
+    atomic_text(units / "flowwm-core.service", f'''[Unit]
+Description=Flow workflow runtime
+After=graphical-session-pre.target
+
+[Service]
+Type=simple
+ExecStart={command} host
+WorkingDirectory={user_home}
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=8
+''')
     for name, operation, service_type in [("flowwm", "shell", "simple"), ("flowwm-dms", "dms", "notify")]:
+        host_dependency = "Requires=flowwm-core.service\nAfter=flowwm-core.service\n" if name == "flowwm" else ""
         extra = "" if name == "flowwm" else "NotifyAccess=main\nEnvironment=QS_DISABLE_CRASH_HANDLER=1\nExecReload=/bin/kill -USR1 $MAINPID\nRestartForceExitStatus=TEMPFAIL\nSuccessExitStatus=TEMPFAIL\nTimeoutStartSec=90s\n"
         atomic_text(units / f"{name}.service", f'''[Unit]
 Description=FlowWM {operation}
-PartOf=graphical-session.target flowwm-session.target
+{host_dependency}PartOf=graphical-session.target flowwm-session.target
 Requisite=graphical-session.target flowwm-compositor.service
 After=graphical-session.target flowwm-compositor.service
 
@@ -171,7 +184,7 @@ ExecCondition=/bin/sh -c "! /usr/bin/systemctl --user --quiet is-active flowwm-c
     if link.is_symlink():
         run("systemctl", "--user", "disable", "flowwm.service")
     run("systemctl", "--user", "daemon-reload")
-    run("systemd-analyze", "--user", "verify", "flowwm-compositor.service", "flowwm.service", "flowwm-dms.service", "flowwm-session.target", "flowwm-agent-sessions.service", "flowwm-shutdown.target")
+    run("systemd-analyze", "--user", "verify", "flowwm-compositor.service", "flowwm-core.service", "flowwm.service", "flowwm-dms.service", "flowwm-session.target", "flowwm-agent-sessions.service", "flowwm-shutdown.target")
 
 
 def service_pid(unit):
@@ -289,7 +302,7 @@ def main():
     try:
         (bundle / "bin").mkdir()
         sources = {"niri": ROOT / "target/niri/release/niri", "flowwm": ROOT / "target/release/flowwm",
-                   "flowwm-shell": ROOT / "target/release/flowwm-shell", "dms.real": ROOT / "components/dms/core/bin/dms"}
+                   "flow-core": ROOT / "target/release/flow-core", "flowwm-shell": ROOT / "target/release/flowwm-shell", "dms.real": ROOT / "components/dms/core/bin/dms"}
         for name, source in sources.items():
             shutil.copy2(source, bundle / "bin" / name)
             (bundle / "bin" / name).chmod(0o755)
@@ -297,6 +310,8 @@ def main():
                         ignore=shutil.ignore_patterns(".git", ".github", "tests", "__pycache__"))
         shutil.copy2(ROOT / "scripts/session.py", bundle / "session.py")
         shutil.copy2(ROOT / "scripts/configuration.py", bundle / "configuration.py")
+        if (ROOT / "sdk").is_dir():
+            shutil.copytree(ROOT / "sdk", bundle / "sdk", ignore=shutil.ignore_patterns("__pycache__"))
         if (ROOT / "extensions").is_dir():
             shutil.copytree(ROOT / "extensions", bundle / "extensions", ignore=shutil.ignore_patterns("__pycache__", "test_*.py"))
         profile = user_config / "flow-wm"

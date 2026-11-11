@@ -65,10 +65,24 @@ fn serve_client(mut stream: UnixStream, engine: Engine, macros: &[Macro]) {
         if value["op"] == "attach" {
             ensure!(value["protocol"] == 2, "Unsupported client protocol");
             let commands = engine.connect_frontend();
+            let disconnected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let closed = disconnected.clone();
+            let wake = engine.clone();
+            let mut peer = stream.try_clone()?;
+            peer.set_read_timeout(None)?;
+            thread::spawn(move || {
+                let mut byte = [0];
+                let _ = std::io::Read::read(&mut peer, &mut byte);
+                closed.store(true, std::sync::atomic::Ordering::Release);
+                wake.wake_ui();
+            });
             let mut generation = 0;
             let mut previous = None;
             while let Some(next) = engine.wait_for_change(generation) {
                 generation = next;
+                if disconnected.load(std::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
                 let snapshot = engine.snapshot();
                 let changed = previous != Some(snapshot.revision);
                 previous = Some(snapshot.revision);
@@ -88,7 +102,10 @@ fn serve_client(mut stream: UnixStream, engine: Engine, macros: &[Macro]) {
         }
         if value.get("protocol").is_some() {
             let request: flow_core::protocol::Request = serde_json::from_value(value)?;
-            if matches!(request.command, flow_core::protocol::Command::Subscribe { .. }) {
+            if matches!(
+                request.command,
+                flow_core::protocol::Command::Subscribe { .. }
+            ) {
                 let mut generation = 0;
                 let mut previous = None;
                 while let Some(next) = engine.wait_for_change(generation) {
@@ -96,13 +113,20 @@ fn serve_client(mut stream: UnixStream, engine: Engine, macros: &[Macro]) {
                     let mut snapshot_request = request.clone();
                     snapshot_request.command = flow_core::protocol::Command::Snapshot;
                     snapshot_request.expected_revision = None;
-                    let reply = engine.request(Control::Orchestrate { request:snapshot_request })?;
+                    let reply = engine.request(Control::Orchestrate {
+                        request: Box::new(snapshot_request),
+                    })?;
                     let encoded = serde_json::to_string(&reply)?;
-                    if previous.as_ref() != Some(&encoded) { writeln!(stream, "{encoded}")?; previous = Some(encoded); }
+                    if previous.as_ref() != Some(&encoded) {
+                        writeln!(stream, "{encoded}")?;
+                        previous = Some(encoded);
+                    }
                 }
                 return Ok(Value::Null);
             }
-            return engine.request(Control::Orchestrate { request });
+            return engine.request(Control::Orchestrate {
+                request: Box::new(request),
+            });
         }
         if value["op"] == "performance" {
             if value["reset"] == true {

@@ -35,6 +35,9 @@ impl Envelope {
         };
         for row in &state.workspaces {
             let id = WorkflowId(row.id.clone());
+            if runtime.destroyed.contains(&id) || row.id == "__empty_presentation__" {
+                continue;
+            }
             let graph = FlowNet {
                 nodes: state
                     .nodes
@@ -42,11 +45,20 @@ impl Envelope {
                     .filter(|n| n.workspace == row.id)
                     .map(|n| NodeSpec {
                         id: n.id.clone().into(),
-                        type_id: if n.flow.node_type.is_empty() { format!("local.{}", serde_json::to_value(n.kind).unwrap().as_str().unwrap()) } else { n.flow.node_type.clone() },
+                        type_id: if n.flow.node_type.is_empty() {
+                            format!(
+                                "local.{}",
+                                serde_json::to_value(n.kind).unwrap().as_str().unwrap()
+                            )
+                        } else {
+                            n.flow.node_type.clone()
+                        },
                         flow: {
                             let mut flow = n.flow.clone();
-                            flow.properties.insert("command".into(), serde_json::json!(n.command));
-                            flow.properties.insert("cwd".into(), serde_json::json!(n.cwd));
+                            flow.properties
+                                .insert("command".into(), serde_json::json!(n.command));
+                            flow.properties
+                                .insert("cwd".into(), serde_json::json!(n.cwd));
                             flow
                         },
                     })
@@ -74,12 +86,15 @@ impl Envelope {
                     Workflow {
                         id: id.clone(),
                         name: row.name.clone(),
-                        workspace: row.row.as_ref().map(|_| WorkspaceId::from("local:desktop")),
+                        workspace: row
+                            .row
+                            .as_ref()
+                            .map(|_| WorkspaceId(format!("{}:desktop", runtime.host_id.0))),
                         visibility: Visibility::Public,
                         owner: None,
                         references: Default::default(),
                         graph,
-                        authority: "local".into(),
+                        authority: runtime.host_id.clone(),
                         transfer: None,
                     },
                 );

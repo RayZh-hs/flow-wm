@@ -82,6 +82,13 @@ impl Lookup {
         reverse: bool,
     ) -> Option<Self> {
         let source = state.node(id)?;
+        if state
+            .orchestration
+            .as_ref()
+            .is_some_and(|r| !r.visible(&source.workspace.clone().into(), None))
+        {
+            return None;
+        }
         let outputs = crate::graph::pins(state, source, !reverse)
             .into_iter()
             .filter(|pin| selected.is_none_or(|name| pin.name == name))
@@ -176,6 +183,12 @@ impl Catalog {
             nodes: state
                 .nodes
                 .iter()
+                .filter(|n| {
+                    state
+                        .orchestration
+                        .as_ref()
+                        .is_none_or(|r| r.visible(&n.workspace.clone().into(), None))
+                })
                 .map(|n| CatalogNode {
                     id: n.id.clone(),
                     title: n.title.clone(),
@@ -203,6 +216,12 @@ impl Catalog {
             workspaces: state
                 .workspaces
                 .iter()
+                .filter(|w| {
+                    state
+                        .orchestration
+                        .as_ref()
+                        .is_none_or(|r| r.visible(&w.id.clone().into(), None))
+                })
                 .map(|w| CatalogWorkspace {
                     id: w.id.clone(),
                     name: w.name.clone(),

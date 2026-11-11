@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 pub struct Orchestrator {
     pub state: RuntimeState,
     pub registry: Registry,
+    pub storage: Option<std::sync::Arc<dyn Storage>>,
     pub signal_capacity: usize,
     pub replay_capacity: usize,
 }
@@ -15,6 +16,7 @@ impl Orchestrator {
         Self {
             state,
             registry,
+            storage: None,
             signal_capacity: 4096,
             replay_capacity: 65536,
         }
@@ -26,6 +28,52 @@ impl Orchestrator {
         events: EventSink,
     ) -> Result<Value> {
         match command {
+            Command::OriginInterrupt {
+                invocation,
+                generation,
+            } => {
+                let execution = self
+                    .state
+                    .executions
+                    .get(&invocation)
+                    .context("Unknown originating invocation")?;
+                ensure!(
+                    execution.host == self.state.host_id && execution.generation == generation,
+                    "Wrong invocation origin or generation"
+                );
+                self.registry
+                    .provider(&execution.provider)?
+                    .interrupt(&execution.handle)?;
+                Ok(Value::Null)
+            }
+
+            Command::StageTransfer { bundle } => {
+                self.state.stage_transfer(bundle)?;
+                Ok(Value::Null)
+            }
+            Command::CommitTransfer { bundle } => {
+                self.state.commit_incoming(bundle)?;
+                Ok(Value::Null)
+            }
+            Command::ForwardCompletion { execution } => {
+                let existing = self
+                    .state
+                    .executions
+                    .get(&execution.id)
+                    .context("Unknown forwarded invocation")?;
+                ensure!(
+                    existing.host == execution.host && existing.generation == execution.generation,
+                    "Invalid execution origin or generation"
+                );
+                self.state.complete(
+                    &execution.id,
+                    execution.generation,
+                    execution.result,
+                    execution.status,
+                )?;
+                Ok(Value::Null)
+            }
+
             Command::Negotiate { versions } => {
                 ensure!(
                     versions.contains(&crate::protocol::ORCHESTRATOR_VERSION),
@@ -37,6 +85,12 @@ impl Orchestrator {
             }
             Command::Snapshot | Command::Subscribe { .. } => {
                 let mut snapshot = self.state.clone();
+                snapshot.incoming.clear();
+                snapshot.forwarding.clear();
+                snapshot.forwarding_targets.clear();
+                snapshot.pending_remote.clear();
+                snapshot.transfer_acks.clear();
+                snapshot.destroyed.clear();
                 snapshot
                     .workflows
                     .retain(|id, _| self.state.visible(id, caller));
@@ -63,10 +117,36 @@ impl Orchestrator {
                 Ok(json!({"workflow":id}))
             }
             Command::Destroy { workflow } => {
-                self.state.lookup(&workflow, caller)?;
+                if let Some(bundle) = self
+                    .state
+                    .incoming
+                    .values()
+                    .find(|b| b.workflow.id == workflow)
+                {
+                    ensure!(
+                        bundle.workflow.visibility == Visibility::Public
+                            || bundle.workflow.owner.as_ref() == caller,
+                        "Incoming workflow is private"
+                    );
+                } else {
+                    self.state.lookup(&workflow, caller)?;
+                }
                 let cleanup = self.state.destroy(&workflow)?;
                 let mut pending = vec![];
                 for execution in cleanup {
+                    if execution.host != self.state.host_id {
+                        self.state
+                            .pending_remote
+                            .push_back(crate::transfer::RemoteCommand {
+                                host: execution.host.clone(),
+                                caller: None,
+                                command: Command::OriginInterrupt {
+                                    invocation: execution.id.clone(),
+                                    generation: execution.generation,
+                                },
+                            });
+                        continue;
+                    }
                     match self
                         .registry
                         .provider(&execution.provider)
@@ -87,8 +167,24 @@ impl Orchestrator {
                 Ok(Value::Null)
             }
             Command::MakePublic { workflow } => {
-                self.state
-                    .make_public(&workflow, caller.context("Make Public requires the owner")?)?;
+                let owner = caller.context("Make Public requires the owner")?;
+                let authority = self
+                    .state
+                    .workflows
+                    .get(&workflow)
+                    .context("Workflow not found")?
+                    .authority
+                    .clone();
+                self.state.make_public(&workflow, owner)?;
+                if authority != self.state.host_id {
+                    self.state
+                        .pending_remote
+                        .push_back(crate::transfer::RemoteCommand {
+                            host: authority,
+                            caller: Some(owner.clone()),
+                            command: Command::MakePublic { workflow },
+                        });
+                }
                 Ok(Value::Null)
             }
             Command::Reference { workflow, target } => {
@@ -137,6 +233,10 @@ impl Orchestrator {
                     return Ok(serde_json::to_value(execution)?);
                 }
                 ensure!(w.transfer.is_none(), "Workflow handoff is in progress");
+                ensure!(
+                    w.authority == self.state.host_id,
+                    "Workflow authority moved to another host"
+                );
                 let workspace = w
                     .workspace
                     .as_ref()
@@ -187,6 +287,12 @@ impl Orchestrator {
                     result: Value::Null,
                 };
                 self.state.executions.insert(invocation.clone(), execution);
+                if let Some(storage) = &self.storage
+                    && let Err(error) = storage.save(&self.state)
+                {
+                    self.state.executions.remove(&invocation);
+                    return Err(error);
+                }
                 match provider.invoke(request, events) {
                     Ok(handle) => {
                         self.state.executions.get_mut(&invocation).unwrap().handle = handle
@@ -211,9 +317,22 @@ impl Orchestrator {
                     .context("Invocation not found")?;
                 self.state.lookup(&execution.workflow, caller)?;
                 if execution.active() {
-                    self.registry
-                        .provider(&execution.provider)?
-                        .interrupt(&execution.handle)?;
+                    if execution.host == self.state.host_id {
+                        self.registry
+                            .provider(&execution.provider)?
+                            .interrupt(&execution.handle)?;
+                    } else {
+                        self.state
+                            .pending_remote
+                            .push_back(crate::transfer::RemoteCommand {
+                                host: execution.host.clone(),
+                                caller: None,
+                                command: Command::OriginInterrupt {
+                                    invocation: execution.id.clone(),
+                                    generation: execution.generation,
+                                },
+                            });
+                    }
                     self.state.executions.get_mut(&invocation).unwrap().status =
                         ExecutionStatus::Interrupting;
                     self.state.revision += 1;
@@ -242,9 +361,21 @@ impl Orchestrator {
                 )?;
                 Ok(Value::Null)
             }
-            Command::PrepareTransfer { .. } | Command::AbortTransfer { .. } => anyhow::bail!(
-                "Remote ownership handoff is unavailable until the peer advertises durable transfer support"
-            ),
+            Command::PrepareTransfer {
+                transfer,
+                workflow,
+                destination,
+            } => {
+                self.state.lookup(&workflow, caller)?;
+                let record = self
+                    .state
+                    .prepare_transfer(transfer, &workflow, destination)?;
+                Ok(serde_json::to_value(record)?)
+            }
+            Command::AbortTransfer { transfer } => {
+                self.state.abort_transfer(&transfer)?;
+                Ok(Value::Null)
+            }
         }
     }
 }

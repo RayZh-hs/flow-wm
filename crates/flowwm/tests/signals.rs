@@ -562,10 +562,7 @@ fn wait_for(engine: &flowwm::engine::Engine, predicate: impl Fn(&State) -> bool)
 
 #[test]
 fn engine_delivers_each_signal_with_its_own_arguments_and_lazy_data() {
-    use flowwm::{
-        engine::Control,
-        store::Store,
-    };
+    use flowwm::{engine::Control, store::Store};
     let directory = tempfile::tempdir().unwrap();
     let mut state = State::empty(directory.path().into());
     let source = node(&mut state, NodeKind::Shell);
@@ -611,10 +608,7 @@ fn engine_delivers_each_signal_with_its_own_arguments_and_lazy_data() {
 
 #[test]
 fn stop_interrupts_vox_and_python_loops_without_blocking_control() {
-    use flowwm::{
-        engine::Control,
-        store::Store,
-    };
+    use flowwm::{engine::Control, store::Store};
     for (kind, source) in [
         (NodeKind::Vox, "{ for (true) { } { value = 1, } }"),
         (NodeKind::Python, "while True: pass"),

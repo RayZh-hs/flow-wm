@@ -112,6 +112,18 @@ fn restore_window_bindings(state: &mut State, session: Option<&str>) {
     }
 }
 
+pub struct RuntimeCheckpoint {
+    pub store: Store,
+    pub compatibility: State,
+}
+impl flow_core::providers::Storage for RuntimeCheckpoint {
+    fn save(&self, runtime: &flow_core::domain::RuntimeState) -> Result<()> {
+        let mut state = self.compatibility.clone();
+        state.orchestration = Some(runtime.clone());
+        self.store.save(&state)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

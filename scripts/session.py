@@ -56,12 +56,20 @@ def command(kind, arguments=()):
     data = settings()
     if kind == "compositor":
         return [str(ROOT / "bin/niri"), "--config", str(Path(data["config"]) / "config.kdl"), "--session"]
+    if kind == "host":
+        return [str(ROOT / "bin/flow-core"), "--data-dir", data["workflow_data"]]
     if kind == "shell":
-        return [str(ROOT / "bin/flowwm"), "--data-dir", data["workflow_data"], "start", "--dms", "--background"]
+        command = [str(ROOT / "bin/flowwm"), "--data-dir", data["workflow_data"], "start", "--dms", "--background"]
+        if (ROOT / "bin/flow-core").is_file():
+            command.extend(["--host-socket", str(Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "flow-core.sock")])
+        return command
     if kind == "agent-sessions":
         return [sys.executable, str(ROOT / "extensions/agent-sessions/agent_sessions.py"), "watch"]
     if kind == "dms":
-        return [str(ROOT / "bin/dms.real"), "run", "--session"]
+        command = [str(ROOT / "bin/dms.real"), "run", "--session"]
+        if os.environ.get("FLOWWM_SHELL_RUNTIME", "quickshell") == "quickshell":
+            command.append("--qs-child")
+        return command
     if kind == "dms-cli":
         return [str(ROOT / "bin/dms.real"), *arguments]
     if kind == "cli":

@@ -166,3 +166,16 @@ pub fn runtime_limits() -> anyhow::Result<flow_builtins::local::Limits> {
     limits.validate()?;
     Ok(limits)
 }
+
+pub fn host_id() -> anyhow::Result<flow_core::domain::HostId> {
+    let path = directory().join("runtime.json");
+    if !path.exists() {
+        return Ok("local".into());
+    }
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
+    Ok(value
+        .get("host_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("local")
+        .into())
+}

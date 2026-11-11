@@ -62,6 +62,9 @@ enum Cmd {
     ConfigEnvironment,
     /// Start the native graph overlay and desktop bar.
     Start {
+        /// Connect the desktop to an independently supervised runtime.
+        #[arg(long)]
+        host_socket: Option<PathBuf>,
         #[arg(long)]
         windowed: bool,
         #[arg(long)]
@@ -114,6 +117,8 @@ enum Cmd {
         direction: String,
     },
     Status,
+    /// Manage workflows and their predefined workspace assignments.
+    Workflows,
     /// Add a node without starting it.
     Add {
         #[arg(value_enum)]
@@ -159,6 +164,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let socket = cli.socket.unwrap_or_else(ipc::default_socket);
     let command = cli.command.unwrap_or(Cmd::Start {
+        host_socket: None,
         windowed: false,
         example: false,
         dms: false,
@@ -178,6 +184,7 @@ fn main() -> Result<()> {
         }
         Cmd::EvaluateWorker => return flowwm::graph::run_worker(),
         Cmd::Start {
+            host_socket,
             windowed,
             example,
             dms,
@@ -188,6 +195,9 @@ fn main() -> Result<()> {
             child.arg("--socket").arg(&socket);
             if let Some(data) = cli.data_dir {
                 child.arg("--data-dir").arg(data);
+            }
+            if let Some(host) = host_socket {
+                child.arg("--host-socket").arg(host);
             }
             for (enabled, flag) in [
                 (windowed, "--windowed"),
@@ -253,6 +263,9 @@ fn main() -> Result<()> {
         }
         Cmd::Navigate { direction } => Control::Ui {
             command: UiCommand::Navigate { direction },
+        },
+        Cmd::Workflows => Control::Ui {
+            command: UiCommand::Workflows,
         },
         Cmd::Status => Control::Status,
         Cmd::Add {

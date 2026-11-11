@@ -47,6 +47,7 @@ pub struct ApplicationSelection {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum UiCommand {
+    Workflows,
     Toggle,
     Nodes,
     Windows,
@@ -130,8 +131,16 @@ fn notify_default() -> bool {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Control {
+    ConnectHost {
+        host: String,
+        remote: crate::remote::Remote,
+    },
+    EndSession {
+        workspace: flow_core::domain::WorkspaceId,
+        incarnation: String,
+    },
     Orchestrate {
-        request: flow_core::protocol::Request,
+        request: Box<flow_core::protocol::Request>,
     },
     Status,
     Alert {
@@ -386,8 +395,13 @@ impl Engine {
             state.orchestration = Some(envelope.runtime);
         }
         if let Some(runtime) = &mut state.orchestration {
+            if let Ok(host) = crate::config::host_id()
+                && host.0 != "local"
+            {
+                runtime.bind_host(host).expect("Configured host identity");
+            }
             let _ = runtime.workspaces.activate(
-                &"local:user".into(),
+                &format!("{}:user", runtime.host_id.0).into(),
                 &"local".into(),
                 crate::model::id(),
             );
@@ -428,6 +442,9 @@ impl Engine {
             .inspect_err(|e| eprintln!("Start application process monitor: {e}"))
             .ok();
             Runtime {
+                remotes: crate::remote::configured().unwrap_or_default(),
+                network_due: Instant::now(),
+                session_watches: HashSet::new(),
                 limits: crate::config::runtime_limits().unwrap_or_default(),
                 orchestrator: {
                     let runtime = state
@@ -441,11 +458,6 @@ impl Engine {
                     );
                     orchestrator.signal_capacity = limits.signal_queue_capacity;
                     orchestrator.replay_capacity = limits.replay_capacity;
-                    let _ = orchestrator.state.workspaces.activate(
-                        &"local:user".into(),
-                        &"local".into(),
-                        crate::model::id(),
-                    );
                     orchestrator
                 },
                 state,
@@ -665,6 +677,9 @@ impl Engine {
 }
 
 struct Runtime {
+    remotes: std::collections::BTreeMap<String, crate::remote::Remote>,
+    network_due: Instant,
+    session_watches: HashSet<String>,
     limits: flow_builtins::local::Limits,
     orchestrator: flow_core::orchestrator::Orchestrator,
     state: State,
@@ -694,6 +709,18 @@ struct Runtime {
 impl Runtime {
     fn work(mut self, rx: mpsc::Receiver<Message>, shared: Arc<Mutex<Snapshot>>) {
         loop {
+            let network_pending = !self.orchestrator.state.forwarding.is_empty()
+                || !self.orchestrator.state.pending_remote.is_empty()
+                || self.orchestrator.state.transfers.values().any(|t| {
+                    t.source == self.orchestrator.state.host_id
+                        && !self.orchestrator.state.transfer_acks.contains(&t.id)
+                        && matches!(
+                            t.phase,
+                            flow_core::domain::TransferPhase::Prepared
+                                | flow_core::domain::TransferPhase::Committed
+                        )
+                        && self.orchestrator.state.workflows.contains_key(&t.workflow)
+                });
             let next_metric = self
                 .runs
                 .values()
@@ -701,6 +728,11 @@ impl Runtime {
                 .map(|t| t.saturating_duration_since(Instant::now()))
                 .min()
                 .unwrap_or(Duration::from_secs(60));
+            let next_metric = if network_pending {
+                next_metric.min(self.network_due.saturating_duration_since(Instant::now()))
+            } else {
+                next_metric
+            };
             let timeout = if self.needs_save {
                 next_metric.min(Duration::from_millis(400).saturating_sub(self.last_save.elapsed()))
             } else {
@@ -708,12 +740,52 @@ impl Runtime {
             };
             match rx.recv_timeout(timeout) {
                 Ok(Message::Completion(completion)) => {
-                    let _ = self.orchestrator.state.complete(
+                    let invocation = completion.invocation.clone();
+                    let accepted = self.orchestrator.state.complete(
                         &completion.invocation,
                         completion.generation,
                         completion.result,
                         completion.status,
                     );
+                    if accepted.unwrap_or(false) {
+                        if let Some(execution) = self.orchestrator.state.executions.get(&invocation)
+                            && let Some(node) = self.state.node_mut(&execution.node.0)
+                        {
+                            node.status = match execution.status {
+                                flow_core::domain::ExecutionStatus::Complete => Status::Done,
+                                flow_core::domain::ExecutionStatus::Interrupted => Status::Stopped,
+                                _ => Status::Failed,
+                            };
+                            if let Some(values) = execution.result.as_object() {
+                                node.flow
+                                    .values
+                                    .extend(values.iter().map(|(k, v)| (k.clone(), v.clone())));
+                            }
+                            node.output = execution
+                                .result
+                                .get("stdout")
+                                .and_then(Value::as_str)
+                                .map(String::from)
+                                .unwrap_or_else(|| execution.result.to_string());
+                        }
+                        if let Some(destination) = self
+                            .orchestrator
+                            .state
+                            .forwarding_targets
+                            .get(&invocation)
+                            .cloned()
+                            && let Some(execution) =
+                                self.orchestrator.state.executions.get(&invocation).cloned()
+                        {
+                            self.orchestrator.state.forwarding.push_back(
+                                flow_core::transfer::ForwardedCompletion {
+                                    destination,
+                                    execution,
+                                },
+                            );
+                            let _ = self.checkpoint();
+                        }
+                    }
                     self.state.orchestration = Some(self.orchestrator.state.clone());
                     self.dirty = true;
                 }
@@ -789,6 +861,15 @@ impl Runtime {
                     control: Control::SyncDesktop { mut desktop },
                     reply,
                 })) => {
+                    if desktop.connected && !desktop.session.is_empty() {
+                        self.watch_desktop_session(&desktop.session);
+                        let _ = self.orchestrator.state.workspaces.activate(
+                            &format!("{}:desktop", self.orchestrator.state.host_id.0).into(),
+                            &"desktop".into(),
+                            desktop.session.clone(),
+                        );
+                        self.state.orchestration = Some(self.orchestrator.state.clone());
+                    }
                     self.suppressed_windows
                         .retain(|id| desktop.windows.iter().any(|w| w.id == *id));
                     desktop
@@ -826,6 +907,7 @@ impl Runtime {
                     );
                     changed |= self.observe_window_processes(&desktop);
                     if changed {
+                        self.sync_domain();
                         self.revision += 1;
                         *shared.lock().unwrap() = Snapshot {
                             state: Arc::new(self.state.clone()),
@@ -839,19 +921,31 @@ impl Runtime {
                         let _ = reply.send(Ok(json!({"changed": changed})));
                     }
                 }
-                Ok(Message::Request(Request { control: Control::Orchestrate { request }, reply })) => {
+                Ok(Message::Request(Request {
+                    control: Control::Orchestrate { request },
+                    reply,
+                })) => {
                     let previous = self.orchestrator.state.revision;
                     let result = self.apply(Control::Orchestrate { request });
                     if self.orchestrator.state.revision != previous {
                         self.dirty = true;
                         self.revision += 1;
-                        *shared.lock().unwrap() = Snapshot { state:Arc::new(self.state.clone()), revision:self.revision, error:self.error.clone() };
+                        *shared.lock().unwrap() = Snapshot {
+                            state: Arc::new(self.state.clone()),
+                            revision: self.revision,
+                            error: self.error.clone(),
+                        };
                         self.notifier.signal();
                     }
-                    if let Some(reply) = reply { let _ = reply.send(result.map_err(|e|e.to_string())); }
+                    if let Some(reply) = reply {
+                        let _ = reply.send(result.map_err(|e| e.to_string()));
+                    }
                 }
                 Ok(Message::Request(Request { control, reply })) => {
                     let result = self.apply(control);
+                    if result.is_ok() {
+                        self.sync_domain();
+                    }
                     if let Err(error) = &result {
                         self.error = Some(format!("{error:#}"));
                     }
@@ -928,7 +1022,12 @@ impl Runtime {
                 Ok(Message::WindowProcessExited { token, result }) => {
                     self.window_process_exited(token, result);
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if network_pending && Instant::now() >= self.network_due {
+                        self.reconcile_network();
+                        self.network_due = Instant::now() + Duration::from_secs(2);
+                    }
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             }
             self.prune_window_processes(None);
@@ -1076,6 +1175,209 @@ impl Runtime {
             }
         }
     }
+
+    fn cancel_destroyed(&self) {
+        for node in &self.state.nodes {
+            if self
+                .orchestrator
+                .state
+                .destroyed
+                .contains(&node.workspace.clone().into())
+                && let Some(run) = self.runs.get(&node.id)
+            {
+                run.cancel.store(true, Ordering::Release);
+            }
+        }
+    }
+    fn sync_domain(&mut self) {
+        if let Ok((envelope, _)) = flow_core::migration::Envelope::from_v1(self.state.clone()) {
+            self.orchestrator.state = envelope.runtime;
+            self.orchestrator.state.revision += 1;
+            self.state.orchestration = Some(self.orchestrator.state.clone());
+        }
+    }
+    fn watch_desktop_session(&mut self, session: &str) {
+        if !std::path::Path::new(session).is_absolute()
+            || !self.session_watches.insert(session.into())
+        {
+            return;
+        }
+        let session = session.to_string();
+        let tx = self.tx.clone();
+        let host = self.orchestrator.state.host_id.0.clone();
+        thread::spawn(move || {
+            use std::os::unix::net::UnixStream;
+            if let Ok(mut stream) = UnixStream::connect(&session)
+                && writeln!(
+                    stream,
+                    "{}",
+                    serde_json::to_string(&niri_ipc::Request::EventStream).unwrap()
+                )
+                .is_ok()
+            {
+                let _ = std::io::copy(&mut stream, &mut std::io::sink());
+                let _ = tx.send(Message::Request(Request {
+                    control: Control::EndSession {
+                        workspace: format!("{host}:desktop").into(),
+                        incarnation: session,
+                    },
+                    reply: None,
+                }));
+            }
+        });
+    }
+    fn remote_request(
+        &self,
+        host: &str,
+        command: flow_core::protocol::Command,
+        caller: Option<flow_core::domain::WorkflowId>,
+        request_id: String,
+    ) -> Result<Value> {
+        self.remotes
+            .get(host)
+            .context("Remote host is disconnected or not configured")?
+            .request(&flow_core::protocol::Request {
+                protocol: 2,
+                id: request_id,
+                expected_revision: None,
+                caller,
+                command,
+            })
+    }
+    fn discover_host(&mut self, host: &str) -> Result<()> {
+        let value = self.remote_request(
+            host,
+            flow_core::protocol::Command::Snapshot,
+            None,
+            crate::model::id(),
+        )?;
+        let remote: flow_core::domain::RuntimeState = serde_json::from_value(value)?;
+        ensure!(
+            remote.host_id.0 == host,
+            "Configured host ID differs from peer identity"
+        );
+        for definition in remote.workspaces.definitions() {
+            self.orchestrator
+                .state
+                .workspaces
+                .register(definition.clone())?;
+            if let Some(available) = remote
+                .workspaces
+                .availability(&definition.id)
+                .filter(|a| a.active)
+            {
+                self.orchestrator.state.workspaces.activate(
+                    &definition.id,
+                    &definition.provider,
+                    available.incarnation.clone(),
+                )?;
+            }
+        }
+        for (id, workflow) in remote.workflows {
+            if workflow.authority.0 == host && !self.orchestrator.state.destroyed.contains(&id) {
+                self.orchestrator
+                    .state
+                    .workflows
+                    .entry(id)
+                    .or_insert(workflow);
+            }
+        }
+        self.state.orchestration = Some(self.orchestrator.state.clone());
+        Ok(())
+    }
+    fn checkpoint(&mut self) -> Result<()> {
+        self.state.orchestration = Some(self.orchestrator.state.clone());
+        self.store.save(&self.state)
+    }
+    fn continue_transfer(&mut self, id: &flow_core::domain::TransferId) -> Result<()> {
+        use flow_core::{domain::TransferPhase, protocol::Command};
+        let record = self
+            .orchestrator
+            .state
+            .transfers
+            .get(id)
+            .context("Transfer not found")?
+            .clone();
+        if self.orchestrator.state.transfer_acks.contains(id) {
+            return Ok(());
+        }
+        let host = record.destination.host().to_string();
+        if record.phase == TransferPhase::Prepared {
+            let bundle = self.orchestrator.state.transfer_bundle(id)?;
+            self.remote_request(&host, Command::StageTransfer { bundle }, None, id.0.clone())?;
+            self.orchestrator.state.commit_outgoing(id)?;
+            self.checkpoint()?;
+        }
+        let bundle = self.orchestrator.state.transfer_bundle(id)?;
+        self.remote_request(
+            &host,
+            Command::CommitTransfer { bundle },
+            None,
+            id.0.clone(),
+        )?;
+        self.orchestrator.state.transfer_acks.insert(id.clone());
+        self.checkpoint()?;
+        Ok(())
+    }
+    fn reconcile_network(&mut self) {
+        use flow_core::{domain::TransferPhase, protocol::Command};
+        let transfers: Vec<_> = self
+            .orchestrator
+            .state
+            .transfers
+            .values()
+            .filter(|t| {
+                t.source == self.orchestrator.state.host_id
+                    && matches!(t.phase, TransferPhase::Prepared | TransferPhase::Committed)
+                    && !self.orchestrator.state.transfer_acks.contains(&t.id)
+                    && self.orchestrator.state.workflows.contains_key(&t.workflow)
+            })
+            .map(|t| t.id.clone())
+            .take(4)
+            .collect();
+        for transfer in transfers {
+            let _ = self.continue_transfer(&transfer);
+        }
+        for _ in 0..4 {
+            let Some(pending) = self.orchestrator.state.forwarding.front().cloned() else {
+                break;
+            };
+            if self
+                .remote_request(
+                    &pending.destination.0,
+                    Command::ForwardCompletion {
+                        execution: pending.execution.clone(),
+                    },
+                    None,
+                    pending.execution.id.0.clone(),
+                )
+                .is_err()
+            {
+                break;
+            }
+            self.orchestrator.state.forwarding.pop_front();
+            let _ = self.checkpoint();
+        }
+        for _ in 0..4 {
+            let Some(pending) = self.orchestrator.state.pending_remote.front().cloned() else {
+                break;
+            };
+            if self
+                .remote_request(
+                    &pending.host.0,
+                    pending.command,
+                    pending.caller,
+                    crate::model::id(),
+                )
+                .is_err()
+            {
+                break;
+            }
+            self.orchestrator.state.pending_remote.pop_front();
+            let _ = self.checkpoint();
+        }
+        self.dirty = true;
+    }
     fn apply(&mut self, control: Control) -> Result<Value> {
         self.error = None;
         if self.graph_active {
@@ -1103,6 +1405,27 @@ impl Runtime {
             );
         }
         match control {
+            Control::ConnectHost { host, remote } => {
+                self.remotes.insert(host.clone(), remote);
+                self.discover_host(&host)?;
+            }
+            Control::EndSession {
+                workspace,
+                incarnation,
+            } => {
+                let cleanup = self
+                    .orchestrator
+                    .state
+                    .end_session(&workspace, &incarnation)?;
+                for execution in cleanup {
+                    if let Ok(provider) = self.orchestrator.registry.provider(&execution.provider) {
+                        let _ = provider.interrupt(&execution.handle);
+                    }
+                }
+                self.cancel_destroyed();
+                crate::projection::apply(&mut self.state, &self.orchestrator.state);
+                self.state.orchestration = Some(self.orchestrator.state.clone());
+            }
             Control::Orchestrate { request } => {
                 ensure!(
                     request.protocol == flow_core::protocol::ORCHESTRATOR_VERSION,
@@ -1117,8 +1440,83 @@ impl Runtime {
                 // Refresh only compatibility projections; retain ownership and active executions.
                 let (envelope, _) = flow_core::migration::Envelope::from_v1(self.state.clone())?;
                 self.orchestrator.state = envelope.runtime;
+
+                use flow_core::protocol::Command as CoreCommand;
+                if let CoreCommand::Move {
+                    workflow,
+                    workspace,
+                } = &request.command
+                    && workspace.host() != self.orchestrator.state.host_id.0
+                {
+                    self.orchestrator
+                        .state
+                        .lookup(workflow, request.caller.as_ref())?;
+                    if !self
+                        .orchestrator
+                        .state
+                        .transfers
+                        .contains_key(&request.id.clone().into())
+                    {
+                        self.discover_host(workspace.host())?;
+                        self.orchestrator.state.prepare_transfer(
+                            request.id.clone().into(),
+                            workflow,
+                            workspace.clone(),
+                        )?;
+                        self.checkpoint()?;
+                    }
+                    let result = self.continue_transfer(&request.id.clone().into());
+                    self.state.orchestration = Some(self.orchestrator.state.clone());
+                    return Ok(serde_json::to_value(flow_core::protocol::Reply {
+                        protocol: 2,
+                        id: request.id,
+                        revision: self.orchestrator.state.revision,
+                        result: result.as_ref().ok().map(|_| Value::Null),
+                        error: result.err().map(|e| flow_core::protocol::Error {
+                            code: "handoff_pending".into(),
+                            message: e.to_string(),
+                            retryable: true,
+                        }),
+                    })?);
+                }
+                let target = match &request.command {
+                    CoreCommand::Run { workflow, .. }
+                    | CoreCommand::ReplaceGraph { workflow, .. }
+                    | CoreCommand::Receive { workflow, .. } => Some(workflow.clone()),
+                    CoreCommand::Broadcast { delivery } => Some(delivery.target.clone()),
+                    _ => None,
+                };
+                if let Some(target) = target
+                    && let Some(workflow) = self.orchestrator.state.workflows.get(&target)
+                    && workflow.authority != self.orchestrator.state.host_id
+                {
+                    let host = workflow.authority.0.clone();
+                    let value = self.remote_request(
+                        &host,
+                        request.command,
+                        request.caller,
+                        request.id.clone(),
+                    )?;
+                    return Ok(serde_json::to_value(flow_core::protocol::Reply {
+                        protocol: 2,
+                        id: request.id,
+                        revision: self.orchestrator.state.revision,
+                        result: Some(value),
+                        error: None,
+                    })?);
+                }
+                self.orchestrator.storage = Some(Arc::new(crate::store::RuntimeCheckpoint {
+                    store: self.store.clone(),
+                    compatibility: self.state.clone(),
+                }));
                 let tx = self.tx.clone();
-                let read_only = matches!(&request.command, flow_core::protocol::Command::Snapshot | flow_core::protocol::Command::Workspaces | flow_core::protocol::Command::Negotiate { .. } | flow_core::protocol::Command::Subscribe { .. });
+                let read_only = matches!(
+                    &request.command,
+                    flow_core::protocol::Command::Snapshot
+                        | flow_core::protocol::Command::Workspaces
+                        | flow_core::protocol::Command::Negotiate { .. }
+                        | flow_core::protocol::Command::Subscribe { .. }
+                );
                 let result = self.orchestrator.execute(
                     request.command,
                     request.caller.as_ref(),
@@ -1126,6 +1524,10 @@ impl Runtime {
                         let _ = tx.send(Message::Completion(completion));
                     }),
                 );
+                if !read_only {
+                    self.cancel_destroyed();
+                    crate::projection::apply(&mut self.state, &self.orchestrator.state);
+                }
                 self.state.orchestration = Some(self.orchestrator.state.clone());
                 if !read_only {
                     self.store.save(&self.state)?;

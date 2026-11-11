@@ -8,6 +8,8 @@ struct Args {
     #[arg(long)]
     socket: Option<PathBuf>,
     #[arg(long)]
+    stdio: bool,
+    #[arg(long)]
     data_dir: Option<PathBuf>,
     #[arg(long, hide = true)]
     evaluate_worker: bool,
@@ -18,6 +20,9 @@ fn main() -> Result<()> {
     let args = Args::parse();
     if args.evaluate_worker || args.command.as_deref() == Some("evaluate-worker") {
         return flow_host::graph::run_worker();
+    }
+    if args.stdio {
+        return flow_host::remote::stdio(&args.socket.unwrap_or_else(ipc::host_socket));
     }
     config::set_worker_executable(std::env::current_exe()?);
     let socket = args.socket.unwrap_or_else(ipc::host_socket);

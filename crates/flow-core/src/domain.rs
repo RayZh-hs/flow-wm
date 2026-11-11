@@ -231,6 +231,20 @@ pub struct Transfer {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RuntimeState {
+    #[serde(default)]
+    pub transfer_acks: BTreeSet<TransferId>,
+    #[serde(default = "local_host")]
+    pub host_id: HostId,
+    #[serde(default)]
+    pub incoming: BTreeMap<TransferId, crate::transfer::TransferBundle>,
+    #[serde(default)]
+    pub forwarding: VecDeque<crate::transfer::ForwardedCompletion>,
+    #[serde(default)]
+    pub destroyed: BTreeSet<WorkflowId>,
+    #[serde(default)]
+    pub pending_remote: VecDeque<crate::transfer::RemoteCommand>,
+    #[serde(default)]
+    pub forwarding_targets: BTreeMap<InvocationId, HostId>,
     pub revision: u64,
     pub workspaces: WorkspaceRegistry,
     pub workflows: BTreeMap<WorkflowId, Workflow>,
@@ -242,7 +256,10 @@ pub struct RuntimeState {
 }
 impl RuntimeState {
     pub fn local() -> Self {
-        let mut state = Self::default();
+        let mut state = Self {
+            host_id: "local".into(),
+            ..Default::default()
+        };
         for (session, provider, lifetime, caps) in [
             (
                 "desktop",
@@ -269,6 +286,52 @@ impl RuntimeState {
                 .unwrap();
         }
         state
+    }
+    pub fn bind_host(&mut self, host: HostId) -> Result<()> {
+        ensure!(
+            !host.0.is_empty() && !host.0.contains(':') && !host.0.chars().any(char::is_whitespace),
+            "Invalid host ID"
+        );
+        if host == self.host_id {
+            return Ok(());
+        }
+        ensure!(
+            self.host_id.0 == "local" && self.transfers.is_empty(),
+            "Configured host ID differs from stored runtime identity"
+        );
+        let remap = |id: &WorkspaceId| {
+            if id.host() == "local" {
+                WorkspaceId(format!("{}:{}", host.0, id.0.split_once(':').unwrap().1))
+            } else {
+                id.clone()
+            }
+        };
+        self.workspaces.definitions = std::mem::take(&mut self.workspaces.definitions)
+            .into_values()
+            .map(|mut d| {
+                d.id = remap(&d.id);
+                (d.id.clone(), d)
+            })
+            .collect();
+        self.workspaces.availability = std::mem::take(&mut self.workspaces.availability)
+            .into_iter()
+            .map(|(id, a)| (remap(&id), a))
+            .collect();
+        for workflow in self.workflows.values_mut() {
+            if let Some(workspace) = &workflow.workspace {
+                workflow.workspace = Some(remap(workspace));
+            }
+            if workflow.authority.0 == "local" {
+                workflow.authority = host.clone();
+            }
+        }
+        for execution in self.executions.values_mut() {
+            if execution.host.0 == "local" {
+                execution.host = host.clone();
+            }
+        }
+        self.host_id = host;
+        Ok(())
     }
     pub fn visible(&self, id: &WorkflowId, caller: Option<&WorkflowId>) -> bool {
         self.workflows.get(id).is_some_and(|w| {
@@ -303,6 +366,7 @@ impl RuntimeState {
                 "Private workflows need one owner; public workflows cannot have an owner"
             ),
         }
+        self.destroyed.remove(&workflow.id);
         self.workflows.insert(workflow.id.clone(), workflow);
         self.revision += 1;
         Ok(())
@@ -359,7 +423,19 @@ impl RuntimeState {
     }
     /// Returns active handles for provider teardown; completed history is retained.
     pub fn destroy(&mut self, id: &WorkflowId) -> Result<Vec<Execution>> {
-        ensure!(self.workflows.contains_key(id), "Workflow not found");
+        if !self.workflows.contains_key(id) {
+            let incoming = self
+                .incoming
+                .iter()
+                .find(|(_, b)| &b.workflow.id == id)
+                .map(|(key, _)| key.clone())
+                .context("Workflow not found")?;
+            self.incoming.remove(&incoming);
+            self.transfers.get_mut(&incoming).unwrap().phase = TransferPhase::Aborted;
+            self.destroyed.insert(id.clone());
+            self.revision += 1;
+            return Ok(vec![]);
+        }
         let mut removed = BTreeSet::from([id.clone()]);
         loop {
             let count = removed.len();
@@ -372,6 +448,21 @@ impl RuntimeState {
                 break;
             }
         }
+        for workflow in self
+            .workflows
+            .values()
+            .filter(|w| removed.contains(&w.id) && w.authority != self.host_id)
+        {
+            self.pending_remote
+                .push_back(crate::transfer::RemoteCommand {
+                    host: workflow.authority.clone(),
+                    caller: workflow.owner.clone(),
+                    command: crate::protocol::Command::Destroy {
+                        workflow: workflow.id.clone(),
+                    },
+                });
+        }
+        self.destroyed.extend(removed.iter().cloned());
         self.workflows.retain(|id, _| !removed.contains(id));
         for w in self.workflows.values_mut() {
             w.references.retain(|r| !removed.contains(r));
@@ -441,7 +532,9 @@ impl RuntimeState {
         Ok(true)
     }
     pub fn broadcast(&mut self, delivery: Delivery, capacity: usize) -> Result<bool> {
-        self.lookup(&delivery.source, Some(&delivery.source))?;
+        if self.workflows.contains_key(&delivery.source) {
+            self.lookup(&delivery.source, Some(&delivery.source))?;
+        }
         self.lookup(&delivery.target, Some(&delivery.source))?;
         let workflow = &self.workflows[&delivery.target];
         ensure!(
@@ -477,7 +570,10 @@ impl RuntimeState {
             caller == workflow,
             "Receive is restricted to the destination workflow"
         );
-        self.lookup(workflow, Some(caller))?;
+        ensure!(
+            self.lookup(workflow, Some(caller))?.authority == self.host_id,
+            "Receive must use the authoritative host"
+        );
         let Some(index) = self
             .deliveries
             .iter()
@@ -588,4 +684,8 @@ pub struct RendererContract {
     pub anchors: BTreeMap<String, [f64; 2]>,
     pub hit_regions: Vec<[f64; 4]>,
     pub fallback_label: String,
+}
+
+fn local_host() -> HostId {
+    "local".into()
 }

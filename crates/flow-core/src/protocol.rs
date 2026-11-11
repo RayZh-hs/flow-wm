@@ -17,6 +17,19 @@ pub struct Request {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum Command {
+    OriginInterrupt {
+        invocation: InvocationId,
+        generation: u64,
+    },
+    StageTransfer {
+        bundle: crate::transfer::TransferBundle,
+    },
+    CommitTransfer {
+        bundle: crate::transfer::TransferBundle,
+    },
+    ForwardCompletion {
+        execution: Execution,
+    },
     Negotiate {
         versions: Vec<u32>,
     },

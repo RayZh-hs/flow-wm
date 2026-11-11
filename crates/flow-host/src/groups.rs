@@ -179,6 +179,13 @@ pub(crate) fn synchronize_with_processes(
             .iter()
             .position(|n| n.window_id == Some(window.id))
             .or_else(|| {
+                window
+                    .app_id
+                    .as_deref()
+                    .and_then(|app| app.strip_prefix("dev.flowwm.interface.v1."))
+                    .and_then(|id| state.nodes.iter().position(|n| n.id == id))
+            })
+            .or_else(|| {
                 state.nodes.iter().position(|n| {
                     n.kind == NodeKind::Window
                         && n.window_id.is_none()
