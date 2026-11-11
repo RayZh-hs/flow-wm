@@ -231,6 +231,9 @@ pub enum Control {
     Stop {
         id: String,
     },
+    Interrupt {
+        id: String,
+    },
     Approve {
         id: String,
         output: Option<String>,
@@ -445,6 +448,7 @@ impl Engine {
                 remotes: crate::remote::configured().unwrap_or_default(),
                 network_due: Instant::now(),
                 session_watches: HashSet::new(),
+                desktop_rows: HashMap::new(),
                 limits: crate::config::runtime_limits().unwrap_or_default(),
                 orchestrator: {
                     let runtime = state
@@ -695,6 +699,7 @@ struct Runtime {
     remotes: std::collections::BTreeMap<String, crate::remote::Remote>,
     network_due: Instant,
     session_watches: HashSet<String>,
+    desktop_rows: HashMap<u64, Option<u64>>,
     limits: flow_builtins::local::Limits,
     orchestrator: flow_core::orchestrator::Orchestrator,
     state: State,
@@ -934,12 +939,20 @@ impl Runtime {
                         .map(|(id, _)| id.clone())
                         .chain(self.exit_pending.iter().cloned())
                         .collect();
+                    let rows = desktop
+                        .windows
+                        .iter()
+                        .map(|w| (w.id, w.workspace_id))
+                        .collect::<HashMap<_, _>>();
+                    let moved = self.desktop_rows != rows;
+                    self.desktop_rows = rows;
                     let mut changed = crate::groups::synchronize_with_policy(
                         &mut self.state,
                         &desktop,
                         &retained,
                         self.limits.desktop_branches_follow_rows,
                     );
+                    changed |= moved;
                     changed |= self.observe_window_processes(&desktop);
                     if changed {
                         self.sync_domain();
@@ -1532,6 +1545,7 @@ impl Runtime {
                     | CoreCommand::ReplaceGraph { workflow, .. }
                     | CoreCommand::Receive { workflow, .. } => Some(workflow.clone()),
                     CoreCommand::Broadcast { delivery } => Some(delivery.target.clone()),
+                    CoreCommand::Acknowledge { .. } => request.caller.clone(),
                     _ => None,
                 };
                 if let Some(target) = target
@@ -2051,6 +2065,7 @@ impl Runtime {
                 }
             }
             Control::Stop { id } => self.stop(&id)?,
+            Control::Interrupt { id } => self.interrupt_node(&id)?,
             Control::Approve { id, output } => {
                 let node = self.state.node_mut(&id).context("Node not found")?;
                 ensure!(
@@ -2215,20 +2230,28 @@ impl Runtime {
             self.apply(Control::Delete { id: id.into() })?;
             return Ok(());
         }
-        self.graph_pending.retain(|(root, _)| root != id);
-        self.signal_pending.remove(id);
-        self.signal_args.remove(id);
-        let graph = self.graph_root.as_deref() == Some(id);
-        let node = self.state.node_mut(id).context("Node not found")?;
-        ensure!(
-            node.status.active() || self.runs.contains_key(id) || graph,
-            "Node is not active"
-        );
-        if let Some(window) = node.window_id {
+        if let Some(window) = self.state.node(id).and_then(|n| n.window_id) {
             crate::niri::request(niri_ipc::Request::Action(niri_ipc::Action::CloseWindow {
                 id: Some(window),
             }))?;
         }
+        self.interrupt_node(id)
+    }
+    fn interrupt_node(&mut self, id: &str) -> Result<()> {
+        let node = self.state.node(id).context("Node not found")?;
+        ensure!(
+            node.kind != NodeKind::Window,
+            "This application provider does not support process-safe interruption; close its window separately"
+        );
+        self.graph_pending.retain(|(root, _)| root != id);
+        self.signal_pending.remove(id);
+        self.signal_args.remove(id);
+        let graph = self.graph_root.as_deref() == Some(id);
+        let node = self.state.node_mut(id).unwrap();
+        ensure!(
+            node.status.active() || self.runs.contains_key(id) || graph,
+            "Node is not active"
+        );
         node.status = Status::Stopped;
         node.finished_at = Some(now());
         node.log("system", "Stopped by you.");

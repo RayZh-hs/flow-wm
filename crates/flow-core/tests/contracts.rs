@@ -504,3 +504,47 @@ fn destruction_during_disconnected_handoff_prevents_late_activation() {
     assert!(destination.commit_incoming(committed).is_err());
     assert!(!destination.workflows.contains_key(&"moving".into()));
 }
+
+#[test]
+fn portable_graphs_use_the_existing_type_checker_before_they_are_instantiated() {
+    let mut graph = FlowNet {
+        nodes: vec![
+            NodeSpec {
+                id: "constant".into(),
+                type_id: "local.constant".into(),
+                flow: Flow {
+                    properties: BTreeMap::from([("value".into(), json!(42))]),
+                    outputs: vec![Pin::new("value", Type::Int)],
+                    ..Default::default()
+                },
+            },
+            NodeSpec {
+                id: "target".into(),
+                type_id: "local.shell".into(),
+                flow: Flow {
+                    inputs: vec![Pin::new("count", Type::Bool)],
+                    ..Default::default()
+                },
+            },
+        ],
+        connections: vec![Connection {
+            source: Endpoint {
+                node: "constant".into(),
+                pin: "value".into(),
+            },
+            target: Endpoint {
+                node: "target".into(),
+                pin: "count".into(),
+            },
+        }],
+        ..Default::default()
+    };
+    assert!(graph.validate().is_err());
+    graph.nodes[1].flow.inputs[0].ty = Type::Int;
+    graph.validate().unwrap();
+    graph.nodes[0]
+        .flow
+        .properties
+        .insert("value".into(), json!("wrong type"));
+    assert!(graph.validate().is_err());
+}

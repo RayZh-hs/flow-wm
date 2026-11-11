@@ -99,9 +99,34 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
             }
         }
     }
-    for execution in runtime.executions.values().filter(|e| e.active()) {
-        if let Some(node) = state.node_mut(&execution.node.0) {
-            node.status = Status::Running;
+    let mut executions = runtime.executions.values().collect::<Vec<_>>();
+    executions.sort_by_key(|e| e.generation);
+    for execution in executions {
+        if let Some(node) = state.node_mut(&execution.node.0)
+            && node.workspace == execution.workflow.0
+        {
+            use flow_core::domain::ExecutionStatus;
+            node.status = match execution.status {
+                ExecutionStatus::Running | ExecutionStatus::Interrupting => Status::Running,
+                ExecutionStatus::Complete => Status::Done,
+                ExecutionStatus::Failed => Status::Failed,
+                ExecutionStatus::Interrupted | ExecutionStatus::Unavailable => Status::Stopped,
+            };
+            if !execution.active() {
+                if let Some(values) = execution.result.as_object() {
+                    node.flow.values.extend(
+                        values
+                            .iter()
+                            .map(|(key, value)| (key.clone(), value.clone())),
+                    );
+                }
+                node.output = execution
+                    .result
+                    .get("stdout")
+                    .and_then(serde_json::Value::as_str)
+                    .map(String::from)
+                    .unwrap_or_else(|| execution.result.to_string());
+            }
         }
     }
     if state.workspaces.is_empty() {

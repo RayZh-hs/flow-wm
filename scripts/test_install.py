@@ -370,6 +370,23 @@ class ReplaceSession(unittest.TestCase):
         else:
             self.fail(f'Unexpected service operation: {operation}')
 
+    def test_rollback_to_legacy_stops_the_independent_host_before_claiming_its_state(self):
+        self.pin = str(self.new)
+        self.pids['flowwm-core.service'] = 199
+        installer.replace_session(self.old, installer.running_session())
+        self.assertNotIn('flowwm-core.service', self.pids)
+        stop = next(i for i, call in enumerate(self.calls) if call[2:] == ('stop', 'flowwm-core.service'))
+        start = next(i for i, call in enumerate(self.calls) if call[2] == 'start')
+        self.assertLess(stop, start)
+
+    def test_replacing_a_host_capable_shell_keeps_the_existing_runtime(self):
+        (self.new / 'bin').mkdir()
+        (self.new / 'bin/flow-core').write_text('fixture')
+        self.pids['flowwm-core.service'] = 199
+        installer.replace_session(self.new, installer.running_session())
+        self.assertEqual(self.pids['flowwm-core.service'], 199)
+        self.assertFalse(any(call[2:] == ('stop', 'flowwm-core.service') for call in self.calls))
+
     def test_reload_adopts_new_snapshot_and_preserves_compositor(self):
         session = installer.running_session()
         installer.replace_session(self.new, session)

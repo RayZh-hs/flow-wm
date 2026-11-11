@@ -62,6 +62,36 @@ fn serve_client(mut stream: UnixStream, engine: Engine, macros: &[Macro]) {
             "Request is too large or incomplete"
         );
         let value: Value = serde_json::from_slice(&bytes)?;
+        if value.get("signal_protocol").is_some() {
+            let frame: flow_core::protocol::SignalFrame = serde_json::from_value(value)?;
+            ensure!(
+                frame.signal_protocol == flow_core::protocol::SIGNAL_VERSION,
+                "Unsupported signal protocol"
+            );
+            let reply: flow_core::protocol::Reply =
+                serde_json::from_value(engine.request(Control::Orchestrate {
+                    request: Box::new(flow_core::protocol::Request {
+                        protocol: 2,
+                        id: frame.id.clone(),
+                        expected_revision: None,
+                        caller: Some(frame.delivery.source.clone()),
+                        command: flow_core::protocol::Command::Broadcast {
+                            delivery: frame.delivery,
+                        },
+                    }),
+                })?)?;
+            return Ok(serde_json::to_value(flow_core::protocol::SignalReply {
+                signal_protocol: 1,
+                id: frame.id,
+                revision: reply.revision,
+                accepted: reply
+                    .result
+                    .as_ref()
+                    .and_then(|v| v["accepted"].as_bool())
+                    .unwrap_or(false),
+                error: reply.error,
+            })?);
+        }
         if value["op"] == "snapshot" {
             return Ok(serde_json::to_value(engine.snapshot())?);
         }

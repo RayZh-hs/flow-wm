@@ -140,7 +140,9 @@ After=graphical-session-pre.target
 
 [Service]
 Type=simple
+ExecCondition=/bin/sh -c 'test -x "$$FLOWWM_INSTALL_ROOT/bin/flow-core"'
 ExecStart={command} host
+KillMode=mixed
 WorkingDirectory={user_home}
 Restart=on-failure
 RestartSec=2
@@ -221,6 +223,12 @@ def verify_services(bundle, compositor_pid):
             raise RuntimeError(f"{unit} did not adopt the selected snapshot; check its service overrides")
 
 
+def prepare_runtime_replacement(bundle):
+    if not (Path(bundle) / "bin/flow-core").is_file() and service_pid("flowwm-core.service"):
+        print("The selected legacy snapshot owns its runtime; stopping the independent host before rollback.", flush=True)
+        run("systemctl", "--user", "stop", "flowwm-core.service")
+
+
 def replace_session(bundle, session):
     if running_session() != session:
         raise RuntimeError("The running FlowWM session changed during installation; run --replace again.")
@@ -230,6 +238,7 @@ def replace_session(bundle, session):
     try:
         # Stop both services before the DMS launcher repoints its plugin to the new shell.
         run("systemctl", "--user", "stop", *REPLACE_SERVICES)
+        prepare_runtime_replacement(bundle)
         run("systemctl", "--user", "set-environment", "FLOWWM_INSTALL_ROOT=" + str(bundle))
         run("systemctl", "--user", "start", *services_for(bundle))
         verify_services(bundle, session[0])
@@ -240,6 +249,7 @@ def replace_session(bundle, session):
         print("Replacement failed; restoring the previous FlowWM and DMS snapshot.", flush=True)
         try:
             run("systemctl", "--user", "stop", *REPLACE_SERVICES)
+            prepare_runtime_replacement(previous)
             run("systemctl", "--user", "set-environment", "FLOWWM_INSTALL_ROOT=" + previous)
             run("systemctl", "--user", "start", *services_for(previous))
             verify_services(previous, session[0])

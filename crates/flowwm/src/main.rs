@@ -137,6 +137,10 @@ enum Cmd {
     Stop {
         id: String,
     },
+    /// Interrupt work while keeping its interface window open.
+    Interrupt {
+        id: String,
+    },
     Approve {
         id: String,
         #[arg(long)]
@@ -301,6 +305,7 @@ fn main() -> Result<()> {
         }
         Cmd::Run { id, downstream } => Control::Run { id, downstream },
         Cmd::Stop { id } => Control::Stop { id },
+        Cmd::Interrupt { id } => Control::Interrupt { id },
         Cmd::Approve { id, output } => Control::Approve { id, output },
         Cmd::Open { id } => Control::Ui {
             command: UiCommand::Open { id },

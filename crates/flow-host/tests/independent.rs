@@ -245,7 +245,9 @@ fn cross_host_handoff_preserves_real_execution_and_forwards_interrupt_and_result
     .unwrap();
     b.request(Control::ConnectHost {
         host: "a".into(),
-        remote: flow_host::remote::Remote::Unix { socket: asock },
+        remote: flow_host::remote::Remote::Unix {
+            socket: asock.clone(),
+        },
     })
     .unwrap();
     let graph = FlowNet {
@@ -281,6 +283,15 @@ fn cross_host_handoff_preserves_real_execution_and_forwards_interrupt_and_result
             },
         },
         None,
+    );
+    b.request(Control::ConnectHost {
+        host: "a".into(),
+        remote: flow_host::remote::Remote::Unix { socket: asock },
+    })
+    .unwrap();
+    assert_eq!(
+        call(&b, Command::Snapshot, None)["workflows"]["remote-work"]["authority"],
+        "a"
     );
     let first = call(
         &a,
@@ -376,4 +387,106 @@ fn synchronous_client_commands_see_fresh_state_and_late_frames_cannot_roll_it_ba
     assert_eq!(client.snapshot().state.workspace().notes, "fresh");
     client.shutdown();
     server.join().unwrap();
+}
+
+#[test]
+fn signal_protocol_negotiates_separately_and_retries_do_not_duplicate_delivery() {
+    let (engine, dir) = fixture();
+    let socket = dir.path().join("signals.sock");
+    ipc::serve(ipc::bind(&socket).unwrap(), engine.clone(), vec![]);
+    for name in ["sender", "receiver"] {
+        call(
+            &engine,
+            Command::Create {
+                workflow: Workflow {
+                    id: name.into(),
+                    name: name.into(),
+                    workspace: Some("local:user".into()),
+                    visibility: Visibility::Public,
+                    owner: None,
+                    references: Default::default(),
+                    graph: Default::default(),
+                    authority: "local".into(),
+                    transfer: None,
+                },
+            },
+            None,
+        );
+    }
+    let frame = flow_core::protocol::SignalFrame {
+        signal_protocol: 1,
+        id: "message".into(),
+        delivery: Delivery {
+            id: "message".into(),
+            source: "sender".into(),
+            target: "receiver".into(),
+            channel: "done".into(),
+            ty: flow_core::graph::Type::trigger(),
+            args: json!({}),
+            sequence: 0,
+        },
+    };
+    assert_eq!(ipc::send(&socket, &frame).unwrap()["accepted"], true);
+    assert_eq!(ipc::send(&socket, &frame).unwrap()["accepted"], false);
+    assert_eq!(
+        call(
+            &engine,
+            Command::Receive {
+                workflow: "receiver".into(),
+                channel: "done".into()
+            },
+            Some("receiver")
+        )["id"],
+        "message"
+    );
+    engine.shutdown();
+}
+
+#[test]
+fn interruption_retains_the_interface_and_does_not_signal_an_observed_application() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = State::empty(dir.path().into());
+    let mut work = Node::new(
+        &state.selected_workspace,
+        NodeKind::Human,
+        dir.path().into(),
+        Default::default(),
+    );
+    work.status = Status::Running;
+    work.window_id = Some(123);
+    let work_id = work.id.clone();
+    let mut app = Node::new(
+        &state.selected_workspace,
+        NodeKind::Window,
+        dir.path().into(),
+        Default::default(),
+    );
+    app.status = Status::Running;
+    app.window_id = Some(456);
+    let app_id = app.id.clone();
+    state.nodes.extend([work, app]);
+    let (engine, _) = Engine::new(state, Store::new(dir.path().into()).unwrap());
+    engine
+        .request(Control::Interrupt {
+            id: work_id.clone(),
+        })
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().state.node(&work_id).unwrap().window_id,
+        Some(123)
+    );
+    assert_eq!(
+        engine.snapshot().state.node(&work_id).unwrap().status,
+        Status::Stopped
+    );
+    assert!(
+        engine
+            .request(Control::Interrupt { id: app_id.clone() })
+            .is_err()
+    );
+    assert_eq!(
+        engine.snapshot().state.node(&app_id).unwrap().window_id,
+        Some(456)
+    );
+    engine.shutdown();
 }

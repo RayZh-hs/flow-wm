@@ -83,8 +83,10 @@ impl RuntimeState {
             return Ok(());
         }
         ensure!(
-            !self.workflows.contains_key(&transfer.workflow),
-            "Destination already has this workflow identity"
+            self.workflows
+                .get(&transfer.workflow)
+                .is_none_or(|w| w.authority == transfer.source && w.authority != self.host_id),
+            "Destination already owns this workflow identity"
         );
         bundle.workflow.graph.validate()?;
         let mut accepted = transfer.clone();

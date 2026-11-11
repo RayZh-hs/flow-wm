@@ -395,6 +395,27 @@ impl FlowNet {
                 "Connections must remain inside a workflow"
             );
         }
-        Ok(())
+        let mut validation = crate::model::State::empty(".".into());
+        validation.workspaces[0].id = "validation".into();
+        validation.selected_workspace = "validation".into();
+        validation.types = self.types.clone();
+        validation.casts = self.casts.clone();
+        validation.node_types = self.node_types.clone();
+        validation.connections = self.connections.clone();
+        for spec in &self.nodes {
+            let type_id = spec.type_id.strip_prefix("local.").unwrap_or(&spec.type_id);
+            let kind = if type_id == "constant" {
+                crate::model::NodeKind::Constant
+            } else {
+                crate::model::NodeKind::Shell
+            };
+            let mut node =
+                crate::model::Node::new("validation", kind, ".".into(), Default::default());
+            node.id = spec.id.0.clone();
+            node.flow = spec.flow.clone();
+            node.flow.node_type = type_id.into();
+            validation.nodes.push(node);
+        }
+        validation.validate()
     }
 }

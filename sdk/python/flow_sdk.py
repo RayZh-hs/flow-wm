@@ -52,8 +52,14 @@ class Client:
     def broadcast(self, target, channel, signal_type, args, delivery_id=None, sequence=0):
         if not self.caller:
             raise ValueError("Broadcast requires a source workflow")
-        return self.request({"command": "broadcast", "delivery": {"id": delivery_id or str(uuid.uuid4()),
-            "source": self.caller, "target": target, "channel": channel, "ty": signal_type, "args": args, "sequence": sequence}})
+        delivery_id = delivery_id or str(uuid.uuid4())
+        reply = self.control({"signal_protocol": 1, "id": delivery_id, "delivery": {
+            "id": delivery_id, "source": self.caller, "target": target, "channel": channel,
+            "ty": signal_type, "args": args, "sequence": sequence}})
+        if reply.get("error"):
+            raise RuntimeError(reply["error"]["message"])
+        return {"accepted": reply["accepted"]}
+
 
     def subscribe(self, after=None):
         with socket.socket(socket.AF_UNIX) as channel:

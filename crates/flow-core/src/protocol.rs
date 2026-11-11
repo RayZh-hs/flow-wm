@@ -112,3 +112,19 @@ pub struct Event {
     pub revision: u64,
     pub snapshot: RuntimeState,
 }
+
+/// Flow Signal Protocol has its own envelope and version negotiation boundary.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SignalFrame {
+    pub signal_protocol: u32,
+    pub id: String,
+    pub delivery: Delivery,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SignalReply {
+    pub signal_protocol: u32,
+    pub id: String,
+    pub revision: u64,
+    pub accepted: bool,
+    pub error: Option<Error>,
+}
