@@ -20,6 +20,8 @@ QtObject {
         }
         ClipboardService.keyboardNavigationActive = true;
         ClipboardService.selectedIndex = Math.min(ClipboardService.selectedIndex + 1, entries.length - 1);
+        if (ClipboardService.selectedIndex >= entries.length - ClipboardService.pageSize / 2)
+            modal.loadMore();
     }
 
     function selectPrevious() {
@@ -127,14 +129,6 @@ QtObject {
         event.accepted = true;
     }
 
-    function extractSelectedText() {
-        const entries = modal.activeTab === "saved" ? ClipboardService.pinnedEntries : ClipboardService.unpinnedEntries;
-        if (!entries || entries.length === 0)
-            return;
-        const index = ClipboardService.selectedIndex >= 0 && ClipboardService.selectedIndex < entries.length ? ClipboardService.selectedIndex : 0;
-        ClipboardService.extractText(entries[index]);
-    }
-
     function handleKey(event) {
         if (modal.mode === "preview") {
             handlePreviewKey(event);
@@ -232,10 +226,6 @@ QtObject {
                     togglePinSelected();
                     event.accepted = true;
                 }
-                return;
-            case Qt.Key_O:
-                extractSelectedText();
-                event.accepted = true;
                 return;
             case Qt.Key_E:
                 editSelected();

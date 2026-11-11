@@ -44,6 +44,7 @@ Singleton {
     property string terminalOverride: ""
     property int updaterNotifiedUnix: 0
     property int updaterNotifiedCount: 0
+    property string repoMoveNoticeVersion: ""
     property bool isSwitchingMode: false
     property bool suppressOSD: true
 
@@ -220,6 +221,9 @@ Singleton {
     property int wallpaperCyclingInterval: 300
     property string wallpaperCyclingTime: "06:00"
     property string wallpaperCyclingFolderPath: ""
+    property bool wallpaperCyclingVideoEnd: false
+    property var wallpaperFolders: []
+    property var wallpaperFolderSelection: []
     property var monitorCyclingSettings: ({})
 
     property bool nightModeEnabled: false
@@ -918,6 +922,17 @@ Singleton {
         }
     }
 
+    function applyWallpaperPick(screenName, path) {
+        if (perMonitorWallpaper && screenName) {
+            setMonitorWallpaper(screenName, path);
+            setMonitorCyclingFolderPath(screenName, "");
+            return;
+        }
+        setWallpaper(path);
+        wallpaperCyclingFolderPath = "";
+        saveSettings();
+    }
+
     function setWallpaperColor(color) {
         wallpaperPath = color;
         if (perModeWallpaper) {
@@ -1228,6 +1243,11 @@ Singleton {
         saveSettings();
     }
 
+    function setWallpaperCyclingVideoEnd(enabled) {
+        wallpaperCyclingVideoEnd = enabled;
+        saveSettings();
+    }
+
     function updateMonitorCyclingSetting(screenName, key, value) {
         const screen = _screenByName(screenName);
         if (!screen) {
@@ -1275,6 +1295,10 @@ Singleton {
 
     function setMonitorCyclingFolderPath(screenName, folderPath) {
         updateMonitorCyclingSetting(screenName, "folderPath", folderPath);
+    }
+
+    function setMonitorCyclingVideoEnd(screenName, enabled) {
+        updateMonitorCyclingSetting(screenName, "videoEnd", enabled);
     }
 
     function setNightModeEnabled(enabled) {
@@ -1794,6 +1818,11 @@ Singleton {
             return wallpaperPath;
         var value = _findMonitorValue(monitorWallpapers, screenName);
         return value !== undefined ? value : wallpaperPath;
+    }
+
+    // Still-image surfaces (lock screen, blur) show a video wallpaper through its extracted frame.
+    function getMonitorWallpaperImage(screenName) {
+        return VideoWallpaperService.imageFor(getMonitorWallpaper(screenName));
     }
 
     function getMonitorWallpaperFillMode(screenName) {

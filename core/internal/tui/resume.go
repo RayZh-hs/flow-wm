@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/duxlabs-dev/dux-shell/core/internal/deps"
 )
 
 // Carries the first run's choices across the reboot that layering needs.
@@ -43,11 +45,29 @@ func loadLayerResume() *layerResume {
 	if json.Unmarshal(data, &r) != nil || r.WindowManager == "" || r.Terminal == "" {
 		return nil
 	}
+	for i, name := range r.Selected {
+		r.Selected[i] = deps.CanonicalName(name)
+	}
 	return &r
+}
+
+func layerScriptPath() string {
+	return filepath.Join(filepath.Dir(resumePath()), "layer.sh")
+}
+
+// The view cuts lines at the terminal width and a wrapped copy breaks the command, so the user runs a file instead.
+func saveLayerScript(commands []string) (string, error) {
+	path := layerScriptPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	script := "#!/bin/sh\nset -e\n" + strings.Join(commands, "\n") + "\n"
+	return path, os.WriteFile(path, []byte(script), 0o644)
 }
 
 func clearLayerResume() {
 	os.Remove(resumePath())
+	os.Remove(layerScriptPath())
 }
 
 func (m Model) currentLayerResume() layerResume {

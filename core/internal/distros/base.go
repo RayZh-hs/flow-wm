@@ -20,10 +20,7 @@ import (
 	"github.com/duxlabs-dev/dux-shell/core/internal/version"
 )
 
-const (
-	forceQuickshellGit = false
-	forceDMSGit        = false
-)
+const forceDMSGit = false
 
 // BaseDistribution provides common functionality for all distributions
 type BaseDistribution struct {
@@ -106,11 +103,52 @@ func (b *BaseDistribution) detectMatugen() deps.Dependency {
 }
 
 func (b *BaseDistribution) detectDanksearch() deps.Dependency {
-	return b.detectOptionalPackage("danksearch", "File indexing and search service", b.commandExists("dsearch") || b.commandExists("danksearch"))
+	return b.detectOptionalPackage("dux-search", "File indexing and search service", b.commandExists("dsearch") || b.commandExists("danksearch"))
 }
 
 func (b *BaseDistribution) detectDankCalendar() deps.Dependency {
-	return b.detectOptionalPackage("dankcalendar", "Calendar application", b.commandExists("dcal") || b.commandExists("dankcalendar"))
+	return b.detectOptionalPackage("dux-calendar", "Calendar application", b.commandExists("dcal") || b.commandExists("dankcalendar"))
+}
+
+func (b *BaseDistribution) detectDuxFiles() deps.Dependency {
+	return b.detectOptionalPackage("dux-files", "File manager", b.commandExists("dfiles"))
+}
+
+// renamedPackages maps distro packages to their pre-rename names. rpm -q, dpkg-query and xbps-query
+// ignore Provides, so hosts that have not upgraded since the rename only match the old name.
+var renamedPackages = map[string]string{
+	"dux-greeter":      "dms-greeter",
+	"dux-greeter-git":  "dms-greeter-git",
+	"dux-search":       "danksearch",
+	"dux-calendar":     "dankcalendar",
+	"dux-calendar-git": "dankcalendar-git",
+	"dux-gop":          "dgop",
+}
+
+func installedName(installed func(string) bool, pkg string) (string, bool) {
+	if installed(pkg) {
+		return pkg, true
+	}
+	if old, ok := renamedPackages[pkg]; ok && installed(old) {
+		return old, true
+	}
+	return "", false
+}
+
+func (b *BaseDistribution) detectGreeterPackage(installed func(string) bool) deps.Dependency {
+	_, gitInstalled := installedName(installed, "dux-greeter-git")
+	_, stableInstalled := installedName(installed, "dux-greeter")
+	dep := b.detectOptionalPackage("dux-greeter", "Dux Modular Shell greetd greeter", gitInstalled || stableInstalled)
+	return withGitVariant(dep, gitInstalled)
+}
+
+func (b *BaseDistribution) detectCalendarPackage(installed func(string) bool) deps.Dependency {
+	_, gitInstalled := installedName(installed, "dux-calendar-git")
+	return withGitVariant(b.detectDankCalendar(), gitInstalled)
+}
+
+func (b *BaseDistribution) detectFilesPackage(installed func(string) bool) deps.Dependency {
+	return withGitVariant(b.detectDuxFiles(), installed("dux-files-git"))
 }
 
 func withGitVariant(dep deps.Dependency, gitInstalled bool) deps.Dependency {
@@ -231,75 +269,6 @@ func (b *BaseDistribution) detectHyprlandTools() []deps.Dependency {
 // Hyprland 0.52+ calls hyprland-dialog and friends from hyprland-guiutils and complains when they are missing.
 func (b *BaseDistribution) detectHyprlandGuiutils() deps.Dependency {
 	return b.detectPackage("hyprland-guiutils", "Hyprland dialogs and helper apps", b.commandExists("hyprland-dialog"))
-}
-
-func (b *BaseDistribution) detectQuickshell() deps.Dependency {
-	if !b.commandExists("qs") {
-		return deps.Dependency{
-			Name:        "quickshell",
-			Status:      deps.StatusMissing,
-			Description: "QtQuick based desktop shell toolkit",
-			Required:    true,
-			Variant:     deps.VariantStable,
-			CanToggle:   true,
-		}
-	}
-
-	cmd := exec.Command("qs", "--version")
-	output, err := cmd.Output()
-	if err != nil {
-		return deps.Dependency{
-			Name:        "quickshell",
-			Status:      deps.StatusNeedsReinstall,
-			Description: "QtQuick based desktop shell toolkit (version check failed)",
-			Required:    true,
-			Variant:     deps.VariantStable,
-			CanToggle:   true,
-		}
-	}
-
-	versionStr := string(output)
-	versionRegex := regexp.MustCompile(`(?i)quickshell (\d+\.\d+\.\d+)`)
-	matches := versionRegex.FindStringSubmatch(versionStr)
-
-	if len(matches) < 2 {
-		return deps.Dependency{
-			Name:        "quickshell",
-			Status:      deps.StatusNeedsReinstall,
-			Description: "QtQuick based desktop shell toolkit (unknown version)",
-			Required:    true,
-			Variant:     deps.VariantStable,
-			CanToggle:   true,
-		}
-	}
-
-	installedVersion := matches[1]
-	variant := deps.VariantStable
-	if strings.Contains(versionStr, "git") || strings.Contains(versionStr, "+") {
-		variant = deps.VariantGit
-	}
-
-	if version.CompareVersions(installedVersion, "0.2.0") >= 0 {
-		return deps.Dependency{
-			Name:        "quickshell",
-			Status:      deps.StatusInstalled,
-			Version:     installedVersion,
-			Description: "QtQuick based desktop shell toolkit",
-			Required:    true,
-			Variant:     variant,
-			CanToggle:   true,
-		}
-	}
-
-	return deps.Dependency{
-		Name:        "quickshell",
-		Status:      deps.StatusNeedsUpdate,
-		Variant:     variant,
-		CanToggle:   true,
-		Version:     installedVersion,
-		Description: "QtQuick based desktop shell toolkit (needs 0.2.0+)",
-		Required:    true,
-	}
 }
 
 var (
@@ -502,7 +471,7 @@ func (b *BaseDistribution) runWithProgressStepTimeout(cmd *exec.Cmd, progressCha
 			progressChan <- InstallProgressMsg{
 				Phase:      phase,
 				Progress:   endProgress,
-				Step:       "Installation step complete",
+				Step:       stepMessage,
 				IsComplete: false,
 				LogOutput:  lastOutput,
 			}
@@ -541,7 +510,7 @@ func (b *BaseDistribution) runWithProgressStepTimeout(cmd *exec.Cmd, progressCha
 				progressChan <- InstallProgressMsg{
 					Phase:      phase,
 					Progress:   progress,
-					Step:       "Installing...",
+					Step:       stepMessage,
 					IsComplete: false,
 					LogOutput:  lastOutput,
 				}

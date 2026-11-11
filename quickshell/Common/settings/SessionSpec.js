@@ -2,6 +2,19 @@
 .import "../../DCommon/Common/settings/SharedSessionSpec.js" as Shared
 .import "../../DCommon/Common/settings/SpecUtil.js" as Util
 
+function coerceWallpaperFolders(value) {
+    if (!Array.isArray(value))
+        return [];
+    return value.filter(e => e !== null && typeof e === "object" && typeof e.path === "string" && e.path.startsWith("/")).map(e => Object.assign({}, e, {
+        recursive: e.recursive === true,
+        hidden: e.hidden === true
+    }));
+}
+
+function coerceWallpaperFolderSelection(value) {
+    return Array.isArray(value) ? value.filter(p => typeof p === "string") : [];
+}
+
 var LOCAL_SPEC = {
     doNotDisturb: {
         def: false
@@ -29,6 +42,9 @@ var LOCAL_SPEC = {
     },
     updaterNotifiedCount: {
         def: 0
+    },
+    repoMoveNoticeVersion: {
+        def: ""
     },
     terminalOverride: {
         def: ""
@@ -71,6 +87,17 @@ var LOCAL_SPEC = {
     },
     wallpaperCyclingFolderPath: {
         def: ""
+    },
+    wallpaperCyclingVideoEnd: {
+        def: false
+    },
+    wallpaperFolders: {
+        def: [],
+        coerce: coerceWallpaperFolders
+    },
+    wallpaperFolderSelection: {
+        def: [],
+        coerce: coerceWallpaperFolderSelection
     },
     monitorCyclingSettings: {
         def: {}

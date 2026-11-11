@@ -12,6 +12,7 @@ import qs.Modules.Settings.Widgets
 import "../../Common/Format.js" as Format
 import "../../Common/ThemePalette.js" as ThemePalette
 import "../../DCommon/Common/MaterialWallpaper.js" as Art
+import "../../Common/WallpaperFormats.js" as WallpaperFormats
 
 Column {
     id: root
@@ -108,14 +109,7 @@ Column {
     }
 
     function applyWallpaper(path) {
-        if (perMonitor) {
-            SessionData.setMonitorWallpaper(selectedScreen, path);
-            SessionData.setMonitorCyclingFolderPath(selectedScreen, "");
-            return;
-        }
-        SessionData.setWallpaper(path);
-        SessionData.wallpaperCyclingFolderPath = "";
-        SessionData.saveSettings();
+        SessionData.applyWallpaperPick(selectedScreen, path);
     }
 
     function pickColor() {
@@ -182,7 +176,7 @@ Column {
             "message": I18n.tr("Delete wallpaper '%1'?", "material wallpaper delete confirmation").arg(label),
             "confirmText": I18n.tr("Delete"),
             "cancelText": I18n.tr("Cancel"),
-            "confirmColor": Theme.error,
+            "danger": true,
             "onConfirm": () => SessionData.removeMaterialWallpaperProfile(id)
         });
     }
@@ -223,6 +217,13 @@ Column {
             updated.mango = updated.mango || {};
             updated.mango.cursorHideTimeout = value;
         }
+        SettingsData.set("cursorSettings", updated);
+    }
+
+    function setHyprlandCursorWarp(mode) {
+        const updated = JSON.parse(JSON.stringify(SettingsData.cursorSettings));
+        updated.hyprland = updated.hyprland || {};
+        updated.hyprland.warpOnMonitorChange = mode;
         SettingsData.set("cursorSettings", updated);
     }
 
@@ -517,6 +518,16 @@ Column {
                 if (screen)
                     SettingsData.setMatugenTargetMonitor(screen);
             }
+        }
+
+        SettingsNavRow {
+            tab: "wallpaper"
+            tags: ["folders", "directories", "library"]
+            settingKey: "wallpaperFolders"
+            iconName: "folder"
+            title: I18n.tr("Wallpapers", "wallpaper folders settings row")
+            hint: SettingsTabs.page("wallpaper_folders")?.hint ?? ""
+            onClicked: keyboard => root.parentModal?.navigateTo("wallpaper_folders", keyboard)
         }
 
         SettingsSplitRow {
@@ -907,7 +918,6 @@ Column {
             resetByKeys: false
             onResetRequested: SettingsData.setIconThemeForMode(SettingsData.specDefault("iconThemeDark"), false)
             text: I18n.tr("Theme")
-            description: I18n.tr("Requires restart")
             currentValue: SettingsData.iconThemeDark
             enableFuzzySearch: true
             popupWidthOffset: 100
@@ -927,7 +937,6 @@ Column {
             resetByKeys: false
             onResetRequested: SettingsData.setIconThemeForMode(SettingsData.specDefault("iconThemeDark"), false)
             text: I18n.tr("Dark mode theme")
-            description: I18n.tr("Requires restart")
             currentValue: SettingsData.iconThemeDark
             enableFuzzySearch: true
             popupWidthOffset: 100
@@ -947,7 +956,6 @@ Column {
             resetByKeys: false
             onResetRequested: SettingsData.setIconThemeForMode(SettingsData.specDefault("iconThemeLight"), true)
             text: I18n.tr("Light mode theme")
-            description: I18n.tr("Requires restart")
             currentValue: SettingsData.iconThemeLight
             enableFuzzySearch: true
             popupWidthOffset: 100
@@ -957,17 +965,6 @@ Column {
                 SettingsData.setIconThemeForMode(value, true);
                 root.warnIfMissingQtTheme();
             }
-        }
-    }
-
-    Loader {
-        width: parent.width
-        active: CompositorService.isAqueous
-        sourceComponent: AqueousAppearanceSettings {
-            cursor: true
-            settingKey: "aqueousCursor"
-            title: I18n.tr("Aqueous cursor", "Aqueous compositor cursor synchronization settings")
-            visible: CompositorService.isAqueous
         }
     }
 
@@ -1045,6 +1042,25 @@ Column {
                 updated.hyprland = updated.hyprland || {};
                 updated.hyprland.hideOnTouch = checked;
                 SettingsData.set("cursorSettings", updated);
+            }
+        }
+
+        SettingsDropdownRow {
+            readonly property var modes: [-1, 0, 1, 2]
+            tab: "theme"
+            tags: ["cursor", "warp", "monitor", "display", "focus", "warp_on_monitor_change"]
+            settingKey: "cursorWarpOnMonitorChange"
+            text: I18n.tr("Warp on display change", "Hyprland cursor option, move the pointer to the last focused window when focus moves to another display")
+            visible: CompositorService.isHyprland && HyprlandService.hyprSupports("cursor:warp_on_monitor_change")
+            options: [I18n.tr("Same as workspace change", "Hyprland cursor warp option, follow the workspace change warp setting"), I18n.tr("Off"), I18n.tr("On"), I18n.tr("Force", "Hyprland cursor warp option, warp even when cursor warps are disabled")]
+            currentValue: options[Math.max(0, modes.indexOf(SettingsData.cursorSettings.hyprland?.warpOnMonitorChange ?? -1))]
+            modified: (SettingsData.cursorSettings.hyprland?.warpOnMonitorChange ?? -1) !== -1
+            onResetRequested: root.setHyprlandCursorWarp(-1)
+            onValueChanged: value => {
+                const index = options.indexOf(value);
+                if (index < 0)
+                    return;
+                root.setHyprlandCursorWarp(modes[index]);
             }
         }
 
@@ -1149,7 +1165,7 @@ Column {
             bucket: "wallpaper"
             showHiddenFiles: true
             startPath: root.currentWallpaper
-            filters: ["*.jpg", "*.jpeg", "*.png", "*.bmp", "*.gif", "*.webp", "*.jxl", "*.avif", "*.heif", "*.exr", "*.svg"]
+            filters: WallpaperFormats.nameFilters(true)
             onAccepted: paths => root.applyWallpaper(paths[0])
         }
     }

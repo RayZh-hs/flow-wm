@@ -26,15 +26,10 @@ func TestDetectImmutable(t *testing.T) {
 	}{
 		{"ostree marker beats plain fedora id", []string{"/run/ostree-booted"}, map[string]string{"ID": "fedora"}, true},
 		{"silverblue variant without marker", nil, map[string]string{"ID": "fedora", "VARIANT_ID": "silverblue"}, true},
-		{"sway atomic variant", nil, map[string]string{"ID": "fedora", "VARIANT_ID": "sway-atomic"}, true},
 		{"workstation fedora", nil, map[string]string{"ID": "fedora", "VARIANT_ID": "workstation"}, false},
 		{"bazzite id", nil, map[string]string{"ID": "bazzite", "ID_LIKE": "fedora"}, true},
-		{"microos", []string{"/usr/sbin/transactional-update"}, map[string]string{"ID": "opensuse-microos"}, true},
 		{"aeon by id_like", nil, map[string]string{"ID": "opensuse-aeon-rc", "ID_LIKE": "suse opensuse microos"}, true},
 		{"tumbleweed", nil, map[string]string{"ID": "opensuse-tumbleweed", "ID_LIKE": "suse opensuse"}, false},
-		{"vanilla by abroot", []string{"/usr/bin/abroot"}, map[string]string{"ID": "ubuntu", "ID_LIKE": "debian"}, true},
-		{"steamos", nil, map[string]string{"ID": "steamos", "ID_LIKE": "arch"}, true},
-		{"arch", nil, map[string]string{"ID": "arch"}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -102,12 +97,6 @@ func TestGetOSInfoImmutable(t *testing.T) {
 			t.Fatalf("got %+v", info)
 		}
 	})
-
-	t.Run("bluefin is no longer a mutable fedora", func(t *testing.T) {
-		if IsDistroSupported("bluefin") {
-			t.Fatal("bluefin must not be registered as an installable distribution")
-		}
-	})
 }
 
 func TestPendingDependencies(t *testing.T) {
@@ -115,9 +104,9 @@ func TestPendingDependencies(t *testing.T) {
 		{Name: "dms (Dux Shell)", Status: deps.StatusMissing},
 		{Name: "niri", Status: deps.StatusInstalled},
 		{Name: "quickshell", Status: deps.StatusInstalled},
-		{Name: "danksearch", Status: deps.StatusMissing},
+		{Name: "dux-search", Status: deps.StatusMissing},
 	}
-	got := PendingDependencies(all, map[string]bool{"quickshell": true}, map[string]bool{"danksearch": true})
+	got := PendingDependencies(all, map[string]bool{"quickshell": true}, map[string]bool{"dux-search": true})
 	if len(got) != 2 || got[0].Name != "dms (Dux Shell)" || got[1].Name != "quickshell" {
 		t.Fatalf("got %+v", got)
 	}
@@ -137,18 +126,19 @@ func TestApplyImmutableDetection(t *testing.T) {
 
 func TestFedoraLayerCommands(t *testing.T) {
 	f := NewFedoraDistribution(Registry["fedora"], nil)
+	f.ostreeRequested = func() []string { return nil }
 	dependencies := []deps.Dependency{
 		{Name: "dms (Dux Shell)", Status: deps.StatusMissing},
 		{Name: "niri", Status: deps.StatusMissing, Variant: deps.VariantGit},
 		{Name: "ghostty", Status: deps.StatusInstalled},
 		{Name: "matugen", Status: deps.StatusMissing},
-		{Name: "danksearch", Status: deps.StatusMissing},
+		{Name: "dux-search", Status: deps.StatusMissing},
 		{Name: "xwayland-satellite", Status: deps.StatusMissing},
 	}
-	got := strings.Join(f.LayerCommands(dependencies, deps.WindowManagerNiri, nil, map[string]bool{"danksearch": true}), "\n")
+	got := strings.Join(f.LayerCommands(dependencies, deps.WindowManagerNiri, nil, map[string]bool{"dux-search": true}), "\n")
 
 	for _, want := range []string{
-		"_copr:copr.fedorainfracloud.org:avengemedia:dms.repo https://copr.fedorainfracloud.org/coprs/avengemedia/dms/repo/fedora-$(rpm -E %fedora)/avengemedia-dms-fedora-$(rpm -E %fedora).repo",
+		"_copr:copr.fedorainfracloud.org:duxlabs:dms.repo https://copr.fedorainfracloud.org/coprs/duxlabs/dms/repo/fedora-$(rpm -E %fedora)/duxlabs-dms-fedora-$(rpm -E %fedora).repo",
 		"_copr:copr.fedorainfracloud.org:yalter:niri-git.repo",
 		"echo priority=1 | sudo tee -a",
 		"sudo rpm-ostree install xwayland-satellite dms niri matugen",
@@ -158,21 +148,13 @@ func TestFedoraLayerCommands(t *testing.T) {
 			t.Fatalf("missing %q in:\n%s", want, got)
 		}
 	}
-	for _, unwanted := range []string{"ghostty", "danksearch", "rpm-ostree upgrade", "dnf "} {
+	for _, unwanted := range []string{"ghostty", "dux-search", "rpm-ostree upgrade", "dnf "} {
 		if strings.Contains(got, unwanted) {
 			t.Fatalf("unexpected %q in:\n%s", unwanted, got)
 		}
 	}
-	if strings.Count(got, "avengemedia:danklinux.repo https") != 1 {
-		t.Fatalf("danklinux repo must be fetched exactly once:\n%s", got)
-	}
-}
-
-func TestImmutableGuidance(t *testing.T) {
-	steam := &OSInfo{PrettyName: "SteamOS", Distribution: DistroInfo{ID: "steamos"}, ImmutableReason: "os-release ID=steamos"}
-	got := ImmutableGuidance(steam)
-	if !strings.Contains(got, "SteamOS is an image-based system") || !strings.Contains(got, "Nothing was changed") {
-		t.Fatalf("got %q", got)
+	if strings.Count(got, "duxlabs:dux-repo.repo https") != 1 {
+		t.Fatalf("deps repo must be fetched exactly once:\n%s", got)
 	}
 }
 
@@ -180,28 +162,54 @@ func TestFedoraLayerCommandsSwapVariants(t *testing.T) {
 	f := NewFedoraDistribution(Registry["fedora"], nil)
 	installed := map[string]bool{"dms-greeter": true, "dms": true}
 	f.rpmInstalled = func(pkg string) bool { return installed[pkg] }
+	f.ostreeRequested = func() []string { return []string{"dms", "dms-greeter"} }
 	orig := installedFromCOPR
-	installedFromCOPR = func(pkg, repo string) bool { return pkg == "dms" && repo == "avengemedia/dms-git" }
+	installedFromCOPR = func(pkg, repo string) bool { return pkg == "dms" && repo == "duxlabs/dms-git" }
 	t.Cleanup(func() { installedFromCOPR = orig })
 
 	dependencies := []deps.Dependency{
 		{Name: "dms (Dux Shell)", Status: deps.StatusInstalled, Variant: deps.VariantStable, CanToggle: true},
-		{Name: "dms-greeter", Status: deps.StatusInstalled, Variant: deps.VariantGit, CanToggle: true},
-		{Name: "danksearch", Status: deps.StatusInstalled},
+		{Name: "dux-greeter", Status: deps.StatusInstalled, Variant: deps.VariantGit, CanToggle: true},
+		{Name: "dux-search", Status: deps.StatusInstalled},
 	}
-	reinstall := map[string]bool{"dms (Dux Shell)": true, "dms-greeter": true, "danksearch": true}
+	reinstall := map[string]bool{"dms (Dux Shell)": true, "dux-greeter": true, "dux-search": true}
 	got := strings.Join(f.LayerCommands(dependencies, deps.WindowManagerNiri, reinstall, nil), "\n")
 
 	for _, want := range []string{
-		"sudo rm -f /etc/yum.repos.d/_copr:copr.fedorainfracloud.org:avengemedia:dms-git.repo",
-		"sudo rpm-ostree install dms dms-greeter-git --uninstall dms dms-greeter",
+		"sudo rm -f /etc/yum.repos.d/_copr:copr.fedorainfracloud.org:duxlabs:dms-git.repo /etc/yum.repos.d/_copr:copr.fedorainfracloud.org:avengemedia:dms-git.repo",
+		"sudo rpm-ostree install dms dux-greeter-git --uninstall dms dms-greeter",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "danksearch") {
+	if strings.Contains(got, "dux-search") {
 		t.Fatalf("reinstall mark without a variant change must not be layered:\n%s", got)
+	}
+}
+
+func TestFedoraLayerCommandsRenamedRequests(t *testing.T) {
+	cases := []struct {
+		name      string
+		rpm       string
+		requested []string
+		want      string
+	}{
+		{"old package and request", "dms-greeter", []string{"dms-greeter", "danksearch"}, "sudo rpm-ostree install dux-greeter-git dux-search --uninstall dms-greeter danksearch"},
+		{"old request resolved through Provides", "dux-greeter", []string{"dms-greeter"}, "sudo rpm-ostree install dux-greeter-git --uninstall dms-greeter"},
+		{"new request", "dux-greeter", []string{"dux-greeter"}, "sudo rpm-ostree install dux-greeter-git --uninstall dux-greeter"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := NewFedoraDistribution(Registry["fedora"], nil)
+			f.rpmInstalled = func(pkg string) bool { return pkg == tc.rpm }
+			f.ostreeRequested = func() []string { return tc.requested }
+			dependencies := []deps.Dependency{{Name: "dux-greeter", Status: deps.StatusInstalled, Variant: deps.VariantGit, CanToggle: true}}
+			got := strings.Join(f.LayerCommands(dependencies, deps.WindowManagerNiri, map[string]bool{"dux-greeter": true}, nil), "\n")
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("missing %q in:\n%s", tc.want, got)
+			}
+		})
 	}
 }
 

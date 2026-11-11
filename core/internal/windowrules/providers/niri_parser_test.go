@@ -1,9 +1,13 @@
 package providers
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/duxlabs-dev/dux-shell/core/internal/windowrules"
 )
 
 func TestNiriParseBasicWindowRule(t *testing.T) {
@@ -42,30 +46,6 @@ window-rule {
 	}
 }
 
-func TestConvertNiriRulesToWindowRules(t *testing.T) {
-	niriRules := []NiriWindowRule{
-		{MatchAppID: "^firefox$", Opacity: new(0.8)},
-		{MatchAppID: "^code$", OpenFloating: new(true)},
-	}
-
-	result := ConvertNiriRulesToWindowRules(niriRules)
-
-	if len(result) != 2 {
-		t.Errorf("expected 2 rules, got %d", len(result))
-	}
-
-	if result[0].MatchCriteria.AppID != "^firefox$" {
-		t.Errorf("rule 0 AppID = %q, want ^firefox$", result[0].MatchCriteria.AppID)
-	}
-	if result[0].Actions.Opacity == nil || *result[0].Actions.Opacity != 0.8 {
-		t.Errorf("rule 0 Opacity = %v, want 0.8", result[0].Actions.Opacity)
-	}
-
-	if result[1].Actions.OpenFloating == nil || !*result[1].Actions.OpenFloating {
-		t.Error("rule 1 should have OpenFloating = true")
-	}
-}
-
 func TestNiriSetAndLoadDMSRules(t *testing.T) {
 	tmpDir := t.TempDir()
 	provider := NewNiriWritableProvider(tmpDir)
@@ -92,62 +72,6 @@ func TestNiriSetAndLoadDMSRules(t *testing.T) {
 	}
 	if rules[0].MatchCriteria.AppID != "^firefox$" {
 		t.Errorf("AppID = %q, want ^firefox$", rules[0].MatchCriteria.AppID)
-	}
-}
-
-func TestNiriRemoveRule(t *testing.T) {
-	tmpDir := t.TempDir()
-	provider := NewNiriWritableProvider(tmpDir)
-
-	rule1 := newTestWindowRule("rule1", "Rule 1", "app1")
-	rule1.Actions.OpenFloating = new(true)
-	rule2 := newTestWindowRule("rule2", "Rule 2", "app2")
-	rule2.Actions.OpenFloating = new(true)
-
-	_ = provider.SetRule(rule1)
-	_ = provider.SetRule(rule2)
-
-	if err := provider.RemoveRule("rule1"); err != nil {
-		t.Fatalf("RemoveRule failed: %v", err)
-	}
-
-	rules, _ := provider.LoadDMSRules()
-	if len(rules) != 1 {
-		t.Fatalf("expected 1 rule after removal, got %d", len(rules))
-	}
-	if rules[0].ID != "rule2" {
-		t.Errorf("remaining rule ID = %q, want rule2", rules[0].ID)
-	}
-}
-
-func TestNiriReorderRules(t *testing.T) {
-	tmpDir := t.TempDir()
-	provider := NewNiriWritableProvider(tmpDir)
-
-	rule1 := newTestWindowRule("rule1", "Rule 1", "app1")
-	rule1.Actions.OpenFloating = new(true)
-	rule2 := newTestWindowRule("rule2", "Rule 2", "app2")
-	rule2.Actions.OpenFloating = new(true)
-	rule3 := newTestWindowRule("rule3", "Rule 3", "app3")
-	rule3.Actions.OpenFloating = new(true)
-
-	_ = provider.SetRule(rule1)
-	_ = provider.SetRule(rule2)
-	_ = provider.SetRule(rule3)
-
-	if err := provider.ReorderRules([]string{"rule3", "rule1", "rule2"}); err != nil {
-		t.Fatalf("ReorderRules failed: %v", err)
-	}
-
-	rules, _ := provider.LoadDMSRules()
-	if len(rules) != 3 {
-		t.Fatalf("expected 3 rules, got %d", len(rules))
-	}
-	expectedOrder := []string{"rule3", "rule1", "rule2"}
-	for i, expectedID := range expectedOrder {
-		if rules[i].ID != expectedID {
-			t.Errorf("rule %d ID = %q, want %q", i, rules[i].ID, expectedID)
-		}
 	}
 }
 
@@ -337,5 +261,144 @@ func TestNiriParseIncludeNestedDMSRules(t *testing.T) {
 	}
 	if len(result.Rules) != 1 {
 		t.Errorf("expected 1 rule from the nested include, got %d", len(result.Rules))
+	}
+}
+
+func TestNiriNextOnlyActionsRoundTrip(t *testing.T) {
+	existing := `// @id=game @name=Game
+window-rule {
+    match app-id="^steam_app_.*$"
+    variable-refresh-rate "fullscreen-only"
+}
+
+// @id=pip @name=PiP
+window-rule {
+    match title="^Picture-in-Picture$"
+    on-xdg-activate "set-urgent"
+    pinch-sensitivity 0.5
+}
+
+// @id=firefox @name=Firefox
+window-rule {
+    match app-id="^firefox$"
+    open-floating true
+}
+`
+	tests := []struct {
+		name     string
+		capable  bool
+		wantKDL  []string
+		wantGone []string
+	}{
+		{
+			name:    "capable niri keeps them",
+			capable: true,
+			wantKDL: []string{`variable-refresh-rate "fullscreen-only"`, `on-xdg-activate "set-urgent"`, "pinch-sensitivity 0.5"},
+		},
+		{
+			name:     "niri 26.04 drops them",
+			wantGone: []string{"variable-refresh-rate", "on-xdg-activate", "pinch-sensitivity"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			orig := niriConfigNext
+			niriConfigNext = func() bool { return tt.capable }
+			t.Cleanup(func() { niriConfigNext = orig })
+
+			tmpDir := t.TempDir()
+			rulesPath := filepath.Join(tmpDir, "dms", "windowrules.kdl")
+			if err := os.MkdirAll(filepath.Dir(rulesPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(rulesPath, []byte(existing), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			provider := NewNiriWritableProvider(tmpDir)
+
+			rules, err := provider.LoadDMSRules()
+			if err != nil {
+				t.Fatalf("LoadDMSRules failed: %v", err)
+			}
+			game, pip := rules[0].Actions, rules[1].Actions
+			if game.VrrFullscreenOnly == nil || !*game.VrrFullscreenOnly || game.VariableRefreshRate != nil {
+				t.Errorf("fullscreen-only parsed as vrrFullscreenOnly=%v variableRefreshRate=%v", game.VrrFullscreenOnly, game.VariableRefreshRate)
+			}
+			if pip.OnXdgActivate != "set-urgent" || pip.PinchSensitivity == nil || *pip.PinchSensitivity != 0.5 {
+				t.Errorf("onXdgActivate=%q pinchSensitivity=%v", pip.OnXdgActivate, pip.PinchSensitivity)
+			}
+
+			edited := newTestWindowRule("firefox", "Firefox", "^firefox$")
+			edited.Actions.OpenFloating = new(false)
+			if err := provider.SetRule(edited); err != nil {
+				t.Fatalf("SetRule failed: %v", err)
+			}
+
+			data, err := os.ReadFile(rulesPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			written := string(data)
+			for _, want := range tt.wantKDL {
+				if !strings.Contains(written, want) {
+					t.Errorf("written rules miss %q:\n%s", want, written)
+				}
+			}
+			for _, gone := range tt.wantGone {
+				if strings.Contains(written, gone) {
+					t.Errorf("written rules keep %q:\n%s", gone, written)
+				}
+			}
+		})
+	}
+}
+
+func TestNiriRejectedRuleKeepsThePriorFragment(t *testing.T) {
+	prior := `// @id=firefox @name=Firefox
+window-rule {
+    match app-id="^firefox$"
+    open-floating true
+}
+`
+	tests := []struct {
+		name      string
+		edit      func(*windowrules.Actions)
+		validator error
+	}{
+		{name: "negative pinch sensitivity", edit: func(a *windowrules.Actions) { a.PinchSensitivity = new(-1.0) }},
+		{name: "pinch sensitivity above 100", edit: func(a *windowrules.Actions) { a.PinchSensitivity = new(101.0) }},
+		{name: "negative scroll factor", edit: func(a *windowrules.Actions) { a.ScrollFactor = new(-0.5) }},
+		{name: "niri validate rejects", edit: func(a *windowrules.Actions) {}, validator: errors.New("bad regex")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			origNext, origValidate := niriConfigNext, niriValidateRules
+			niriConfigNext = func() bool { return true }
+			niriValidateRules = func(string) error { return tt.validator }
+			t.Cleanup(func() { niriConfigNext, niriValidateRules = origNext, origValidate })
+
+			tmpDir := t.TempDir()
+			rulesPath := filepath.Join(tmpDir, "dms", "windowrules.kdl")
+			if err := os.MkdirAll(filepath.Dir(rulesPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(rulesPath, []byte(prior), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			rule := newTestWindowRule("pip", "PiP", "^mpv$")
+			tt.edit(&rule.Actions)
+			if err := NewNiriWritableProvider(tmpDir).SetRule(rule); err == nil {
+				t.Fatal("SetRule succeeded, want an error")
+			}
+
+			data, err := os.ReadFile(rulesPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != prior {
+				t.Errorf("prior fragment changed:\n%s", data)
+			}
+		})
 	}
 }

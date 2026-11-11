@@ -7,6 +7,7 @@ import qs.Services
 import qs.DCommon.Widgets
 import qs.Widgets
 import "../DCommon/Common/MaterialWallpaper.js" as Art
+import "../Common/WallpaperFormats.js" as WallpaperFormats
 
 DContextMenu {
     id: root
@@ -26,11 +27,16 @@ DContextMenu {
     readonly property bool materialWallpaper: currentWallpaper === ""
     readonly property var materialTarget: SessionData.materialWallpaperTarget(targetScreen?.name ?? "")
     readonly property var materialEntry: SessionData.materialWallpaperEntry(materialTarget)
-    readonly property string currentKey: materialWallpaper ? Art.resolvePreset(materialEntry.preset, SessionData.materialWallpaperProfiles) : currentWallpaper
+    readonly property bool listMode: WallpaperLibraryService.enabled
+    readonly property int libraryRevision: WallpaperLibraryService.revision
+    readonly property string currentKey: {
+        if (materialWallpaper)
+            return Art.resolvePreset(materialEntry.preset, SessionData.materialWallpaperProfiles);
+        return listMode ? WallpaperLibraryService.listedPath(currentWallpaper) : currentWallpaper;
+    }
 
     layerNamespace: "dms:desktop-context-menu"
     keyboardNavigable: true
-    itemHeight: Theme.listItemHeight + Theme.densityStepM
     itemFontSize: Theme.fontSizeMedium
     minMenuWidth: stripUnit * (stripCount + 1) + Theme.spacingS * (stripCount + 1)
 
@@ -77,6 +83,7 @@ DContextMenu {
         property string icon
         property string text
         property string trailingIcon
+        property real indent
         property bool keepOpen
         property bool hidden
         property var action
@@ -95,6 +102,7 @@ DContextMenu {
         id: allSettingsEntry
         icon: "tune"
         text: I18n.tr("All settings")
+        indent: Theme.spacingS
         hidden: !root.settingsExpanded
         action: () => PopoutService.openSettings()
     }
@@ -103,6 +111,7 @@ DContextMenu {
         id: desktopWidgetsEntry
         icon: "widgets"
         text: I18n.tr("Desktop widgets")
+        indent: Theme.spacingS
         hidden: !root.settingsExpanded
         action: () => PopoutService.openSettingsWithTab("desktop_widgets")
     }
@@ -111,6 +120,7 @@ DContextMenu {
         id: displaysEntry
         icon: "monitor"
         text: I18n.tr("Displays")
+        indent: Theme.spacingS
         hidden: !root.settingsExpanded
         action: () => PopoutService.openSettingsWithTab("displays")
     }
@@ -119,10 +129,15 @@ DContextMenu {
     onRenderActiveChanged: {
         settingsExpanded = false;
         stripItems = renderActive && materialWallpaper ? leadWithCurrent(presetItems()) : [];
+        fillFromLibrary();
         if (!renderActive)
             widgetInstanceId = "";
     }
-    onWallpaperDirChanged: stripItems = []
+    onLibraryRevisionChanged: fillFromLibrary()
+    onWallpaperDirChanged: {
+        if (!listMode)
+            stripItems = [];
+    }
 
     function openForWidget(screen, x, y, instanceId) {
         widgetInstanceId = instanceId;
@@ -138,14 +153,7 @@ DContextMenu {
     }
 
     function setWallpaper(path) {
-        if (SessionData.perMonitorWallpaper && targetScreen) {
-            SessionData.setMonitorWallpaper(targetScreen.name, path);
-            SessionData.setMonitorCyclingFolderPath(targetScreen.name, "");
-            return;
-        }
-        SessionData.setWallpaper(path);
-        SessionData.wallpaperCyclingFolderPath = "";
-        SessionData.saveSettings();
+        SessionData.applyWallpaperPick(targetScreen?.name ?? "", path);
     }
 
     // Order is fixed per open so a pick moves the check, not the list.
@@ -166,20 +174,32 @@ DContextMenu {
                 }));
     }
 
-    function loadStrip(model) {
-        const items = [];
-        for (let i = 0; i < model.count; i++) {
-            const path = model.get(i, "filePath");
-            items.push({
-                key: path,
-                path
-            });
-        }
-        stripItems = leadWithCurrent(items);
+    function loadStrip(paths) {
+        stripItems = leadWithCurrent(paths.map(path => ({
+                    key: path,
+                    path
+                })));
+    }
+
+    function loadFolderStrip(model) {
+        const paths = [];
+        for (let i = 0; i < model.count; i++)
+            paths.push(model.get(i, "filePath"));
+        loadStrip(paths);
+    }
+
+    function fillFromLibrary() {
+        if (renderActive && listMode && !materialWallpaper && stripItems.length === 0 && WallpaperLibraryService.loaded)
+            loadStrip(WallpaperLibraryService.selected(WallpaperLibraryService.items).map(item => item.path));
+    }
+
+    Ref {
+        service: WallpaperLibraryService
+        active: root.renderActive && root.listMode && root.wallpaperDir !== ""
     }
 
     Loader {
-        active: root.renderActive && root.wallpaperDir !== ""
+        active: root.renderActive && root.wallpaperDir !== "" && !root.listMode
 
         sourceComponent: Item {
             FolderListModel {
@@ -187,11 +207,11 @@ DContextMenu {
                 showDirs: false
                 showDotAndDotDot: false
                 caseSensitive: false
-                nameFilters: ["*.jpg", "*.jpeg", "*.png", "*.bmp", "*.gif", "*.webp", "*.jxl", "*.avif", "*.heif", "*.exr", "*.svg"]
+                nameFilters: WallpaperFormats.nameFilters(true)
                 folder: "file://" + root.wallpaperDir.split("/").map(s => encodeURIComponent(s)).join("/")
                 onStatusChanged: {
                     if (folderModel.status === FolderListModel.Ready)
-                        root.loadStrip(folderModel);
+                        root.loadFolderStrip(folderModel);
                 }
             }
         }
@@ -202,8 +222,9 @@ DContextMenu {
 
         Item {
             DCarousel {
+                x: root.menuPadding
                 y: Theme.spacingXS
-                width: parent.width
+                width: parent.width - root.menuPadding * 2
                 height: root.stripUnit * 2
                 preferredItemWidth: width / 2
                 itemRadius: Theme.cornerRadiusM
@@ -228,7 +249,7 @@ DContextMenu {
                             id: imageThumb
 
                             CachingImage {
-                                imagePath: thumb.modelData.path
+                                imagePath: VideoWallpaperService.imageFor(thumb.modelData.path)
                                 maxCacheSize: 256
                                 animate: false
                             }

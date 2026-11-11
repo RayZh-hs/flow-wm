@@ -35,9 +35,9 @@ Singleton {
     }
 
     Connections {
-        target: SystemTray
-        function onItemUnregistered(item) {
-            root._trayKeyByItem.delete(item);
+        target: SystemTray.items
+        function onObjectRemovedPost(object) {
+            root._trayKeyByItem.delete(object);
         }
     }
 
@@ -231,7 +231,7 @@ Singleton {
                 if (path)
                     IconIndex.add(index, path, [request.dir], [request.dir]);
             }
-            const found = index.paths[request.name];
+            const found = index.paths.get(request.name);
             const url = found ? Paths.toFileUrl(found) : Paths.themedIconPath(request.name);
             if (url)
                 _iconFallbacks[icon] = url;

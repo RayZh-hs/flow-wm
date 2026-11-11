@@ -3,9 +3,7 @@ package distros
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -74,8 +72,8 @@ func (o *OpenSUSEDistribution) DetectDependenciesWithTerminal(ctx context.Contex
 	// Common detections using base methods
 	dependencies = append(dependencies, o.detectGit())
 	dependencies = append(dependencies, o.detectWindowManager(wm))
-	dependencies = append(dependencies, o.detectQuickshell())
-	dependencies = append(dependencies, o.detectDMSGreeter())
+	dependencies = append(dependencies, o.detectDuxQtBase())
+	dependencies = append(dependencies, o.detectGreeterPackage(o.packageInstalled))
 	dependencies = append(dependencies, o.detectXDGPortal())
 	dependencies = append(dependencies, o.detectAccountsService())
 
@@ -92,7 +90,8 @@ func (o *OpenSUSEDistribution) DetectDependenciesWithTerminal(ctx context.Contex
 
 	dependencies = append(dependencies, o.detectMatugen())
 	dependencies = append(dependencies, o.detectDanksearch())
-	dependencies = append(dependencies, withGitVariant(o.detectDankCalendar(), o.packageInstalled("dankcalendar-git")))
+	dependencies = append(dependencies, o.detectCalendarPackage(o.packageInstalled))
+	dependencies = append(dependencies, o.detectFilesPackage(o.packageInstalled))
 
 	return dependencies, nil
 }
@@ -132,10 +131,144 @@ func (o *OpenSUSEDistribution) SwapVariants(ctx context.Context, swaps []Variant
 	return o.runWithProgress(privesc.ExecCommand(ctx, sudoPassword, command), progressChan, PhaseSystemPackages, 0.40, 0.85)
 }
 
-func (o *OpenSUSEDistribution) detectDMSGreeter() deps.Dependency {
-	gitInstalled := o.packageInstalled("dms-greeter-git")
-	dep := o.detectOptionalPackage("dms-greeter", "Dux Shell greetd greeter", gitInstalled || o.packageInstalled("dms-greeter"))
-	return withGitVariant(dep, gitInstalled)
+func (o *OpenSUSEDistribution) RepoMoves() []RepoMove {
+	return obsZypperChannel.moves(repoPathExists)
+}
+
+func (o *OpenSUSEDistribution) ApplyRepoMoves(ctx context.Context, moves []RepoMove, sudoPassword string, progressChan chan<- InstallProgressMsg) error {
+	adds := repoMoveAdds(moves)
+	if err := o.enableOBSRepos(ctx, adds, sudoPassword, progressChan); err != nil {
+		return err
+	}
+	if command := zypperVendorSwitch(moves, parseRPMDistributions(rpmQueryDistributions())); command != "" {
+		if len(adds) == 0 {
+			if err := o.runWithProgress(privescExec(ctx, sudoPassword, zypperKeyRefresh), progressChan, PhaseSystemPackages, 0.26, 0.28); err != nil {
+				return fmt.Errorf("failed to refresh the new repositories: %w", err)
+			}
+		}
+		progressChan <- InstallProgressMsg{
+			Phase:       PhaseSystemPackages,
+			Progress:    0.28,
+			Step:        "Switching installed packages to the new repositories...",
+			NeedsSudo:   true,
+			CommandInfo: "sudo " + command,
+		}
+		// Runs before the legacy repos go, so a failed switch is retried on the next run.
+		if err := o.runWithProgress(privescExec(ctx, sudoPassword, command), progressChan, PhaseSystemPackages, 0.28, 0.30); err != nil {
+			return fmt.Errorf("failed to switch packages to the new repositories: %w", err)
+		}
+	}
+	for _, move := range repoMoveRemoves(moves) {
+		command := "zypper removerepo " + obsZypperAlias(move.Old)
+		progressChan <- InstallProgressMsg{
+			Phase:       PhaseSystemPackages,
+			Progress:    0.30,
+			Step:        fmt.Sprintf("Removing OBS repo %s...", move.Old),
+			NeedsSudo:   true,
+			CommandInfo: "sudo " + command,
+		}
+		if err := o.runWithProgress(privescExec(ctx, sudoPassword, command), progressChan, PhaseSystemPackages, 0.30, 0.35); err != nil {
+			return fmt.Errorf("failed to remove OBS repo %s: %w", move.Old, err)
+		}
+	}
+	return nil
+}
+
+func (o *OpenSUSEDistribution) RepoMoveCommands(moves []RepoMove) []string {
+	osInfo, err := GetOSInfo()
+	if err != nil {
+		osInfo = &OSInfo{}
+	}
+	return opensuseRepoMoveCommands(moves, opensuseOBSDist(osInfo), parseRPMDistributions(rpmQueryDistributions()))
+}
+
+func opensuseRepoMoveCommands(moves []RepoMove, dist string, installed []rpmPackage) []string {
+	var commands []string
+	adds := repoMoveAdds(moves)
+	for _, add := range adds {
+		commands = append(commands, "sudo zypper addrepo -f "+obsZypperRepoURL(add.RepoURL, dist))
+	}
+	switchCommand := zypperVendorSwitch(moves, installed)
+	// Repos added by hand may never have had their signing key accepted.
+	if len(adds) > 0 || switchCommand != "" {
+		commands = append(commands, "sudo "+zypperKeyRefresh)
+	}
+	if switchCommand != "" {
+		commands = append(commands, "sudo "+switchCommand)
+	}
+	for _, move := range repoMoveRemoves(moves) {
+		commands = append(commands, "sudo zypper removerepo "+obsZypperAlias(move.Old))
+	}
+	return commands
+}
+
+const zypperKeyRefresh = "zypper --gpg-auto-import-keys refresh"
+
+type rpmPackage struct {
+	name, version, project string
+}
+
+// OBS stamps Distribution "<project> / <repository>", which outlives the repo being removed.
+func rpmQueryDistributions() string {
+	out, _ := exec.Command("rpm", "-qa", "--qf", `%{NAME}\t%{VERSION}\t%{DISTRIBUTION}\n`).Output()
+	return string(out)
+}
+
+func parseRPMDistributions(out string) []rpmPackage {
+	var packages []rpmPackage
+	for line := range strings.Lines(out) {
+		fields := strings.Split(strings.TrimRight(line, "\n"), "\t")
+		if len(fields) != 3 {
+			continue
+		}
+		project, _, _ := strings.Cut(fields[2], " / ")
+		packages = append(packages, rpmPackage{fields[0], fields[1], strings.TrimSpace(project)})
+	}
+	return packages
+}
+
+// zypper keeps packages on their vendor, so whatever a legacy project built is reinstalled from the new one.
+// OBS restarts the release counter in a new project, so compare Version only.
+func zypperVendorSwitch(moves []RepoMove, installed []rpmPackage) string {
+	var froms, capabilities []string
+	for _, move := range moves {
+		if !move.newEnabled() {
+			continue
+		}
+		from := "--from " + obsZypperAlias(move.New)
+		for _, pkg := range installed {
+			if pkg.project != move.Old {
+				continue
+			}
+			name := pkg.name
+			if renamed, ok := renamedTo(name); ok {
+				name = renamed
+			}
+			capabilities = append(capabilities, fmt.Sprintf("'%s>=%s'", name, pkg.version))
+			if !slices.Contains(froms, from) {
+				froms = append(froms, from)
+			}
+		}
+	}
+	if len(capabilities) == 0 {
+		return ""
+	}
+	return "zypper --non-interactive install --oldpackage --allow-vendor-change " + strings.Join(froms, " ") + " " + strings.Join(capabilities, " ")
+}
+
+func opensuseOBSDist(osInfo *OSInfo) string {
+	switch osInfo.Distribution.ID {
+	case "opensuse-leap":
+		// The projects name their Leap repositories by bare version, e.g. 16.0.
+		return osInfo.VersionID
+	case "opensuse-slowroll":
+		return "openSUSE_Slowroll"
+	}
+	return "openSUSE_Tumbleweed"
+}
+
+func obsZypperRepoURL(repo, dist string) string {
+	return obsBaseURL(repo, dist) + "/" + repo + ".repo"
 }
 
 func (o *OpenSUSEDistribution) GetPackageMapping(wm deps.WindowManager) map[string]PackageMapping {
@@ -153,12 +286,13 @@ func (o *OpenSUSEDistribution) GetPackageMappingWithVariants(wm deps.WindowManag
 
 		// DMS packages from OBS
 		"dms (Dux Shell)": o.getDmsMapping(variants["dms (Dux Shell)"]),
-		"quickshell":      o.getQuickshellMapping(variants["quickshell"]),
-		"dms-greeter":     variantMapping("dms-greeter", variants["dms-greeter"], RepoTypeOBS, "home:AvengeMedia:danklinux"),
-		"ghostty":         {Name: "ghostty", Repository: RepoTypeOBS, RepoURL: "home:AvengeMedia:danklinux"},
-		"matugen":         {Name: "matugen", Repository: RepoTypeOBS, RepoURL: "home:AvengeMedia:danklinux"},
-		"danksearch":      {Name: "danksearch", Repository: RepoTypeOBS, RepoURL: "home:AvengeMedia:danklinux"},
-		"dankcalendar":    variantMapping("dankcalendar", variants["dankcalendar"], RepoTypeOBS, "home:AvengeMedia:danklinux"),
+		"dux-qt-base":     {Name: "libdux-qt-base0", Repository: RepoTypeOBS, RepoURL: obsDeps},
+		"dux-greeter":     variantMapping("dux-greeter", variants["dux-greeter"], RepoTypeOBS, obsDeps),
+		"ghostty":         {Name: "ghostty", Repository: RepoTypeOBS, RepoURL: obsDeps},
+		"matugen":         {Name: "matugen", Repository: RepoTypeOBS, RepoURL: obsDeps},
+		"dux-search":      {Name: "dux-search", Repository: RepoTypeOBS, RepoURL: obsDeps},
+		"dux-calendar":    variantMapping("dux-calendar", variants["dux-calendar"], RepoTypeOBS, obsDeps),
+		"dux-files":       variantMapping("dux-files", variants["dux-files"], RepoTypeOBS, obsDeps),
 	}
 
 	switch wm {
@@ -179,28 +313,21 @@ func (o *OpenSUSEDistribution) GetPackageMappingWithVariants(wm deps.WindowManag
 
 func (o *OpenSUSEDistribution) getDmsMapping(variant deps.PackageVariant) PackageMapping {
 	if variant == deps.VariantGit {
-		return PackageMapping{Name: "dms-git", Repository: RepoTypeOBS, RepoURL: "home:AvengeMedia:dms-git"}
+		return PackageMapping{Name: "dms-git", Repository: RepoTypeOBS, RepoURL: obsDMSGit}
 	}
-	return PackageMapping{Name: "dms", Repository: RepoTypeOBS, RepoURL: "home:AvengeMedia:dms"}
-}
-
-func (o *OpenSUSEDistribution) getQuickshellMapping(variant deps.PackageVariant) PackageMapping {
-	if forceQuickshellGit || variant == deps.VariantGit {
-		return PackageMapping{Name: "quickshell-git", Repository: RepoTypeOBS, RepoURL: "home:AvengeMedia:danklinux"}
-	}
-	return PackageMapping{Name: "quickshell", Repository: RepoTypeOBS, RepoURL: "home:AvengeMedia:danklinux"}
+	return PackageMapping{Name: "dms", Repository: RepoTypeOBS, RepoURL: obsDMS}
 }
 
 func (o *OpenSUSEDistribution) getNiriMapping(variant deps.PackageVariant) PackageMapping {
 	if variant == deps.VariantGit {
-		return PackageMapping{Name: "niri-git", Repository: RepoTypeOBS, RepoURL: "home:AvengeMedia:danklinux"}
+		return PackageMapping{Name: "niri-git", Repository: RepoTypeOBS, RepoURL: obsDeps}
 	}
 	return PackageMapping{Name: "niri", Repository: RepoTypeSystem}
 }
 
 func (o *OpenSUSEDistribution) getXwaylandSatelliteMapping(variant deps.PackageVariant) PackageMapping {
 	if variant == deps.VariantGit {
-		return PackageMapping{Name: "xwayland-satellite-git", Repository: RepoTypeOBS, RepoURL: "home:AvengeMedia:danklinux"}
+		return PackageMapping{Name: "xwayland-satellite-git", Repository: RepoTypeOBS, RepoURL: obsDeps}
 	}
 	return PackageMapping{Name: "xwayland-satellite", Repository: RepoTypeSystem}
 }
@@ -490,26 +617,16 @@ func (o *OpenSUSEDistribution) enableOBSRepos(ctx context.Context, obsPkgs []Pac
 		return fmt.Errorf("failed to get OS info: %w", err)
 	}
 
-	obsDistroVersion := "openSUSE_Tumbleweed"
-	switch osInfo.Distribution.ID {
-	case "opensuse-leap":
-		obsDistroVersion = fmt.Sprintf("openSUSE_Leap_%s", osInfo.VersionID)
-	case "opensuse-slowroll":
-		obsDistroVersion = "openSUSE_Slowroll"
-	}
+	obsDistroVersion := opensuseOBSDist(osInfo)
 
 	for _, pkg := range obsPkgs {
 		if pkg.RepoURL != "" && !enabledRepos[pkg.RepoURL] {
 			o.log(fmt.Sprintf("Enabling OBS repository: %s", pkg.RepoURL))
 
-			// RepoURL format: "home:AvengeMedia:danklinux"
-			repoPath := strings.ReplaceAll(pkg.RepoURL, ":", ":/")
-			repoName := strings.ReplaceAll(pkg.RepoURL, ":", "-")
-			repoURL := fmt.Sprintf("https://download.opensuse.org/repositories/%s/%s/%s.repo",
-				repoPath, obsDistroVersion, pkg.RepoURL)
+			repoURL := obsZypperRepoURL(pkg.RepoURL, obsDistroVersion)
 
-			checkCmd := exec.CommandContext(ctx, "zypper", "repos", repoName)
-			if checkCmd.Run() == nil {
+			// zypper stores the repo under the alias from the .repo section header, home_<owner>_<project>.
+			if repoPathExists(obsZypperRepoFile(pkg.RepoURL)) {
 				o.log(fmt.Sprintf("OBS repo %s already exists, skipping", pkg.RepoURL))
 				enabledRepos[pkg.RepoURL] = true
 				continue
@@ -695,132 +812,6 @@ func (o *OpenSUSEDistribution) installZypperPackages(ctx context.Context, packag
 	return nil
 }
 
-func (o *OpenSUSEDistribution) installQuickshell(ctx context.Context, variant deps.PackageVariant, sudoPassword string, progressChan chan<- InstallProgressMsg) error {
-	o.log("Installing quickshell from source (with openSUSE-specific build flags)...")
-
-	homeDir := os.Getenv("HOME")
-	if homeDir == "" {
-		return fmt.Errorf("HOME environment variable not set")
-	}
-
-	cacheDir := filepath.Join(homeDir, ".cache", "duxinstall")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-		return fmt.Errorf("failed to create cache directory: %w", err)
-	}
-
-	tmpDir := filepath.Join(cacheDir, "quickshell-build")
-	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
-		return fmt.Errorf("failed to create temp directory: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	progressChan <- InstallProgressMsg{
-		Phase:       PhaseSystemPackages,
-		Progress:    0.1,
-		Step:        "Cloning quickshell repository...",
-		IsComplete:  false,
-		CommandInfo: "git clone https://github.com/quickshell-mirror/quickshell.git",
-	}
-
-	var cloneCmd *exec.Cmd
-	if forceQuickshellGit || variant == deps.VariantGit {
-		cloneCmd = exec.CommandContext(ctx, "git", "clone", "https://github.com/quickshell-mirror/quickshell.git", tmpDir)
-	} else {
-		latestTag := o.getLatestQuickshellTag(ctx)
-		if latestTag != "" {
-			o.log(fmt.Sprintf("Using latest quickshell tag: %s", latestTag))
-			cloneCmd = exec.CommandContext(ctx, "git", "clone", "--branch", latestTag, "https://github.com/quickshell-mirror/quickshell.git", tmpDir)
-		} else {
-			o.log("Warning: failed to fetch latest tag, using default branch")
-			cloneCmd = exec.CommandContext(ctx, "git", "clone", "https://github.com/quickshell-mirror/quickshell.git", tmpDir)
-		}
-	}
-	if err := cloneCmd.Run(); err != nil {
-		return fmt.Errorf("failed to clone quickshell: %w", err)
-	}
-
-	buildDir := tmpDir + "/build"
-	if err := os.MkdirAll(buildDir, 0o755); err != nil {
-		return fmt.Errorf("failed to create build directory: %w", err)
-	}
-
-	progressChan <- InstallProgressMsg{
-		Phase:       PhaseSystemPackages,
-		Progress:    0.3,
-		Step:        "Configuring quickshell build (with openSUSE flags)...",
-		IsComplete:  false,
-		CommandInfo: "cmake -B build -S . -G Ninja",
-	}
-
-	// Get optflags from rpm
-	optflagsCmd := exec.CommandContext(ctx, "rpm", "--eval", "%{optflags}")
-	optflagsOutput, err := optflagsCmd.Output()
-	optflags := strings.TrimSpace(string(optflagsOutput))
-	if err != nil || optflags == "" {
-		o.log("Warning: Could not get optflags from rpm, using default -O2 -g")
-		optflags = "-O2 -g"
-	}
-
-	// Set openSUSE-specific CFLAGS
-	customCFLAGS := fmt.Sprintf("%s -I/usr/include/wayland", optflags)
-
-	configureCmd := exec.CommandContext(ctx, "cmake", "-GNinja", "-B", "build",
-		"-DCMAKE_BUILD_TYPE=RelWithDebInfo",
-		"-DCRASH_REPORTER=off",
-		"-DCMAKE_CXX_STANDARD=20")
-	configureCmd.Dir = tmpDir
-	configureCmd.Env = append(os.Environ(),
-		"TMPDIR="+cacheDir,
-		"CFLAGS="+customCFLAGS,
-		"CXXFLAGS="+customCFLAGS)
-
-	o.log(fmt.Sprintf("Using CFLAGS: %s", customCFLAGS))
-
-	output, err := configureCmd.CombinedOutput()
-	if err != nil {
-		o.log(fmt.Sprintf("cmake configure failed. Output:\n%s", string(output)))
-		return fmt.Errorf("failed to configure quickshell: %w\nCMake output:\n%s", err, string(output))
-	}
-
-	o.log(fmt.Sprintf("cmake configure successful. Output:\n%s", string(output)))
-
-	progressChan <- InstallProgressMsg{
-		Phase:       PhaseSystemPackages,
-		Progress:    0.4,
-		Step:        "Building quickshell (this may take a while)...",
-		IsComplete:  false,
-		CommandInfo: "cmake --build build",
-	}
-
-	buildCmd := exec.CommandContext(ctx, "cmake", "--build", "build")
-	buildCmd.Dir = tmpDir
-	buildCmd.Env = append(os.Environ(),
-		"TMPDIR="+cacheDir,
-		"CFLAGS="+customCFLAGS,
-		"CXXFLAGS="+customCFLAGS)
-	if err := o.runWithProgressStep(buildCmd, progressChan, PhaseSystemPackages, 0.4, 0.8, "Building quickshell..."); err != nil {
-		return fmt.Errorf("failed to build quickshell: %w", err)
-	}
-
-	progressChan <- InstallProgressMsg{
-		Phase:       PhaseSystemPackages,
-		Progress:    0.8,
-		Step:        "Installing quickshell...",
-		IsComplete:  false,
-		NeedsSudo:   true,
-		CommandInfo: "sudo cmake --install build",
-	}
-
-	installCmd := privesc.ExecCommand(ctx, sudoPassword, "cmake --install build")
-	installCmd.Dir = tmpDir
-	if err := installCmd.Run(); err != nil {
-		return fmt.Errorf("failed to install quickshell: %w", err)
-	}
-
-	o.log("quickshell installed successfully from source")
-	return nil
-}
-
 func (o *OpenSUSEDistribution) installRust(ctx context.Context, sudoPassword string, progressChan chan<- InstallProgressMsg) error {
 	if o.commandExists("cargo") {
 		return nil
@@ -877,15 +868,8 @@ func (o *OpenSUSEDistribution) InstallManualPackages(ctx context.Context, packag
 	}
 
 	for _, pkg := range packages {
-		variant := variantMap[pkg]
-		if pkg == "quickshell" {
-			if err := o.installQuickshell(ctx, variant, sudoPassword, progressChan); err != nil {
-				return fmt.Errorf("failed to install quickshell: %w", err)
-			}
-		} else {
-			if err := o.ManualPackageInstaller.InstallManualPackages(ctx, []string{pkg}, variantMap, sudoPassword, progressChan); err != nil {
-				return fmt.Errorf("failed to install %s: %w", pkg, err)
-			}
+		if err := o.ManualPackageInstaller.InstallManualPackages(ctx, []string{pkg}, variantMap, sudoPassword, progressChan); err != nil {
+			return fmt.Errorf("failed to install %s: %w", pkg, err)
 		}
 	}
 

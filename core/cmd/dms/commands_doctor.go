@@ -2,17 +2,23 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"debug/elf"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/duxlabs-dev/dux-go/qtbase"
+	"github.com/duxlabs-dev/dux-shell/core/internal/qtbaseembed"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/duxlabs-dev/dux-shell/core/internal/blur"
@@ -99,7 +105,6 @@ var (
 	mangowcVersionRegex    = regexp.MustCompile(`mango (\d+\.\d+\.\d+)`)
 	miracleVersionRegex    = regexp.MustCompile(`miracle-wm v?(\d+\.\d+\.\d+)`)
 	scrollVersionRegex     = regexp.MustCompile(`scroll version (\d+\.\d+)`)
-	aqueousVersionRegex    = regexp.MustCompile(`(?i)aqueous v?(\d+\.\d+(?:\.\d+)?)`)
 	umbrielVersionRegex    = regexp.MustCompile(`umbriel (\d+\.\d+\.\d+)`)
 )
 
@@ -215,11 +220,13 @@ func runDoctor(cmd *cobra.Command, args []string) {
 
 	qsFeatures, qsMissingFeatures := checkQuickshellFeatures()
 
+	versions, qsVersion := checkVersions(qsMissingFeatures)
 	results := slices.Concat(
 		checkSystemInfo(),
-		checkVersions(qsMissingFeatures),
+		versions,
 		checkDMSInstallation(),
-		checkWindowManagers(),
+		checkPackageRepos(),
+		checkWindowManagers(qsVersion),
 		qsFeatures,
 		checkOptionalDependencies(),
 		checkConfigurationFiles(),
@@ -363,20 +370,46 @@ func checkEnvVar(name string) []checkResult {
 }
 
 func checkXDGMenuPrefix() []checkResult {
-	menuPrefix := os.Getenv("XDG_MENU_PREFIX")
+	shellUnderSystemd := dmsServiceState().active == "active"
+	return xdgMenuPrefixResult(os.Getenv("XDG_MENU_PREFIX"), shellUnderSystemd, sessionEnvValue)
+}
+
+// Compositor environment blocks never reach dms.service or anything DMS launches.
+func xdgMenuPrefixResult(menuPrefix string, shellUnderSystemd bool, sessionEnv func(string) string) []checkResult {
+	url := doctorDocsURL + "#xdg-menu-prefix"
 	if menuPrefix != "" {
-		if checkXDGMenuFile(menuPrefix) {
-			return []checkResult{{catEnvironment, "XDG_MENU_PREFIX", statusInfo, menuPrefix, "", doctorDocsURL + "#xdg-menu-prefix"}}
+		if !checkXDGMenuFile(menuPrefix) {
+			return []checkResult{{catEnvironment, "XDG_MENU_PREFIX", statusWarn, fmt.Sprintf("%s (menu file not found)", menuPrefix), fmt.Sprintf("Dolphin 'Open with…' dialog may be empty. Ensure %sapplications.menu exists in ~/.config/menus or /etc/xdg/menus.", menuPrefix), url}}
 		}
-		return []checkResult{{catEnvironment, "XDG_MENU_PREFIX", statusWarn, fmt.Sprintf("%s (menu file not found)", menuPrefix), fmt.Sprintf("Dolphin 'Open with…' dialog may be empty. Ensure %sapplications.menu exists in ~/.config/menus or /etc/xdg/menus.", menuPrefix), doctorDocsURL + "#xdg-menu-prefix"}}
+		if shellUnderSystemd && sessionEnv("XDG_MENU_PREFIX") == "" {
+			return []checkResult{{catEnvironment, "XDG_MENU_PREFIX", statusWarn, fmt.Sprintf("%s (not in the systemd user environment)", menuPrefix), fmt.Sprintf("dms.service and apps launched from DMS only see the systemd user environment. Set XDG_MENU_PREFIX=%s in ~/.config/environment.d/ as well; a compositor environment block does not reach them.", menuPrefix), url}}
+		}
+		return []checkResult{{catEnvironment, "XDG_MENU_PREFIX", statusInfo, menuPrefix, "", url}}
 	}
 	if _, err := exec.LookPath("keditfiletype"); err == nil {
-		return []checkResult{{catEnvironment, "XDG_MENU_PREFIX", statusWarn, "Not set", "Dolphin file associations and 'Open with…' dialog may be empty. Set XDG_MENU_PREFIX=plasma- in your compositor's environment block.", doctorDocsURL + "#xdg-menu-prefix"}}
+		hint := "Dolphin file associations and 'Open with…' dialog may be empty. Set XDG_MENU_PREFIX=plasma- in your compositor's environment block."
+		if shellUnderSystemd {
+			hint = "Dolphin file associations and 'Open with…' dialog may be empty. dms.service and apps launched from DMS only see the systemd user environment, so set XDG_MENU_PREFIX=plasma- in ~/.config/environment.d/; a compositor environment block does not reach them."
+		}
+		return []checkResult{{catEnvironment, "XDG_MENU_PREFIX", statusWarn, "Not set", hint, url}}
 	}
 	if doctorVerbose {
-		return []checkResult{{catEnvironment, "XDG_MENU_PREFIX", statusInfo, "Not set", "", doctorDocsURL + "#xdg-menu-prefix"}}
+		return []checkResult{{catEnvironment, "XDG_MENU_PREFIX", statusInfo, "Not set", "", url}}
 	}
 	return nil
+}
+
+func sessionEnvValue(name string) string {
+	output, err := exec.Command("systemctl", "--user", "show-environment").Output()
+	if err != nil {
+		return ""
+	}
+	for line := range strings.SplitSeq(string(output), "\n") {
+		if value, ok := strings.CutPrefix(line, name+"="); ok {
+			return value
+		}
+	}
+	return ""
 }
 
 // qtQueryBinaries are the Qt build tools that can be asked where Qt looks for
@@ -684,18 +717,18 @@ func readOSRelease() map[string]string {
 	return result
 }
 
-func checkVersions(qsMissingFeatures bool) []checkResult {
+func checkVersions(qsMissingFeatures bool) (results []checkResult, qsSemver string) {
 	dmsCliPath, _ := os.Executable()
 	dmsCliDetails := ""
 	if doctorVerbose {
 		dmsCliDetails = dmsCliPath
 	}
 
-	results := []checkResult{
+	results = []checkResult{
 		{catVersions, "DMS CLI", statusOK, formatVersion(Version), dmsCliDetails, doctorDocsURL + "#dms-cli"},
 	}
 
-	qsVersion, qsStatus, qsPath, qsDetails := getQuickshellVersionInfo(qsMissingFeatures)
+	qsVersion, qsStatus, qsPath, qsDetails, qsSemver := getQuickshellVersionInfo(qsMissingFeatures)
 	if doctorVerbose && qsPath != "" && qsDetails == "" {
 		qsDetails = qsPath
 	}
@@ -708,7 +741,7 @@ func checkVersions(qsMissingFeatures bool) []checkResult {
 		results = append(results, checkResult{catVersions, "DMS Shell", statusError, "Not installed or not detected", "Run 'dms setup' to install", doctorDocsURL + "#dms-shell"})
 	}
 
-	return results
+	return results, qsSemver
 }
 
 func getDMSShellVersion() (version, path string) {
@@ -731,43 +764,44 @@ func getDMSShellVersion() (version, path string) {
 	return "", ""
 }
 
-func getQuickshellVersionInfo(missingFeatures bool) (string, status, string, string) {
-	if !utils.CommandExists("qs") {
-		return "Not installed", statusError, "", ""
+func getQuickshellVersionInfo(missingFeatures bool) (display string, st status, path, details, semver string) {
+	qsPath, err := qtbaseembed.Resolve()
+	if err != nil {
+		return "Not installed", statusError, "", "Install the dux-qt-base package", ""
 	}
 
-	qsPath, _ := exec.LookPath("qs")
-
-	output, err := exec.Command("qs", "--version").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	output, err := qtbase.Command(ctx, "--version").Output()
 	if err != nil {
-		details := "Run 'qs --version' to inspect the failure."
+		details := "Run 'dms qs --version' to inspect the failure."
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			details = quickshellVersionFailureDetails(string(exitErr.Stderr))
 		}
-		return "Installed (version check failed)", statusWarn, qsPath, details
+		return "Unavailable (version check failed)", statusError, qsPath, details, ""
 	}
 
 	fullVersion := strings.TrimSpace(string(output))
 	if matches := quickshellVersionRegex.FindStringSubmatch(fullVersion); len(matches) >= 2 {
 		if version.CompareVersions(matches[1], "0.2.0") < 0 {
-			return fmt.Sprintf("%s (needs >= 0.2.0)", fullVersion), statusError, qsPath, ""
+			return fmt.Sprintf("%s (needs >= 0.2.0)", fullVersion), statusError, qsPath, "", matches[1]
 		}
 		if missingFeatures {
-			return fullVersion, statusWarn, qsPath, ""
+			return fullVersion, statusWarn, qsPath, "", matches[1]
 		}
-		return fullVersion, statusOK, qsPath, ""
+		return fullVersion, statusOK, qsPath, "", matches[1]
 	}
 
-	return fullVersion, statusWarn, qsPath, ""
+	return fullVersion, statusWarn, qsPath, "", ""
 }
 
 func quickshellVersionFailureDetails(stderr string) string {
 	if strings.Contains(stderr, "undefined symbol:") && strings.Contains(stderr, "Qt_6_PRIVATE_API") {
-		return "Quickshell is incompatible with the installed Qt libraries. Rebuild or reinstall Quickshell against the current Qt version."
+		return "dux-qt-base is incompatible with the installed Qt libraries. Update or rebuild dux-qt-base against the current Qt version."
 	}
 
-	return "Run 'qs --version' to inspect the failure."
+	return "Run 'dms qs --version' to inspect the failure."
 }
 
 func checkDMSInstallation() []checkResult {
@@ -804,7 +838,37 @@ func checkDMSInstallation() []checkResult {
 	return results
 }
 
-func checkWindowManagers() []checkResult {
+func checkPackageRepos() []checkResult {
+	osInfo, err := distros.GetOSInfo()
+	if err != nil {
+		return nil
+	}
+	distro, err := distros.NewDistribution(osInfo.Distribution.ID, nil)
+	if err != nil {
+		return nil
+	}
+	return packageReposResult(distro)
+}
+
+func packageReposResult(distro distros.Distribution) []checkResult {
+	moves, ok := distros.PlanRepoMoves(distro)
+	if !ok {
+		return nil
+	}
+	url := doctorDocsURL + "#package-repos"
+	legacy := distros.LegacyRepoPaths(moves)
+	if len(legacy) > 0 {
+		return []checkResult{{catInstallation, "Package Repos", statusWarn, "Legacy repositories, run: " + migrateDuxCommand, strings.Join(legacy, ", "), url}}
+	}
+	for _, move := range moves {
+		if move.NewPresent {
+			return []checkResult{{catInstallation, "Package Repos", statusOK, "Current", "", url}}
+		}
+	}
+	return []checkResult{{catInstallation, "Package Repos", statusInfo, "No DMS package repositories", "", url}}
+}
+
+func checkWindowManagers(qsVersion string) []checkResult {
 	compositors := []struct {
 		name, versionCmd, versionArg string
 		parseVersion                 func(string) string
@@ -819,12 +883,12 @@ func checkWindowManagers() []checkResult {
 		{"mangowc", "mango", "-v", firstSubmatch(mangowcVersionRegex), []string{"mango"}},
 		{"Miracle WM", "miracle-wm", "--version", firstSubmatch(miracleVersionRegex), []string{"miracle-wm"}},
 		{"Scroll", "scroll", "--version", firstSubmatch(scrollVersionRegex), []string{"scroll"}},
-		{"Aqueous", "aqueous", "-version", firstSubmatch(aqueousVersionRegex), []string{"aqueous"}},
 		{"Umbriel", "umbriel", "--version", firstSubmatch(umbrielVersionRegex), []string{"umbriel"}},
 	}
 
 	var results []checkResult
 	foundAny := false
+	mangoVersion := ""
 
 	for _, c := range compositors {
 		if !slices.ContainsFunc(c.commands, utils.CommandExists) {
@@ -856,15 +920,14 @@ func checkWindowManagers() []checkResult {
 			})
 		}
 		if c.name == "Hyprland" {
-			results = append(results, checkHyprlandConfigFormat(filepath.Join(utils.XDGConfigHome(), "hypr"))...)
+			results = append(results, checkHyprlandQuickshellFloor(ver, qsVersion)...)
+			results = append(results, checkHyprlandDeprecatedConfig()...)
 		}
-		if c.name == "mangowc" && mangoLacksSnakeCase(ver) {
-			results = append(results, checkResult{
-				catCompositor, "Mango config format", statusError,
-				fmt.Sprintf("Mango %s is older than 0.18", ver),
-				"DMS writes Mango config with the snake_case keys of Mango 0.18 and later, which this release rejects; upgrade Mango",
-				doctorDocsURL + "#compositor-checks",
-			})
+		if c.name == "niri" {
+			results = append(results, checkNiriConfig(filepath.Join(utils.XDGConfigHome(), "niri"))...)
+		}
+		if c.name == "mangowc" {
+			mangoVersion = ver
 		}
 	}
 
@@ -872,7 +935,7 @@ func checkWindowManagers() []checkResult {
 		results = append(results, checkResult{
 			catCompositor, "Compositor", statusError,
 			"No supported Wayland compositor found",
-			"Install Hyprland, niri, Sway, River, Wayfire, labwc, mangowc, miracle-wm, Scroll, Aqueous, or Umbriel",
+			"Install Hyprland, niri, Sway, River, Wayfire, labwc, mangowc, miracle-wm, Scroll, or Umbriel",
 			doctorDocsURL + "#compositor-checks",
 		})
 	}
@@ -881,11 +944,15 @@ func checkWindowManagers() []checkResult {
 		results = append(results, checkResult{catCompositor, "Active", statusInfo, wm, "", doctorDocsURL + "#compositor"})
 	}
 
-	if os.Getenv("AQUEOUS_SOCKET") != "" {
-		results = append(results, checkAqueousConfigHelper())
-	}
-
 	if os.Getenv("MANGO_INSTANCE_SIGNATURE") != "" {
+		if mangoLacksSnakeCase(mangoVersion) {
+			results = append(results, checkResult{
+				catCompositor, "Mango config format", statusError,
+				fmt.Sprintf("Mango %s is older than 0.18", mangoVersion),
+				"DMS writes Mango config with the snake_case keys of Mango 0.18 and later, which this release rejects; upgrade Mango",
+				doctorDocsURL + "#compositor-checks",
+			})
+		}
 		results = append(results, checkMangoConfig(mangoconf.Dir())...)
 	}
 
@@ -936,7 +1003,7 @@ func mangoUnknownKeywords(output string) []string {
 
 func checkMangoConfig(mangoDir string) []checkResult {
 	url := doctorDocsURL + "#compositor-checks"
-	mainPath := filepath.Join(mangoDir, "config.conf")
+	mainPath := mangoconf.MainConfig(mangoDir)
 	var results []checkResult
 	if output, err := mangoParseConfig(mainPath); err == nil {
 		if unknown := mangoUnknownKeywords(output); len(unknown) > 0 {
@@ -954,6 +1021,13 @@ func checkMangoConfig(mangoDir string) []checkResult {
 		if err != nil {
 			continue
 		}
+		if mangoconf.IsTOML(path) {
+			var b strings.Builder
+			for _, e := range mangoconf.TOMLEntries(string(data)) {
+				b.WriteString(e.Key + "=" + e.Value + "\n")
+			}
+			data = []byte(b.String())
+		}
 		if mangoLegacyOverviewBinds.Match(data) {
 			overviewBinds = append(overviewBinds, filepath.Base(path))
 		}
@@ -966,17 +1040,151 @@ func checkMangoConfig(mangoDir string) []checkResult {
 	return results
 }
 
-func checkAqueousConfigHelper() checkResult {
+var niriKeepMaxBpc = regexp.MustCompile(`^\s*keep-max-bpc-unchanged\b`)
+
+// DMS never rewrites the user's config.kdl or binds.kdl, so name the line to fix by hand.
+func checkNiriConfig(niriDir string) []checkResult {
 	url := doctorDocsURL + "#compositor-checks"
-	path, err := exec.LookPath("aqueous-config")
-	if err != nil {
-		return checkResult{catCompositor, "aqueous-config", statusWarn, "Not found", "Keybind and display settings edits from the shell need the aqueous-config helper", url}
+	paths, _ := filepath.Glob(filepath.Join(niriDir, "dms", "*.kdl"))
+	paths = append([]string{filepath.Join(niriDir, "config.kdl")}, paths...)
+
+	var results []checkResult
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		rel, _ := filepath.Rel(niriDir, path)
+		for i, line := range strings.Split(kdlMaskInactive(string(data)), "\n") {
+			if !niriKeepMaxBpc.MatchString(line) {
+				continue
+			}
+			results = append(results, checkResult{catCompositor, "keep-max-bpc", statusWarn,
+				fmt.Sprintf("%s:%d sets keep-max-bpc-unchanged", rel, i+1),
+				"niri after 26.04 removed this debug flag and rejects the whole config. Delete the line; set max-bpc in the output section instead.", url})
+		}
 	}
-	details := "Keybind and display settings edits from the shell"
-	if doctorVerbose {
-		details = path
+	return results
+}
+
+// Blanks comments and slashdash nodes, keeping newlines, so line checks only see what niri parses.
+func kdlMaskInactive(src string) string {
+	out := []byte(src)
+	blank := func(from, to int) {
+		for i := from; i < to; i++ {
+			if out[i] != '\n' {
+				out[i] = ' '
+			}
+		}
 	}
-	return checkResult{catCompositor, "aqueous-config", statusOK, "Installed", details, url}
+	for i := 0; i < len(src); {
+		switch {
+		case strings.HasPrefix(src[i:], "//"):
+			end := kdlLineEnd(src, i)
+			blank(i, end)
+			i = end
+		case strings.HasPrefix(src[i:], "/*"):
+			end := kdlBlockCommentEnd(src, i)
+			blank(i, end)
+			i = end
+		case strings.HasPrefix(src[i:], "/-"):
+			end := kdlSlashdashEnd(src, i+2)
+			blank(i, end)
+			i = end
+		case src[i] == '"' || (src[i] == 'r' && kdlRawStringStart(src, i)):
+			i = kdlStringEnd(src, i)
+		default:
+			i++
+		}
+	}
+	return string(out)
+}
+
+func kdlLineEnd(src string, i int) int {
+	if end := strings.IndexByte(src[i:], '\n'); end >= 0 {
+		return i + end
+	}
+	return len(src)
+}
+
+func kdlBlockCommentEnd(src string, i int) int {
+	depth := 0
+	for i < len(src) {
+		switch {
+		case strings.HasPrefix(src[i:], "/*"):
+			depth++
+			i += 2
+		case strings.HasPrefix(src[i:], "*/"):
+			depth--
+			i += 2
+			if depth == 0 {
+				return i
+			}
+		default:
+			i++
+		}
+	}
+	return len(src)
+}
+
+// A slashdash node ends at its line or ';' unless it opened a block, which ends at the matching '}'.
+func kdlSlashdashEnd(src string, i int) int {
+	depth := 0
+	for i < len(src) {
+		switch c := src[i]; {
+		case strings.HasPrefix(src[i:], "//"):
+			i = kdlLineEnd(src, i)
+		case strings.HasPrefix(src[i:], "/*"):
+			i = kdlBlockCommentEnd(src, i)
+		case c == '"' || (c == 'r' && kdlRawStringStart(src, i)):
+			i = kdlStringEnd(src, i)
+		case c == '{':
+			depth++
+			i++
+		case c == '}':
+			depth--
+			i++
+			if depth <= 0 {
+				return i
+			}
+		case (c == '\n' || c == ';') && depth == 0:
+			return i
+		default:
+			i++
+		}
+	}
+	return len(src)
+}
+
+func kdlRawStringStart(src string, i int) bool {
+	j := i + 1
+	for j < len(src) && src[j] == '#' {
+		j++
+	}
+	return j < len(src) && src[j] == '"'
+}
+
+func kdlStringEnd(src string, i int) int {
+	if src[i] == 'r' {
+		hashes := 0
+		for src[i+1+hashes] == '#' {
+			hashes++
+		}
+		closer := "\"" + strings.Repeat("#", hashes)
+		if end := strings.Index(src[i+2+hashes:], closer); end >= 0 {
+			return i + 2 + hashes + end + len(closer)
+		}
+		return len(src)
+	}
+	for j := i + 1; j < len(src); j++ {
+		switch src[j] {
+		case '\\':
+			j++
+		case '"':
+			return j + 1
+		}
+	}
+	return len(src)
 }
 
 func checkCompositorBlurSupport() checkResult {
@@ -992,24 +1200,49 @@ func checkCompositorBlurSupport() checkResult {
 	return checkResult{catCompositor, "Background Blur", statusWarn, "Unsupported", "Compositor does not support ext-background-effect-v1", doctorDocsURL + "#compositor-checks"}
 }
 
-// Same detection as the keybinds parser: a regular hyprland.lua wins, else hyprland.conf is read-only.
-func checkHyprlandConfigFormat(hyprDir string) []checkResult {
-	if st, err := os.Stat(filepath.Join(hyprDir, "hyprland.lua")); err == nil && st.Mode().IsRegular() {
-		return nil
-	}
-	if st, err := os.Stat(filepath.Join(hyprDir, "hyprland.conf")); err != nil || !st.Mode().IsRegular() {
+func checkHyprlandQuickshellFloor(hyprVer, qsVer string) []checkResult {
+	if !hyprlandReadsOnlyLua(hyprVer) || qsVer == "" || version.CompareVersions(qsVer, "0.3.2") >= 0 {
 		return nil
 	}
 	return []checkResult{{
-		catCompositor, "Hyprland Lua config", statusWarn,
-		"Hyprland config is hyprland.conf",
-		"DMS keybinds, window rules and displays are read-only until you run `dms setup` to migrate to Lua. Hyprland 0.57 drops .conf support.",
+		catCompositor, "Quickshell for Hyprland 0.57", statusWarn,
+		fmt.Sprintf("Quickshell %s is older than 0.3.2", qsVer),
+		"Hyprland 0.57 sends workspace addresses that older Quickshell collapses to workspace 0, breaking named and special workspaces. Upgrade Quickshell.",
+		doctorDocsURL + "#compositor-checks",
+	}}
+}
+
+// Hyprland before 0.57 answers `unknown request`, which fails to parse and is skipped.
+func checkHyprlandDeprecatedConfig() []checkResult {
+	if os.Getenv("HYPRLAND_INSTANCE_SIGNATURE") == "" {
+		return nil
+	}
+	out, err := exec.Command("hyprctl", "-j", "deprecated-config").Output()
+	if err != nil {
+		return nil
+	}
+	return hyprlandDeprecatedConfigResults(out)
+}
+
+func hyprlandDeprecatedConfigResults(out []byte) []checkResult {
+	var notices []string
+	if err := json.Unmarshal(out, &notices); err != nil || len(notices) == 0 {
+		return nil
+	}
+	return []checkResult{{
+		catCompositor, "Hyprland deprecated config", statusWarn,
+		fmt.Sprintf("%d deprecated option(s)", len(notices)),
+		strings.Join(notices, "; "),
 		doctorDocsURL + "#compositor-checks",
 	}}
 }
 
 func hyprlandLacksLua(ver string) bool {
 	return ver != "" && version.CompareVersions(ver, "0.55.0") < 0
+}
+
+func hyprlandReadsOnlyLua(ver string) bool {
+	return ver != "" && version.CompareVersions(ver, "0.57.0") >= 0
 }
 
 func mangoLacksSnakeCase(ver string) bool {
@@ -1044,8 +1277,6 @@ func getVersionFromCommand(cmd, arg string, parse func(string) string) (display,
 
 func detectRunningWM() string {
 	switch {
-	case os.Getenv("AQUEOUS_SOCKET") != "":
-		return "Aqueous"
 	case os.Getenv("HYPRLAND_INSTANCE_SIGNATURE") != "":
 		return "Hyprland"
 	case os.Getenv("NIRI_SOCKET") != "":
@@ -1063,7 +1294,9 @@ func detectRunningWM() string {
 }
 
 func checkQuickshellFeatures() ([]checkResult, bool) {
-	if !utils.CommandExists("qs") {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := qtbase.Command(ctx, "--version").Run(); err != nil {
 		return nil, false
 	}
 
@@ -1133,7 +1366,7 @@ ShellRoot {
 		return nil, false
 	}
 
-	cmd := exec.Command("qs", "-p", testScript)
+	cmd := qtbase.Command(context.Background(), "-p", testScript)
 	cmd.Env = append(os.Environ(), "NO_COLOR=1")
 	output, _ := cmd.CombinedOutput()
 	outputStr := string(output)
@@ -1142,7 +1375,7 @@ ShellRoot {
 		{"Polkit", "Authentication prompts"},
 		{"IdleMonitor", "Idle detection"},
 		{"IdleInhibitor", "Prevent idle/sleep"},
-		{"ShortcutInhibitor", "Allow shortcut management (niri, Aqueous)"},
+		{"ShortcutInhibitor", "Allow shortcut management (niri)"},
 		{"BackgroundBlur", "Background blur API support in Quickshell"},
 	}
 
@@ -1317,6 +1550,18 @@ func getOptionalDBusStatus(busName string) (status, string) {
 	}
 }
 
+func checkFcitx5(url string) checkResult {
+	const desc = "Input Method Framework support"
+	switch {
+	case !utils.CommandExists("fcitx5"):
+		return checkResult{catOptionalFeatures, "fcitx5", statusInfo, "Not installed", desc, url}
+	case !utils.IsSessionDBusServiceAvailable("org.fcitx.Fcitx5"):
+		return checkResult{catOptionalFeatures, "fcitx5", statusWarn, "Installed but not running", desc, url}
+	default:
+		return checkResult{catOptionalFeatures, "fcitx5", statusOK, "Available", desc, url}
+	}
+}
+
 func checkOptionalDependencies() []checkResult {
 	var results []checkResult
 
@@ -1379,8 +1624,9 @@ func checkOptionalDependencies() []checkResult {
 		{"matugen", "matugen", "Dynamic theming", true},
 		{"cava", "cava", "Audio visualizer", true},
 		{"khal", "khal", "Calendar events", false},
-		{"danksearch", "dsearch", "File search", false},
-		{"dankcalendar", "dcal", "Calendar app", false},
+		{"dux-search", "dsearch", "File search", false},
+		{"dux-calendar", "dcal", "Calendar app", false},
+		{"dux-files", "dfiles", "File manager", false},
 		{"fprintd", "fprintd-list", "Fingerprint auth", false},
 	}
 
@@ -1398,6 +1644,7 @@ func checkOptionalDependencies() []checkResult {
 	}
 
 	results = append(results, checkAdwGtk3())
+	results = append(results, checkFcitx5(optionalFeaturesURL))
 
 	return results
 }
@@ -1497,7 +1744,7 @@ func checkSystemdServices() []checkResult {
 
 	var results []checkResult
 
-	dmsState := getServiceState("dms", true)
+	dmsState := dmsServiceState()
 	wanted := config.SessionWanted()
 	if !dmsState.exists {
 		results = append(results, checkResult{catServices, "dms.service", statusInfo, "Not installed", "Optional user service", doctorDocsURL + "#services"})
@@ -1549,11 +1796,129 @@ func checkSystemdServices() []checkResult {
 			status = statusInfo
 		}
 		results = append(results, checkResult{catServices, "greetd", status, greetdState.enabled, "", doctorDocsURL + "#services"})
+		results = append(results, checkGreetdSession("/etc/greetd/config.toml")...)
+		results = append(results, checkRetiredGreeterPackages()...)
 	case doctorVerbose:
 		results = append(results, checkResult{catServices, "greetd", statusInfo, "Not installed", "Optional greeter service", doctorDocsURL + "#services"})
 	}
 
 	return results
+}
+
+func greeterLuaHint() string {
+	return "Hyprland 0.57 only reads Lua; switch to the dux-greeter package and rerun `dms-greeter install`. " + greeterPackageInstallHint()
+}
+
+func checkGreetdSession(configPath string) []checkResult {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil
+	}
+	fields := strings.Fields(greetdDefaultSessionCommand(string(data)))
+	if len(fields) == 0 {
+		return nil
+	}
+	warn := func(message string) []checkResult {
+		return []checkResult{{catServices, "Greeter session", statusWarn, message, greeterLuaHint(), doctorDocsURL + "#services"}}
+	}
+	if bin, err := exec.LookPath(fields[0]); err == nil && isLegacyWrapperScript(bin) {
+		return warn("greetd runs a pre-1.6 greeter wrapper script")
+	}
+	if !strings.EqualFold(greeterFlagValue(fields, "--command"), "hyprland") {
+		return nil
+	}
+	cfg := strings.Trim(greeterFlagValue(fields, "-C", "--config"), `"'`)
+	if cfg == "" || strings.HasSuffix(cfg, ".lua") {
+		return nil
+	}
+	content, err := os.ReadFile(cfg)
+	if err != nil || greeterHyprlandLuaContent(content) {
+		return nil
+	}
+	return warn("Greeter Hyprland config is not Lua: " + cfg)
+}
+
+var greeterHyprlandLuaPattern = regexp.MustCompile(`(^|[^[:alnum:]_])hl\.`)
+
+// Mirrors dux-greeter's launcher.IsHyprlandLuaConfig content check.
+func greeterHyprlandLuaContent(content []byte) bool {
+	for line := range strings.Lines(string(content)) {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		if greeterHyprlandLuaPattern.MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func greetdDefaultSessionCommand(configTOML string) string {
+	inDefault := false
+	for line := range strings.SplitSeq(configTOML, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") {
+			inDefault = line == "[default_session]"
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !inDefault || !ok || strings.TrimSpace(key) != "command" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if unquoted, err := strconv.Unquote(value); err == nil {
+			return unquoted
+		}
+		return strings.Trim(value, `'`)
+	}
+	return ""
+}
+
+func greeterFlagValue(fields []string, flags ...string) string {
+	for i, f := range fields {
+		for _, flag := range flags {
+			if f == flag && i+1 < len(fields) {
+				return fields[i+1]
+			}
+			if value, ok := strings.CutPrefix(f, flag+"="); ok {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+var retiredGreeterPackages = []string{"greetd-dms-greeter", "greetd-dms-greeter-bin", "greetd-dms-greeter-git"}
+
+func checkRetiredGreeterPackages() []checkResult {
+	if !utils.CommandExists("pacman") {
+		return nil
+	}
+	// pacman -Q exits non-zero when any name is missing but still lists the installed ones
+	out, _ := exec.Command("pacman", append([]string{"-Q"}, retiredGreeterPackages...)...).Output()
+	installed := retiredGreeterPackagesInstalled(string(out))
+	if len(installed) == 0 {
+		return nil
+	}
+	return []checkResult{{
+		catServices, "Greeter package", statusWarn,
+		"Retired package installed: " + strings.Join(installed, ", "),
+		greeterLuaHint(),
+		doctorDocsURL + "#services",
+	}}
+}
+
+// pacman -Q answers a missing name with any installed package that provides it,
+// so the dux-greeter successors come back under the retired names they provide.
+func retiredGreeterPackagesInstalled(pacmanQuery string) []string {
+	var installed []string
+	for line := range strings.SplitSeq(strings.TrimSpace(pacmanQuery), "\n") {
+		name, _, _ := strings.Cut(line, " ")
+		if slices.Contains(retiredGreeterPackages, name) && !slices.Contains(installed, name) {
+			installed = append(installed, name)
+		}
+	}
+	return installed
 }
 
 // Chromium, Electron and libadwaita follow light/dark through the settings
@@ -1579,6 +1944,8 @@ type serviceState struct {
 	enabled string
 	active  string
 }
+
+var dmsServiceState = sync.OnceValue(func() serviceState { return getServiceState("dms", true) })
 
 func getServiceState(name string, userService bool) serviceState {
 	args := []string{"is-enabled", name}
@@ -1698,7 +2065,7 @@ func printSummary(results []checkResult, qsMissingFeatures bool) {
 
 		if qsMissingFeatures {
 			fmt.Println()
-			fmt.Printf("  %s\n", styles.Subtle.Render("→ Consider using quickshell-git for full feature support"))
+			fmt.Printf("  %s\n", styles.Subtle.Render("→ Update dux-qt-base for full feature support"))
 		}
 	}
 	fmt.Println()

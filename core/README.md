@@ -1,6 +1,6 @@
 # DMS Backend & CLI
 
-Go-based backend for Dux Shell providing system integration, IPC, and installation tools.
+Go-based backend for Dux Modular Shell providing system integration, IPC, and installation tools.
 
 **See [root README](../README.md) for project overview and installation.**
 
@@ -161,8 +161,8 @@ Headless mode requires cached credentials or a passwordless rule for your privil
 
 ```bash
 sudo -v && curl -fsSL https://install.duxlabs.dev | sh -s -- -c niri -t ghostty -y
-sudo -v && curl -fsSL https://install.duxlabs.dev | sh -s -- -c hyprland -t kitty --dms-greeter -y
-sudo -v && curl -fsSL https://install.duxlabs.dev | sh -s -- -c niri -t ghostty --git-deps niri,quickshell --all-features -y
+sudo -v && curl -fsSL https://install.duxlabs.dev | sh -s -- -c hyprland -t kitty --dux-greeter -y
+sudo -v && curl -fsSL https://install.duxlabs.dev | sh -s -- -c niri -t ghostty --git-deps niri --all-features -y
 ```
 
 | Flag | Short | Description |
@@ -171,12 +171,13 @@ sudo -v && curl -fsSL https://install.duxlabs.dev | sh -s -- -c niri -t ghostty 
 | `--term <ghostty\|kitty\|alacritty>` | `-t` | Terminal emulator (required for headless) |
 | `--privesc <sudo\|doas\|run0>` | | Privilege escalation tool (default: autodetect) |
 | `--git` | | Install the git version of every dependency that has one |
-| `--git-deps <name,...>` | | Install the git version of specific dependencies (e.g. `niri,quickshell`) |
-| `--all-features` | | Enable all optional dependencies (`dms-greeter`, `danksearch`, `dankcalendar`) |
-| `--dms-greeter` | | Install dms-greeter |
-| `--danksearch` | | Install danksearch and enable its user indexing service |
-| `--dankcalendar` | | Install dankcalendar |
-| `--include-deps <name,...>` | | Enable optional dependencies (e.g. `dms-greeter`) |
+| `--git-deps <name,...>` | | Install the git version of specific dependencies (e.g. `niri,hyprland`) |
+| `--all-features` | | Enable all optional dependencies (`dux-greeter`, `dux-search`, `dux-calendar`, `dux-files`) |
+| `--dux-greeter` | | Install dux-greeter |
+| `--dux-search` | | Install dux-search and enable its user indexing service |
+| `--dux-calendar` | | Install dux-calendar |
+| `--dux-files` | | Install dux-files (dfiles file manager) |
+| `--include-deps <name,...>` | | Enable optional dependencies (e.g. `dux-greeter`) |
 | `--exclude-deps <name,...>` | | Skip specific dependencies |
 | `--replace-configs <name,...>` | | Replace specific configuration files (mutually exclusive with `--replace-configs-all`) |
 | `--replace-configs-all` | | Replace all configuration files (mutually exclusive with `--replace-configs`) |
@@ -184,7 +185,8 @@ sudo -v && curl -fsSL https://install.duxlabs.dev | sh -s -- -c niri -t ghostty 
 
 Headless mode requires `--yes` to proceed; without it, the installer exits with an error.
 Configuration files are not replaced by default unless `--replace-configs` or `--replace-configs-all` is specified.
-Optional packages (`dms-greeter`, `danksearch`, `dankcalendar`) are disabled by default; enable them with their dedicated flags, `--include-deps`, or `--all-features`.
+Optional packages (`dux-greeter`, `dux-search`, `dux-calendar`, `dux-files`) are disabled by default; enable them with their dedicated flags, `--include-deps`, or `--all-features`.
+The old `--dms-greeter`, `--danksearch` and `--dankcalendar` flags and dependency names still work but are deprecated.
 
 When no flags are provided, `duxinstall` launches the interactive TUI.
 
@@ -193,7 +195,7 @@ When no flags are provided, `duxinstall` launches the interactive TUI.
 Headless mode activates when `--compositor` or `--term` is provided.
 
 - Both `--compositor` and `--term` are required; providing only one results in an error.
-- Headless-only flags (`--privesc`, `--git`, `--git-deps`, `--all-features`, `--include-deps`, `--exclude-deps`, `--replace-configs`, `--replace-configs-all`, `--yes`, `--danksearch`, `--dankcalendar`, `--dms-greeter`) are rejected in TUI mode.
+- Headless-only flags (`--privesc`, `--git`, `--git-deps`, `--all-features`, `--include-deps`, `--exclude-deps`, `--replace-configs`, `--replace-configs-all`, `--yes`, `--dux-search`, `--dux-calendar`, `--dux-files`, `--dux-greeter` and their deprecated aliases) are rejected in TUI mode.
 - Positional arguments are not accepted.
 
 ### Log file location
@@ -210,13 +212,13 @@ Uses `pacman` for system packages, builds AUR packages via `makepkg`, no AUR hel
 
 **Fedora**
 
-Uses COPR repositories (`avengemedia/danklinux`, `avengemedia/dms`).
+Uses COPR repositories (`duxlabs/dux-repo`, plus `duxlabs/dms` or `duxlabs/dms-git` for git builds).
 
 **Ubuntu**
 Requires PPA support. Most packages built from source (slow first install).
 
 **Debian**
-Debian 13+ (Trixie), testing, and sid. Stable quickshell from Debian (trixie-backports on 13). Other companions via OBS.
+Debian 13+ (Trixie), testing, and sid. dux-qt-base and other companions via OBS.
 
 **openSUSE**
 Most packages available in standard repos. Minimal building required.

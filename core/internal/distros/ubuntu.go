@@ -69,8 +69,8 @@ func (u *UbuntuDistribution) DetectDependenciesWithTerminal(ctx context.Context,
 	// Common detections using base methods
 	dependencies = append(dependencies, u.detectGit())
 	dependencies = append(dependencies, u.detectWindowManager(wm))
-	dependencies = append(dependencies, u.detectQuickshell())
-	dependencies = append(dependencies, u.detectDMSGreeter())
+	dependencies = append(dependencies, u.detectDuxQtBase())
+	dependencies = append(dependencies, u.detectGreeterPackage(u.packageInstalled))
 	dependencies = append(dependencies, u.detectXDGPortal())
 	dependencies = append(dependencies, u.detectAccountsService())
 
@@ -87,7 +87,8 @@ func (u *UbuntuDistribution) DetectDependenciesWithTerminal(ctx context.Context,
 
 	dependencies = append(dependencies, u.detectMatugen())
 	dependencies = append(dependencies, u.detectDanksearch())
-	dependencies = append(dependencies, withGitVariant(u.detectDankCalendar(), u.packageInstalled("dankcalendar-git")))
+	dependencies = append(dependencies, u.detectCalendarPackage(u.packageInstalled))
+	dependencies = append(dependencies, u.detectFilesPackage(u.packageInstalled))
 
 	return dependencies, nil
 }
@@ -102,12 +103,6 @@ func (u *UbuntuDistribution) detectXwaylandSatellite() deps.Dependency {
 
 func (u *UbuntuDistribution) detectAccountsService() deps.Dependency {
 	return u.detectPackage("accountsservice", "D-Bus interface for user account query and manipulation", u.packageInstalled("accountsservice"))
-}
-
-func (u *UbuntuDistribution) detectDMSGreeter() deps.Dependency {
-	gitInstalled := u.packageInstalled("dms-greeter-git")
-	dep := u.detectOptionalPackage("dms-greeter", "Dux Shell greetd greeter", gitInstalled || u.packageInstalled("dms-greeter"))
-	return withGitVariant(dep, gitInstalled)
 }
 
 func (u *UbuntuDistribution) packageInstalled(pkg string) bool {
@@ -129,6 +124,63 @@ func (u *UbuntuDistribution) SwapVariants(ctx context.Context, swaps []VariantSw
 	return u.installAPTPackages(ctx, to, sudoPassword, progressChan)
 }
 
+func (u *UbuntuDistribution) RepoMoves() []RepoMove {
+	return ppaChannel.moves(ppaSourcesExists)
+}
+
+func (u *UbuntuDistribution) ApplyRepoMoves(ctx context.Context, moves []RepoMove, sudoPassword string, progressChan chan<- InstallProgressMsg) error {
+	if adds := repoMoveAdds(moves); len(adds) > 0 {
+		if err := u.enablePPARepos(ctx, adds, sudoPassword, progressChan); err != nil {
+			return err
+		}
+	}
+	if renames := aptRenames(moves, ppaDeps, u.packageInstalled); len(renames) > 0 {
+		if err := u.installAPTPackages(ctx, renames, sudoPassword, progressChan); err != nil {
+			return fmt.Errorf("failed to install the renamed packages %s: %w", strings.Join(renames, ", "), err)
+		}
+	}
+	removes := repoMoveRemoves(moves)
+	for _, move := range removes {
+		command := "add-apt-repository -r -y " + move.Old
+		progressChan <- InstallProgressMsg{
+			Phase:       PhaseSystemPackages,
+			Progress:    0.30,
+			Step:        fmt.Sprintf("Removing PPA %s...", move.Old),
+			NeedsSudo:   true,
+			CommandInfo: "sudo " + command,
+		}
+		if err := u.runWithProgress(privescExec(ctx, sudoPassword, command), progressChan, PhaseSystemPackages, 0.30, 0.35); err != nil {
+			return fmt.Errorf("failed to remove PPA %s: %w", move.Old, err)
+		}
+	}
+	if len(removes) == 0 {
+		return nil
+	}
+	return u.aptUpdate(ctx, sudoPassword, progressChan)
+}
+
+func (u *UbuntuDistribution) RepoMoveCommands(moves []RepoMove) []string {
+	return ubuntuRepoMoveCommands(moves, aptRenames(moves, ppaDeps, u.packageInstalled))
+}
+
+func ubuntuRepoMoveCommands(moves []RepoMove, renames []string) []string {
+	var commands []string
+	for _, add := range repoMoveAdds(moves) {
+		commands = append(commands, "sudo add-apt-repository -y "+add.RepoURL)
+	}
+	if len(renames) > 0 {
+		commands = append(commands, "sudo apt-get install -y "+strings.Join(renames, " "))
+	}
+	removes := repoMoveRemoves(moves)
+	for _, move := range removes {
+		commands = append(commands, "sudo add-apt-repository -r -y "+move.Old)
+	}
+	if len(removes) > 0 {
+		commands = append(commands, "sudo apt-get update")
+	}
+	return commands
+}
+
 func (u *UbuntuDistribution) GetPackageMapping(wm deps.WindowManager) map[string]PackageMapping {
 	return u.GetPackageMappingWithVariants(wm, make(map[string]deps.PackageVariant))
 }
@@ -144,12 +196,13 @@ func (u *UbuntuDistribution) GetPackageMappingWithVariants(wm deps.WindowManager
 
 		// DMS packages from PPAs
 		"dms (Dux Shell)": u.getDmsMapping(variants["dms (Dux Shell)"]),
-		"quickshell":      u.getQuickshellMapping(variants["quickshell"]),
-		"dms-greeter":     variantMapping("dms-greeter", variants["dms-greeter"], RepoTypePPA, "ppa:avengemedia/danklinux"),
-		"matugen":         {Name: "matugen", Repository: RepoTypePPA, RepoURL: "ppa:avengemedia/danklinux"},
-		"ghostty":         {Name: "ghostty", Repository: RepoTypePPA, RepoURL: "ppa:avengemedia/danklinux"},
-		"danksearch":      {Name: "danksearch", Repository: RepoTypePPA, RepoURL: "ppa:avengemedia/danklinux"},
-		"dankcalendar":    variantMapping("dankcalendar", variants["dankcalendar"], RepoTypePPA, "ppa:avengemedia/danklinux"),
+		"dux-qt-base":     {Name: "libdux-qt-base0", Repository: RepoTypePPA, RepoURL: ppaDeps},
+		"dux-greeter":     variantMapping("dux-greeter", variants["dux-greeter"], RepoTypePPA, ppaDeps),
+		"matugen":         {Name: "matugen", Repository: RepoTypePPA, RepoURL: ppaDeps},
+		"ghostty":         {Name: "ghostty", Repository: RepoTypePPA, RepoURL: ppaDeps},
+		"dux-search":      {Name: "dux-search", Repository: RepoTypePPA, RepoURL: ppaDeps},
+		"dux-calendar":    variantMapping("dux-calendar", variants["dux-calendar"], RepoTypePPA, ppaDeps),
+		"dux-files":       variantMapping("dux-files", variants["dux-files"], RepoTypePPA, ppaDeps),
 	}
 
 	switch wm {
@@ -170,30 +223,23 @@ func (u *UbuntuDistribution) GetPackageMappingWithVariants(wm deps.WindowManager
 
 func (u *UbuntuDistribution) getDmsMapping(variant deps.PackageVariant) PackageMapping {
 	if variant == deps.VariantGit {
-		return PackageMapping{Name: "dms-git", Repository: RepoTypePPA, RepoURL: "ppa:avengemedia/dms-git"}
+		return PackageMapping{Name: "dms-git", Repository: RepoTypePPA, RepoURL: ppaDMSGit}
 	}
-	return PackageMapping{Name: "dms", Repository: RepoTypePPA, RepoURL: "ppa:avengemedia/dms"}
-}
-
-func (u *UbuntuDistribution) getQuickshellMapping(variant deps.PackageVariant) PackageMapping {
-	if forceQuickshellGit || variant == deps.VariantGit {
-		return PackageMapping{Name: "quickshell-git", Repository: RepoTypePPA, RepoURL: "ppa:avengemedia/danklinux"}
-	}
-	return PackageMapping{Name: "quickshell", Repository: RepoTypePPA, RepoURL: "ppa:avengemedia/danklinux"}
+	return PackageMapping{Name: "dms", Repository: RepoTypePPA, RepoURL: ppaDMS}
 }
 
 func (u *UbuntuDistribution) getNiriMapping(variant deps.PackageVariant) PackageMapping {
 	if variant == deps.VariantGit {
-		return PackageMapping{Name: "niri-git", Repository: RepoTypePPA, RepoURL: "ppa:avengemedia/danklinux"}
+		return PackageMapping{Name: "niri-git", Repository: RepoTypePPA, RepoURL: ppaDeps}
 	}
-	return PackageMapping{Name: "niri", Repository: RepoTypePPA, RepoURL: "ppa:avengemedia/danklinux"}
+	return PackageMapping{Name: "niri", Repository: RepoTypePPA, RepoURL: ppaDeps}
 }
 
 func (u *UbuntuDistribution) getXwaylandSatelliteMapping(variant deps.PackageVariant) PackageMapping {
 	if variant == deps.VariantGit {
-		return PackageMapping{Name: "xwayland-satellite-git", Repository: RepoTypePPA, RepoURL: "ppa:avengemedia/danklinux"}
+		return PackageMapping{Name: "xwayland-satellite-git", Repository: RepoTypePPA, RepoURL: ppaDeps}
 	}
-	return PackageMapping{Name: "xwayland-satellite", Repository: RepoTypePPA, RepoURL: "ppa:avengemedia/danklinux"}
+	return PackageMapping{Name: "xwayland-satellite", Repository: RepoTypePPA, RepoURL: ppaDeps}
 }
 
 func (u *UbuntuDistribution) InstallPrerequisites(ctx context.Context, sudoPassword string, progressChan chan<- InstallProgressMsg) error {
@@ -606,29 +652,6 @@ func (u *UbuntuDistribution) installBuildDependencies(ctx context.Context, manua
 			buildDeps["alacritty"] = true
 			buildDeps["fuzzel"] = true
 			buildDeps["libxcb-cursor-dev"] = true
-		case "quickshell":
-			buildDeps["qt6-base-dev"] = true
-			buildDeps["qt6-base-private-dev"] = true
-			buildDeps["qt6-declarative-dev"] = true
-			buildDeps["qt6-declarative-private-dev"] = true
-			buildDeps["qt6-wayland-dev"] = true
-			buildDeps["qt6-wayland-private-dev"] = true
-			buildDeps["qt6-tools-dev"] = true
-			buildDeps["libqt6svg6-dev"] = true
-			buildDeps["qt6-shadertools-dev"] = true
-			buildDeps["spirv-tools"] = true
-			buildDeps["libcli11-dev"] = true
-			buildDeps["libjemalloc-dev"] = true
-			buildDeps["libwayland-dev"] = true
-			buildDeps["wayland-protocols"] = true
-			buildDeps["libdrm-dev"] = true
-			buildDeps["libgbm-dev"] = true
-			buildDeps["libegl-dev"] = true
-			buildDeps["libgles2-mesa-dev"] = true
-			buildDeps["libgl1-mesa-dev"] = true
-			buildDeps["libxcb1-dev"] = true
-			buildDeps["libpipewire-0.3-dev"] = true
-			buildDeps["libpam0g-dev"] = true
 		case "matugen":
 			buildDeps["curl"] = true
 		}
