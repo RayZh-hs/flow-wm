@@ -7,6 +7,8 @@ semantics. The phases below are proposed implementation work.
 
 ## Architectural decisions
 
+Flow should be developed in a primary monorepo. Core, builtins, host, WM, and SDKs have explicit package and API boundaries, with independently usable build and distribution targets. The niri and DMS forks retain separate repositories for upstream maintenance and are integrated as pinned subtrees. Repository extraction is deferred until independent consumers or maintenance requirements justify it.
+
 1. A **FlowNet** is a portable graph definition. A **workflow** is an instance
    with identity, visibility, a workspace assignment, and runtime state.
 2. A **workspace** is a public, predefined `host:session` environment supplied by
