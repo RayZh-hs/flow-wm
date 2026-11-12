@@ -3479,15 +3479,15 @@ impl Shell {
             node.cwd = PathBuf::from(directory.text().as_str());
             let b = editor.buffer();
             node.command = b.text(&b.start_iter(), &b.end_iter(), true).to_string();
-            node.writable = writable.is_active();
-            node.metric.interval_secs = interval.value() as u64;
-            node.metric.unit = unit.text().to_string();
             if node.kind == NodeKind::Agent {
+                node.writable = writable.is_active();
                 node.flow
                     .properties
                     .insert("writable".into(), serde_json::json!(node.writable));
             }
             if node.kind == NodeKind::Metric {
+                node.metric.interval_secs = interval.value() as u64;
+                node.metric.unit = unit.text().to_string();
                 node.flow.properties.insert(
                     "interval_secs".into(),
                     serde_json::json!(node.metric.interval_secs),

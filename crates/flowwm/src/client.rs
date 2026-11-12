@@ -693,15 +693,19 @@ impl DesktopClient {
                 spec.flow
                     .properties
                     .insert("title".into(), json!(node.title));
-                spec.flow
-                    .properties
-                    .insert("writable".into(), json!(node.writable));
-                spec.flow
-                    .properties
-                    .insert("interval_secs".into(), json!(node.metric.interval_secs));
-                spec.flow
-                    .properties
-                    .insert("unit".into(), json!(node.metric.unit));
+                if node.kind == NodeKind::Agent {
+                    spec.flow
+                        .properties
+                        .insert("writable".into(), json!(node.writable));
+                }
+                if node.kind == NodeKind::Metric {
+                    spec.flow
+                        .properties
+                        .insert("interval_secs".into(), json!(node.metric.interval_secs));
+                    spec.flow
+                        .properties
+                        .insert("unit".into(), json!(node.metric.unit));
+                }
                 self.edit_graph(&node.workspace, |g| {
                     *g.node_mut(&node.id).context("Node not found")? = spec;
                     Ok(())

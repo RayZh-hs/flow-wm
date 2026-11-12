@@ -218,3 +218,98 @@ fn live_window_parameters_can_be_saved_without_stopping_or_detaching_the_window(
     assert_eq!(saved.flow.properties["display_title"], "My editor");
     engine.shutdown();
 }
+
+#[test]
+fn polling_extension_intervals_survive_saving_and_reconnecting() {
+    for type_id in ["local.timer", "local.receive"] {
+        let mut state = State::empty("/tmp".into());
+        let mut node = Node::new(
+            &state.selected_workspace,
+            NodeKind::Extension,
+            "/tmp".into(),
+            Default::default(),
+        );
+        node.flow.node_type = type_id.into();
+        node.flow
+            .properties
+            .insert("interval_secs".into(), json!(30));
+        let id = node.id.clone();
+        state.nodes.push(node);
+        let (engine, _) = support::fixture(state);
+
+        for interval in [10, 20] {
+            let mut edited = engine.snapshot().state.node(&id).unwrap().clone();
+            assert_ne!(edited.metric.interval_secs, interval);
+            edited
+                .flow
+                .properties
+                .insert("interval_secs".into(), json!(interval));
+            engine
+                .request(Action::Update {
+                    node: Box::new(edited),
+                })
+                .unwrap();
+
+            let snapshot = engine.snapshot();
+            let saved = snapshot.state.node(&id).unwrap();
+            assert_eq!(
+                saved.flow.properties["interval_secs"], interval,
+                "{type_id}"
+            );
+            assert_eq!(saved.metric.interval_secs, interval);
+            let runtime = snapshot.state.orchestration.as_ref().unwrap();
+            let source = runtime.sources.values().find(|s| s.node.0 == id).unwrap();
+            assert_eq!(source.properties["interval_secs"], interval);
+        }
+
+        let (reconnected, _) = engine.reconnect();
+        let snapshot = reconnected.snapshot();
+        let saved = snapshot.state.node(&id).unwrap();
+        assert_eq!(saved.flow.properties["interval_secs"], 20);
+        assert_eq!(saved.metric.interval_secs, 20);
+        reconnected.shutdown();
+    }
+}
+
+#[test]
+fn dedicated_agent_and_metric_controls_still_update_runtime_properties() {
+    let mut state = State::empty("/tmp".into());
+    let agent = Node::new(
+        &state.selected_workspace,
+        NodeKind::Agent,
+        "/tmp".into(),
+        Default::default(),
+    );
+    let metric = Node::new(
+        &state.selected_workspace,
+        NodeKind::Metric,
+        "/tmp".into(),
+        Default::default(),
+    );
+    state.nodes.extend([agent.clone(), metric.clone()]);
+    let (engine, _) = support::fixture(state);
+    for mut edited in [agent, metric] {
+        edited.writable = true;
+        edited.metric.interval_secs = 10;
+        edited.metric.unit = "%".into();
+        let id = edited.id.clone();
+        let kind = edited.kind;
+        engine
+            .request(Action::Update {
+                node: Box::new(edited),
+            })
+            .unwrap();
+        let snapshot = engine.snapshot();
+        let properties = &snapshot.state.node(&id).unwrap().flow.properties;
+        if kind == NodeKind::Agent {
+            assert_eq!(properties["writable"], true);
+            assert!(!properties.contains_key("interval_secs"));
+            assert!(!properties.contains_key("unit"));
+        } else {
+            assert_eq!(properties["interval_secs"], 10);
+            assert_eq!(properties["unit"], "%");
+            assert!(!properties.contains_key("writable"));
+        }
+    }
+    engine.shutdown();
+}
