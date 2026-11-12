@@ -87,7 +87,7 @@ fn row_views_survive_switching_reordering_and_new_windows() {
             .find(|n| n.window_id == Some(3))
             .unwrap()
             .column_mode,
-        ColumnMode::Window
+        ColumnMode::Node
     );
     // An unnamed trailing row has its own default; it never inherits Nodes.
     desktop.activate_row(30, true);
@@ -122,7 +122,7 @@ fn row_reordering_and_title_changes_keep_node_ids_positions_and_group_identity()
 }
 
 #[test]
-fn moving_a_window_moves_its_connected_branch_and_preserves_edges() {
+fn moving_a_window_keeps_its_connected_branch_and_preserves_edges() {
     let mut state = State::empty("/tmp".into());
     let mut desktop = desktop();
     groups::synchronize(&mut state, &desktop);
@@ -134,18 +134,37 @@ fn moving_a_window_moves_its_connected_branch_and_preserves_edges() {
         .id
         .clone();
     let group = state.node(&id).unwrap().workspace.clone();
-    let mut child = Node::new(&group, NodeKind::Gate, "/tmp".into(), Position::default());
-    child.dependencies.push(id.clone());
+    let child = Node::new(&group, NodeKind::Gate, "/tmp".into(), Position::default());
+
     let child_id = child.id.clone();
     state.nodes.push(child);
+    flowwm::graph::connect(
+        &mut state,
+        flowwm::graph::Connection {
+            source: flowwm::graph::Endpoint {
+                node: id.clone(),
+                pin: "on_exit".into(),
+            },
+            target: flowwm::graph::Endpoint {
+                node: child_id.clone(),
+                pin: "in".into(),
+            },
+        },
+    )
+    .unwrap();
     desktop.windows[0].workspace_id = Some(20);
     groups::synchronize(&mut state, &desktop);
-    assert_ne!(state.node(&id).unwrap().workspace, group);
+    assert_eq!(state.node(&id).unwrap().workspace, group);
     assert_eq!(
         state.node(&id).unwrap().workspace,
         state.node(&child_id).unwrap().workspace
     );
-    assert_eq!(state.node(&child_id).unwrap().dependencies, vec![id]);
+    assert!(
+        state
+            .connections
+            .iter()
+            .any(|e| e.source.node == id && e.target.node == child_id)
+    );
     state.validate().unwrap();
 }
 
@@ -514,13 +533,13 @@ fn closing_windows_in_either_view_removes_nodes_and_dangling_edges() {
             .unwrap()
             .id
             .clone();
-        let mut next = Node::new(
+        let next = Node::new(
             &state.selected_workspace,
             NodeKind::Human,
             "/tmp".into(),
             Position::default(),
         );
-        next.dependencies.push(source.clone());
+
         let target = next.id.clone();
         state.nodes.push(next);
         state.connections.push(flowwm::graph::Connection {
@@ -537,7 +556,7 @@ fn closing_windows_in_either_view_removes_nodes_and_dangling_edges() {
         desktop.windows.retain(|w| w.id != 1);
         groups::synchronize(&mut state, &desktop);
         assert!(state.node(&source).is_none());
-        assert!(state.node(&target).unwrap().dependencies.is_empty());
+
         assert!(state.connections.is_empty());
         assert!(!groups::synchronize(&mut state, &desktop));
         state.validate().unwrap();
@@ -611,21 +630,29 @@ fn moving_a_native_attachment_does_not_move_a_connected_workflow_branch() {
         .unwrap()
         .clone();
     let original = source.workspace.clone();
-    let mut dependent = Node::new(
+    let dependent = Node::new(
         &original,
         NodeKind::Shell,
         "/tmp".into(),
         Default::default(),
     );
-    dependent.dependencies.push(source.id.clone());
+
     let dependent_id = dependent.id.clone();
     state.nodes.push(dependent);
-    state.orchestration = Some(
-        flow_core::migration::Envelope::from_v1(state.clone())
-            .unwrap()
-            .0
-            .runtime,
-    );
+    flowwm::graph::connect(
+        &mut state,
+        flowwm::graph::Connection {
+            source: flowwm::graph::Endpoint {
+                node: source.id.clone(),
+                pin: "on_exit".into(),
+            },
+            target: flowwm::graph::Endpoint {
+                node: dependent_id.clone(),
+                pin: "in".into(),
+            },
+        },
+    )
+    .unwrap();
     desktop.windows[0].workspace_id = Some(20);
     groups::synchronize(&mut state, &desktop);
     assert_eq!(state.node(&source.id).unwrap().workspace, original);

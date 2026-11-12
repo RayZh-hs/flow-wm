@@ -1,7 +1,8 @@
 pub mod agent;
 pub mod catalog;
+pub mod client;
 pub mod config;
-pub mod engine;
+pub mod desktop_provider;
 pub mod extensions;
 pub mod graph;
 pub mod groups;
@@ -10,5 +11,8 @@ pub mod model;
 pub mod niri;
 pub mod performance;
 pub mod presentation;
-pub mod store;
+mod processes;
+mod projection;
 pub mod ui;
+
+mod notifications;

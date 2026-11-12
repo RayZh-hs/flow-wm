@@ -3,6 +3,9 @@
 pub struct Flow {
     #[knuffel(child, unwrap(arguments))]
     pub terminal: Option<Vec<String>>,
+    /// Notification command prefix; an empty list disables desktop popups.
+    #[knuffel(child, unwrap(arguments))]
+    pub notification_command: Option<Vec<String>>,
     #[knuffel(child, unwrap(argument))]
     pub motion_ms: Option<u32>,
     #[knuffel(child, unwrap(argument))]
@@ -44,6 +47,7 @@ impl crate::utils::MergeWith<Flow> for Flow {
         merge_clone_opt!(
             (self, part),
             terminal,
+            notification_command,
             motion_ms,
             removal_ms,
             inertia_decay,

@@ -1,6 +1,6 @@
 use super::theme::Theme;
 use crate::{
-    engine::{Control, Engine},
+    client::{Action, DesktopClient},
     model::*,
 };
 use gtk::{
@@ -385,7 +385,7 @@ pub fn zoom_keyboard(area: &super::surface::Surface, view: &Rc<RefCell<View>>, i
     );
     animate_camera(area, view, &target);
 }
-pub fn move_selection(engine: &Engine, view: &Rc<RefCell<View>>, direction: &str) {
+pub fn move_selection(engine: &DesktopClient, view: &Rc<RefCell<View>>, direction: &str) {
     let state = engine.snapshot().state;
     let view = view.borrow();
     for node in state.nodes.iter().filter(|n| {
@@ -399,7 +399,7 @@ pub fn move_selection(engine: &Engine, view: &Rc<RefCell<View>>, direction: &str
             "left" => position.x -= GRID,
             _ => position.x += GRID,
         }
-        engine.dispatch(Control::Move {
+        engine.dispatch(Action::Move {
             id: node.id.clone(),
             position,
         });
@@ -635,7 +635,7 @@ impl View {
 }
 
 pub fn make(
-    engine: Engine,
+    engine: DesktopClient,
     view: Rc<RefCell<View>>,
     callback: Callback,
 ) -> super::surface::Surface {
@@ -654,9 +654,6 @@ fn canvas_node(node: &Node) -> Node {
         command: node.command.clone(),
         cwd: node.cwd.clone(),
         position: node.position.clone(),
-        dependencies: node.dependencies.clone(),
-        run_when: node.run_when,
-        review: node.review,
         writable: node.writable,
         status: node.status,
         metric: node.metric.clone(),
@@ -667,6 +664,7 @@ fn canvas_node(node: &Node) -> Node {
         column_mode: node.column_mode,
         started_at: node.started_at,
         finished_at: node.finished_at,
+        attention_generation: node.attention_generation,
         output: String::new(),
         logs: vec![],
         chat: vec![],
@@ -684,7 +682,7 @@ pub(super) fn row_state(state: &State, workspace: &str) -> State {
                 .get(&id)
                 .map(|w| w.references.clone())
                 .unwrap_or_default();
-            RuntimeState {
+            std::sync::Arc::new(RuntimeState {
                 revision: runtime.revision,
                 host_id: runtime.host_id.clone(),
                 workspaces: runtime.workspaces.clone(),
@@ -724,7 +722,7 @@ pub(super) fn row_state(state: &State, workspace: &str) -> State {
                     })
                     .collect(),
                 ..Default::default()
-            }
+            })
         }),
         connections: state
             .connections
@@ -753,13 +751,12 @@ pub(super) fn row_state(state: &State, workspace: &str) -> State {
             .filter(|n| n.workspace == workspace)
             .map(canvas_node)
             .collect(),
-        watchers: state.watchers.clone(),
         recipes: vec![],
     }
 }
 
 pub fn make_row(
-    engine: Engine,
+    engine: DesktopClient,
     view: Rc<RefCell<View>>,
     callback: Callback,
     workspace: String,
@@ -769,7 +766,7 @@ pub fn make_row(
 }
 
 fn make_scoped(
-    engine: Engine,
+    engine: DesktopClient,
     view: Rc<RefCell<View>>,
     callback: Callback,
     row: Option<(String, RowViews)>,
@@ -1145,7 +1142,7 @@ fn make_scoped(
             if let Some(node) = state.node(&id) {
                 let position = view.stored_position(node, &position);
                 // Keep the displayed position until the engine publishes the committed move.
-                let _ = e.request(Control::Move { id, position });
+                let _ = e.request(Action::Move { id, position });
             }
         }
         let mut pending_search = None;
@@ -1164,7 +1161,7 @@ fn make_scoped(
                             target: source,
                         }
                     };
-                    e.dispatch(Control::ConnectPins { connection });
+                    e.dispatch(Action::ConnectPins { connection });
                 } else {
                     view.selected = Some(source.node.clone());
                     view.selection.clear();
@@ -1296,34 +1293,8 @@ fn make_scoped(
                         .any(|p| p.name == edge.source.pin && p.ty.is_signal()),
                 )
             {
-                e.dispatch(Control::DisconnectPins {
+                e.dispatch(Action::DisconnectPins {
                     connection: edge.clone(),
-                });
-            }
-        }
-        for node in state
-            .nodes
-            .iter()
-            .filter(|n| n.workspace == state.selected_workspace)
-        {
-            for source in &node.dependencies {
-                if let Some(parent) = state.node(source)
-                    && wire_cut(parent, node, &points, &view)
-                {
-                    e.dispatch(Control::Disconnect {
-                        source: source.clone(),
-                        target: node.id.clone(),
-                    });
-                }
-            }
-        }
-        for watcher in state.watchers.iter().filter(|w| w.enabled) {
-            if let (Some(a), Some(b)) = (state.node(&watcher.source), state.node(&watcher.target))
-                && a.workspace == state.selected_workspace
-                && wire_cut(a, b, &points, &view)
-            {
-                e.dispatch(Control::DeleteWatcher {
-                    id: watcher.id.clone(),
                 });
             }
         }
@@ -1483,30 +1454,26 @@ fn make_scoped(
             if let Some(target) = ordered_nodes(&state).get(index) {
                 if v.borrow().space_down {
                     if let Some(source) = selected.filter(|id| id != &target.id) {
-                        if target.dependencies.contains(&source)
-                            || state
-                                .connections
-                                .iter()
-                                .any(|e| e.source.node == source && e.target.node == target.id)
+                        if state
+                            .connections
+                            .iter()
+                            .any(|e| e.source.node == source && e.target.node == target.id)
                         {
-                            e.dispatch(Control::Disconnect {
+                            e.dispatch(Action::Disconnect {
                                 source,
                                 target: target.id.clone(),
                             });
                         } else if state
-                            .node(&source)
-                            .is_some_and(|n| n.dependencies.contains(&target.id))
-                            || state
-                                .connections
-                                .iter()
-                                .any(|e| e.source.node == target.id && e.target.node == source)
+                            .connections
+                            .iter()
+                            .any(|e| e.source.node == target.id && e.target.node == source)
                         {
-                            e.dispatch(Control::Disconnect {
+                            e.dispatch(Action::Disconnect {
                                 source: target.id.clone(),
                                 target: source,
                             });
                         } else {
-                            e.dispatch(Control::Connect {
+                            e.dispatch(Action::Connect {
                                 source,
                                 target: target.id.clone(),
                             });
@@ -1590,7 +1557,13 @@ fn make_scoped(
             }
             Some("run") => {
                 if let Some(id) = selected {
-                    cb(CanvasAction::Run(id));
+                    if state.node(&id).is_some_and(|node| {
+                        state.behavior(node) == Some(flow_core::providers::Behavior::Source)
+                    }) {
+                        cb(CanvasAction::Edit(id));
+                    } else {
+                        cb(CanvasAction::Run(id));
+                    }
                 }
             }
             Some("stop") => {
@@ -1741,67 +1714,7 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
         .iter()
         .filter(|n| n.workspace == state.selected_workspace)
         .collect();
-    let by_id: HashMap<_, _> = state.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
     c.push_group();
-    for node in &nodes {
-        let to = view.position(node);
-        for dependency in &node.dependencies {
-            if let Some(parent) = by_id.get(dependency.as_str()) {
-                let from = view.position(parent);
-                let x1 = (from.x + WIDTH / 2.0) * view.zoom + view.pan_x;
-                let x2 = (to.x + WIDTH / 2.0) * view.zoom + view.pan_x;
-                let y1 = (from.y + node_height(parent)) * view.zoom + view.pan_y;
-                let y2 = to.y * view.zoom + view.pan_y;
-                let bend = ((y2 - y1).abs() * 0.5).max(50.0 * view.zoom);
-                if x1.max(x2) < -4.0
-                    || x1.min(x2) > width + 4.0
-                    || y1.max(y2) + bend < -4.0
-                    || y1.min(y2) - bend > height + 4.0
-                {
-                    continue;
-                }
-                let active = parent.status == Status::Done;
-                let rgb = if node.run_when == RunWhen::Failure {
-                    theme.error.rgb()
-                } else if active {
-                    theme.primary.rgb()
-                } else {
-                    theme.outline.rgb()
-                };
-                c.set_source_rgb(rgb.0, rgb.1, rgb.2);
-                c.set_line_width(1.6);
-                wire(
-                    c,
-                    from.x + WIDTH / 2.0,
-                    from.y + node_height(parent),
-                    to.x + WIDTH / 2.0,
-                    to.y,
-                );
-                let _ = c.stroke();
-            }
-        }
-    }
-    for w in state.watchers.iter().filter(|w| w.enabled) {
-        if let (Some(a), Some(b)) = (by_id.get(w.source.as_str()), by_id.get(w.target.as_str()))
-            && a.workspace == state.selected_workspace
-        {
-            let source_height = node_height(a);
-            let a = view.position(a);
-            let b = view.position(b);
-            theme.primary.alpha(c, 0.65);
-            c.set_line_width(1.3);
-            c.set_dash(&[5.0, 5.0], 0.0);
-            wire(
-                c,
-                a.x + WIDTH / 2.0,
-                a.y + source_height,
-                b.x + WIDTH / 2.0,
-                b.y,
-            );
-            let _ = c.stroke();
-            c.set_dash(&[], 0.0);
-        }
-    }
     for edge in &state.connections {
         if let (Some(source), Some(target)) =
             (state.node(&edge.source.node), state.node(&edge.target.node))
@@ -2182,13 +2095,6 @@ fn crossing(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)) -> bool 
         && a.1.min(b.1) <= c.1.max(d.1)
         && c.1.min(d.1) <= a.1.max(b.1)
 }
-fn wire_cut(parent: &Node, node: &Node, points: &[(f64, f64)], view: &View) -> bool {
-    let from = view.position(parent);
-    let to = view.position(node);
-    let a = (from.x + WIDTH / 2.0, from.y + node_height(parent));
-    let b = (to.x + WIDTH / 2.0, to.y);
-    route_cut(a, b, points, false)
-}
 
 pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, theme: &Theme) {
     draw_node_with_border(c, n, p, f64::from(selected), theme);
@@ -2451,9 +2357,6 @@ fn type_color(ty: &crate::graph::Type, theme: &Theme) -> (f64, f64, f64) {
     }
 }
 
-fn wire(c: &Context, x1: f64, y1: f64, x2: f64, y2: f64) {
-    draw_route(c, (x1, y1), (x2, y2), false);
-}
 fn pin_position(
     state: &State,
     node: &Node,
@@ -2860,18 +2763,10 @@ mod rendering_tests {
             "/tmp".into(),
             Position { x: 460.0, y: 700.0 },
         );
-        assert!(wire_cut(
-            &a,
-            &b,
-            &[(426.0, 680.0), (426.0, 900.0)],
-            &View::default()
-        ));
-        assert!(!wire_cut(
-            &a,
-            &b,
-            &[(0.0, 0.0), (20.0, 20.0)],
-            &View::default()
-        ));
+        let from = (a.position.x + WIDTH / 2., a.position.y + node_height(&a));
+        let to = (b.position.x + WIDTH / 2., b.position.y);
+        assert!(route_cut(from, to, &[(426., 680.), (426., 900.)], false));
+        assert!(!route_cut(from, to, &[(0., 0.), (20., 20.)], false));
         assert!(!crossing((0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (3.0, 3.0)));
     }
     #[test]
@@ -3240,10 +3135,22 @@ mod rendering_tests {
         );
         let id = node.id.clone();
         state.nodes.push(node);
-        let (engine, _) = Engine::new(
-            state,
-            crate::store::Store::new(directory.path().join("data")).unwrap(),
-        );
+        let socket = std::env::var_os("FLOWWM_HOST_SOCKET")
+            .expect("Start an isolated host and desktop provider before this graphical test");
+        let (engine, _) = DesktopClient::connect(socket.into()).unwrap();
+        engine
+            .request(Action::CreateWorkspace {
+                name: "Canvas input test".into(),
+                cwd: directory.path().into(),
+            })
+            .unwrap();
+        let mut node = state.nodes.remove(0);
+        node.workspace = engine.snapshot().state.selected_workspace.clone();
+        engine
+            .request(Action::Create {
+                node: Box::new(node),
+            })
+            .unwrap();
         let view = Rc::new(RefCell::new(View {
             zoom: 1.,
             pan_x: 0.,

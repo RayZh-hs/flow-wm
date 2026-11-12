@@ -1,9 +1,9 @@
+mod support;
 use flowwm::{
     catalog::Catalog,
-    engine::{Control, Engine, Presentation},
+    client::{Action, Presentation},
     extensions, ipc,
     model::*,
-    store::Store,
 };
 use std::{
     io::{BufRead, BufReader, Write},
@@ -26,7 +26,7 @@ fn window_connection_search_lists_only_exit_with_an_unsigned_exit_code() {
     window.status = Status::Running;
     let id = window.id.clone();
     state.nodes.push(window);
-    let snapshot = flowwm::engine::Snapshot {
+    let snapshot = flowwm::client::ViewSnapshot {
         state: Arc::new(state),
         revision: 1,
         error: None,
@@ -62,7 +62,7 @@ fn launcher_catalog_contains_metadata_without_agent_output_or_logs() {
     node.log("agent", "private-log-never-in-launcher");
     node.status = Status::Review;
     state.nodes.push(node);
-    let snapshot = flowwm::engine::Snapshot {
+    let snapshot = flowwm::client::ViewSnapshot {
         state: Arc::new(state),
         revision: 7,
         error: None,
@@ -78,20 +78,24 @@ fn launcher_catalog_contains_metadata_without_agent_output_or_logs() {
 fn catalog_subscription_does_not_block_commands_and_updates_on_graph_changes() {
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("flowwm.sock");
-    let store = Store::new(directory.path().join("data")).unwrap();
     let state = State::empty(directory.path().into());
     let workspace = state.selected_workspace.clone();
-    let (engine, _commands) = engine_with_worker(state, store);
+    let (engine, _commands) = support::fixture(state);
     ipc::serve(
         ipc::bind(&socket).unwrap(),
-        engine.clone(),
+        (*engine).clone(),
         extensions::builtins(),
     );
     let mut stream = UnixStream::connect(&socket).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
-    writeln!(stream, "{{\"op\":\"subscribe\"}}").unwrap();
+    writeln!(
+        stream,
+        "{}",
+        serde_json::json!({"wm_protocol":1,"command":{"action":"subscribe"}})
+    )
+    .unwrap();
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line).unwrap();
@@ -109,7 +113,7 @@ fn catalog_subscription_does_not_block_commands_and_updates_on_graph_changes() {
     );
     ipc::send(
         &socket,
-        &Control::Create {
+        &Action::Create {
             node: Box::new(node),
         },
     )
@@ -141,21 +145,23 @@ fn catalog_subscription_does_not_block_commands_and_updates_on_graph_changes() {
 fn launcher_requests_share_the_subscription_without_catalog_changes_or_replay() {
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("flowwm.sock");
-    let (engine, _) = engine_with_worker(
-        State::empty(directory.path().into()),
-        Store::new(directory.path().join("data")).unwrap(),
-    );
+    let (engine, _) = support::fixture(State::empty(directory.path().into()));
     assert!(!engine.open_launcher(None));
     ipc::serve(
         ipc::bind(&socket).unwrap(),
-        engine.clone(),
+        (*engine).clone(),
         extensions::builtins(),
     );
     let mut stream = UnixStream::connect(&socket).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
-    writeln!(stream, "{{\"op\":\"subscribe\",\"launcher\":true}}").unwrap();
+    writeln!(
+        stream,
+        "{}",
+        serde_json::json!({"wm_protocol":1,"command":{"action":"subscribe","launcher":true}})
+    )
+    .unwrap();
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line).unwrap();
@@ -197,10 +203,9 @@ fn alerts_mark_the_owning_workspace_and_clear_without_changing_execution_status(
     );
     let id = node.id.clone();
     state.nodes.push(node);
-    let directory = tempfile::tempdir().unwrap();
-    let (engine, _) = engine_with_worker(state, Store::new(directory.path().into()).unwrap());
+    let (engine, _) = support::fixture(state);
     engine
-        .request(Control::Alert {
+        .request(Action::Alert {
             id: id.clone(),
             message: "Review this".into(),
             critical: true,
@@ -216,24 +221,10 @@ fn alerts_mark_the_owning_workspace_and_clear_without_changing_execution_status(
     assert_eq!(catalog.workspaces[0].attention, 1);
     assert!(catalog.nodes[0].alert);
     assert_eq!(catalog.nodes[0].status, Status::Idle);
-    engine.request(Control::ClearAlert { id }).unwrap();
+    engine.request(Action::ClearAlert { id }).unwrap();
     assert_eq!(
         Catalog::new(&engine.snapshot(), Presentation::default(), &[]).attention,
         0
     );
     engine.shutdown();
-}
-
-fn engine_with_worker(
-    state: flowwm::model::State,
-    store: flowwm::store::Store,
-) -> (
-    flowwm::engine::Engine,
-    std::sync::mpsc::Receiver<flowwm::engine::UiCommand>,
-) {
-    Engine::with_worker(
-        state,
-        store,
-        Some(std::path::PathBuf::from(env!("CARGO_BIN_EXE_flowwm"))),
-    )
 }

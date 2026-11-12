@@ -1,10 +1,8 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
-use flowwm::{engine::Engine, extensions, ipc, store::Store, ui};
-use std::{fs, path::PathBuf};
-
+use flowwm::{client::DesktopClient, extensions, ipc, ui};
+use std::path::PathBuf;
 #[derive(Parser)]
-#[command(about = "FlowWM native graphical process; normally started by flowwm start")]
 struct Cli {
     #[arg(long)]
     socket: Option<PathBuf>,
@@ -15,43 +13,29 @@ struct Cli {
     #[arg(long)]
     windowed: bool,
     #[arg(long)]
-    example: bool,
-    #[arg(long)]
     dms: bool,
     #[arg(long)]
     background: bool,
 }
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    flowwm::config::set_worker_executable(std::env::current_exe()?.with_file_name("flowwm"));
     let socket = cli.socket.unwrap_or_else(ipc::default_socket);
+    let host_socket = cli.host_socket.unwrap_or_else(flow_host::ipc::host_socket);
+    if let Some(expected) = cli.data_dir {
+        let info = flow_host::client::Client::new(host_socket.clone())
+            .command(flow_core::protocol::Command::Info)?;
+        let actual: PathBuf = serde_json::from_value(info["data_directory"].clone())?;
+        anyhow::ensure!(
+            expected.canonicalize()? == actual.canonicalize()?,
+            "--data-dir must match the independently started host; start flow-core with the intended directory"
+        );
+    }
+    let (client, events) = DesktopClient::connect(host_socket)?;
+    let macros = extensions::load_bundle(&flowwm::config::directory().join("extensions"))?.macros;
     let listener = ipc::bind(&socket)?;
-    let extensions = extensions::load_bundle(&flowwm::config::directory().join("extensions"))?;
-    let macros = extensions.macros.clone();
-    let (engine, events) = if let Some(host_socket) = cli.host_socket {
-        let directory = serde_json::from_value(ipc::send(
-            &host_socket,
-            &serde_json::json!({"op":"data_directory"}),
-        )?)?;
-        let observer = flowwm::presentation::Writer::new(directory)?.observer();
-        Engine::connect_observed(host_socket, Some(observer))?
-    } else {
-        let config = directories::ProjectDirs::from("dev", "flowwm", "FlowWM")
-            .context("Home directory unavailable")?;
-        let store = Store::new(
-            cli.data_dir
-                .unwrap_or_else(|| config.data_local_dir().to_path_buf()),
-        )?;
-        let mut state = store.load(std::env::current_dir()?)?;
-        if cli.example && state.nodes.is_empty() {
-            ui::example(&mut state);
-        }
-        extensions.apply(&mut state)?;
-        Engine::new(state, store)
-    };
-    ipc::serve(listener, engine.clone(), macros.clone());
+    ipc::serve(listener, client.clone(), macros.clone());
     let result = ui::run(
-        engine.clone(),
+        client.clone(),
         events,
         macros,
         ui::Options {
@@ -60,7 +44,7 @@ fn main() -> Result<()> {
             background: cli.background,
         },
     );
-    engine.shutdown();
-    let _ = fs::remove_file(&socket);
+    client.shutdown();
+    let _ = std::fs::remove_file(socket);
     result
 }

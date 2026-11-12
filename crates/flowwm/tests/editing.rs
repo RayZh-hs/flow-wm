@@ -1,10 +1,10 @@
+mod support;
 use flowwm::{
     catalog::Catalog,
-    engine::{Control, Engine, Presentation},
+    client::{Action, Presentation},
     extensions,
     graph::*,
     model::*,
-    store::Store,
 };
 use serde_json::json;
 
@@ -48,10 +48,9 @@ fn clipboard_copies_internal_edges_as_idle_nodes_with_fresh_ids() {
     let recipe = state
         .recipe("Copy".into(), &[constant.id.clone(), display.id.clone()])
         .unwrap();
-    let temp = tempfile::tempdir().unwrap();
-    let (engine, _) = engine_with_worker(state, Store::new(temp.path().into()).unwrap());
+    let (engine, _) = support::fixture(state);
     let result = engine
-        .request(Control::Paste {
+        .request(Action::Paste {
             recipe,
             offset: Position { x: 60., y: 80. },
         })
@@ -68,17 +67,20 @@ fn clipboard_copies_internal_edges_as_idle_nodes_with_fresh_ids() {
     assert_eq!(state.connections.len(), 2);
     assert_eq!(state.connections[1].source.node, ids[0]);
     assert_eq!(state.connections[1].target.node, ids[1]);
-    assert_eq!(
-        evaluate(
-            (*state).clone(),
-            &ids[1],
-            None,
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))
-        )
-        .unwrap()
-        .answer["value"],
-        7
-    );
+    engine
+        .request(Action::Evaluate { id: ids[1].clone() })
+        .unwrap();
+    support::wait(|| {
+        engine
+            .snapshot()
+            .state
+            .node(&ids[1])
+            .unwrap()
+            .flow
+            .values
+            .get("value")
+            == Some(&json!(7))
+    });
     engine.shutdown();
 }
 
@@ -103,8 +105,7 @@ fn connection_catalog_uses_the_registered_casts_and_each_output_type() {
     let id = source.id.clone();
     let sink_id = sink.id.clone();
     state.nodes.extend([source, sink]);
-    let temp = tempfile::tempdir().unwrap();
-    let (engine, _) = engine_with_worker(state, Store::new(temp.path().into()).unwrap());
+    let (engine, _) = support::fixture(state);
     let catalog = Catalog::new(
         &engine.snapshot(),
         Presentation {
@@ -174,7 +175,7 @@ fn session_error_extension_routes_success_and_failure_without_core_agent_logic()
         state.nodes.push(node);
         let args = json!({"ERROR":{"code":code,"kind":"test","message":""}});
         let result = evaluate(
-            state,
+            state.graph(),
             &id,
             Some(("", args.clone())),
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -202,12 +203,11 @@ fn live_window_parameters_can_be_saved_without_stopping_or_detaching_the_window(
     node.desktop_window = true;
     node.status = Status::Running;
     state.nodes.push(node.clone());
-    let temp = tempfile::tempdir().unwrap();
-    let (engine, _) = engine_with_worker(state, Store::new(temp.path().into()).unwrap());
+    let (engine, _) = support::fixture(state);
     node.title = "My editor".into();
     node.window_id = None;
     engine
-        .request(Control::Update {
+        .request(Action::Update {
             node: Box::new(node.clone()),
         })
         .unwrap();
@@ -217,18 +217,4 @@ fn live_window_parameters_can_be_saved_without_stopping_or_detaching_the_window(
     assert_eq!(saved.status, Status::Running);
     assert_eq!(saved.flow.properties["display_title"], "My editor");
     engine.shutdown();
-}
-
-fn engine_with_worker(
-    state: flowwm::model::State,
-    store: flowwm::store::Store,
-) -> (
-    flowwm::engine::Engine,
-    std::sync::mpsc::Receiver<flowwm::engine::UiCommand>,
-) {
-    Engine::with_worker(
-        state,
-        store,
-        Some(std::path::PathBuf::from(env!("CARGO_BIN_EXE_flowwm"))),
-    )
 }

@@ -1,6 +1,6 @@
 //! Window images are captured and decoded away from GTK. Animation only reads cached surfaces.
 use crate::{
-    engine::{Control, Engine, UiCommand},
+    client::{Action, DesktopClient, UiCommand},
     model::State,
     niri::Desktop,
 };
@@ -255,7 +255,7 @@ pub struct Captures {
     pub ready: Arc<Mutex<Vec<Pixels>>>,
 }
 impl Captures {
-    pub fn new(engine: Engine) -> Self {
+    pub fn new(engine: DesktopClient) -> Self {
         let (tx, rx) = mpsc::channel::<(Desktop, bool)>();
         let ready = Arc::new(Mutex::new(vec![]));
         let output = ready.clone();
@@ -297,7 +297,7 @@ impl Captures {
                         && let Some(image) = decode("wallpaper".into(), &file, 3200)
                     {
                         output.lock().unwrap().push(image);
-                        engine.dispatch(Control::Ui {
+                        engine.dispatch(Action::Ui {
                             command: UiCommand::RefreshImages,
                         });
                     }
@@ -334,7 +334,7 @@ impl Captures {
                     if let Some(image) = decoded {
                         output.lock().unwrap().push(image);
                         last.insert(window.id, Instant::now());
-                        engine.dispatch(Control::Ui {
+                        engine.dispatch(Action::Ui {
                             command: UiCommand::RefreshImages,
                         });
                     }

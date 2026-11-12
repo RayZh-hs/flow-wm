@@ -239,20 +239,11 @@ fn graph_key(width: i32, height: i32, state: &State, revision: u64, view: &View)
     )
         .hash(&mut h);
     let mut linked = std::collections::HashSet::new();
-    for node in &state.nodes {
-        for dependency in &node.dependencies {
-            linked.insert(dependency.as_str());
-            linked.insert(node.id.as_str());
-        }
-    }
     for edge in &state.connections {
         linked.insert(edge.source.node.as_str());
         linked.insert(edge.target.node.as_str());
     }
-    for watcher in &state.watchers {
-        linked.insert(watcher.source.as_str());
-        linked.insert(watcher.target.as_str());
-    }
+
     for node in state
         .nodes
         .iter()

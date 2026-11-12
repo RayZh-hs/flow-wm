@@ -1010,6 +1010,7 @@ mod tests {
         Config {
             flow: Flow {
                 terminal: None,
+                notification_command: None,
                 motion_ms: None,
                 removal_ms: None,
                 inertia_decay: None,

@@ -35,3 +35,7 @@ path = "src/main.rs"
 [[bin]]
 name = "flowwm-shell"
 path = "src/shell_main.rs"
+
+[[bin]]
+name = "flowwm-desktop"
+path = "src/desktop_main.rs"

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand, ValueEnum};
 use flowwm::{
-    engine::{Control, UiCommand},
+    client::{Action, UiCommand},
     ipc,
     model::{Node, NodeKind, Position, Recipe},
 };
@@ -56,8 +56,6 @@ impl From<Kind> for NodeKind {
 }
 #[derive(Subcommand)]
 enum Cmd {
-    #[command(hide = true)]
-    EvaluateWorker,
     /// Read the shared KDL session environment without starting a desktop.
     ConfigEnvironment,
     /// Start the native graph overlay and desktop bar.
@@ -67,8 +65,6 @@ enum Cmd {
         host_socket: Option<PathBuf>,
         #[arg(long)]
         windowed: bool,
-        #[arg(long)]
-        example: bool,
         /// Use DMS for the desktop bar and node launcher.
         #[arg(long)]
         dms: bool,
@@ -158,7 +154,7 @@ enum Cmd {
         id: String,
         path: PathBuf,
     },
-    /// Send a JSON control message, for shell integrations.
+    /// Send a current runtime request or WM action as JSON.
     Send {
         json: String,
     },
@@ -170,7 +166,6 @@ fn main() -> Result<()> {
     let command = cli.command.unwrap_or(Cmd::Start {
         host_socket: None,
         windowed: false,
-        example: false,
         dms: false,
         background: false,
     });
@@ -186,11 +181,9 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string(&values)?);
             return Ok(());
         }
-        Cmd::EvaluateWorker => return flowwm::graph::run_worker(),
         Cmd::Start {
             host_socket,
             windowed,
-            example,
             dms,
             background,
         } => {
@@ -205,7 +198,6 @@ fn main() -> Result<()> {
             }
             for (enabled, flag) in [
                 (windowed, "--windowed"),
-                (example, "--example"),
                 (dms, "--dms"),
                 (background, "--background"),
             ] {
@@ -215,34 +207,34 @@ fn main() -> Result<()> {
             }
             return Err(child.exec()).with_context(|| format!("Start {}", executable.display()));
         }
-        Cmd::Toggle => Control::Ui {
+        Cmd::Toggle => Action::Ui {
             command: UiCommand::Toggle,
         },
-        Cmd::New => Control::Ui {
+        Cmd::New => Action::Ui {
             command: UiCommand::Palette,
         },
-        Cmd::Nodes => Control::Ui {
+        Cmd::Nodes => Action::Ui {
             command: UiCommand::Nodes,
         },
-        Cmd::Windows => Control::Ui {
+        Cmd::Windows => Action::Ui {
             command: UiCommand::Windows,
         },
-        Cmd::Search { mode } => Control::Ui {
+        Cmd::Search { mode } => Action::Ui {
             command: UiCommand::Search { mode },
         },
-        Cmd::Launcher => Control::Ui {
+        Cmd::Launcher => Action::Ui {
             command: UiCommand::Launcher,
         },
-        Cmd::Focus { id, open } => Control::Ui {
+        Cmd::Focus { id, open } => Action::Ui {
             command: UiCommand::Focus { id, expand: open },
         },
-        Cmd::Create { id } => Control::Ui {
+        Cmd::Create { id } => Action::Ui {
             command: UiCommand::CreateMacro { id },
         },
-        Cmd::Workspace { id } => Control::Ui {
+        Cmd::Workspace { id } => Action::Ui {
             command: UiCommand::Workspace { id },
         },
-        Cmd::Recipe { id } => Control::Ui {
+        Cmd::Recipe { id } => Action::Ui {
             command: UiCommand::Recipe { id },
         },
         Cmd::Performance { reset } => {
@@ -250,7 +242,7 @@ fn main() -> Result<()> {
                 "{}",
                 serde_json::to_string_pretty(&ipc::send(
                     &socket,
-                    &serde_json::json!({"op":"performance", "reset":reset})
+                    &serde_json::json!({"action":"performance", "reset":reset})
                 )?)?
             );
             return Ok(());
@@ -260,54 +252,67 @@ fn main() -> Result<()> {
                 "{}",
                 serde_json::to_string_pretty(&ipc::send(
                     &socket,
-                    &serde_json::json!({"op":"catalog"})
+                    &serde_json::json!({"action":"catalog"})
                 )?)?
             );
             return Ok(());
         }
-        Cmd::Navigate { direction } => Control::Ui {
+        Cmd::Navigate { direction } => Action::Ui {
             command: UiCommand::Navigate { direction },
         },
-        Cmd::Workflows => Control::Ui {
+        Cmd::Workflows => Action::Ui {
             command: UiCommand::Workflows,
         },
-        Cmd::Status => Control::Status,
+        Cmd::Status => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &flow_host::client::Client::new(flow_host::ipc::host_socket()).snapshot()?
+                )?
+            );
+            return Ok(());
+        }
         Cmd::Add {
             kind,
             title,
             command,
             cwd,
         } => {
-            let state: flowwm::model::State =
-                serde_json::from_value(ipc::send(&socket, &Control::Status)?)?;
+            let view = ipc::send(&socket, &serde_json::json!({"action":"view"}))?;
+            let selected = view["selected_workflow"]
+                .as_str()
+                .context("Selected workflow unavailable")?;
+            let row: flowwm::model::Workspace = serde_json::from_value(
+                view["workflows"]
+                    .as_array()
+                    .context("Workflow rows unavailable")?
+                    .iter()
+                    .find(|r| r["id"] == selected)
+                    .context("Selected row unavailable")?
+                    .clone(),
+            )?;
             let mut node = Node::new(
-                &state.selected_workspace,
+                selected,
                 kind.into(),
-                cwd.unwrap_or_else(|| state.workspace().cwd.clone()),
+                cwd.unwrap_or_else(|| row.cwd.clone()),
                 Position {
                     x: 160.0,
-                    y: 80.0
-                        + state
-                            .nodes
-                            .iter()
-                            .filter(|n| n.workspace == state.selected_workspace)
-                            .count() as f64
-                            * 200.0,
+                    y: 80.0 + view["nodes"].as_array().map(|n| n.len()).unwrap_or(0) as f64 * 200.0,
                 },
             );
             node.title = title;
             if let Some(command) = command {
                 node.command = command;
             }
-            Control::Create {
+            Action::Create {
                 node: Box::new(node),
             }
         }
-        Cmd::Run { id, downstream } => Control::Run { id, downstream },
-        Cmd::Stop { id } => Control::Stop { id },
-        Cmd::Interrupt { id } => Control::Interrupt { id },
-        Cmd::Approve { id, output } => Control::Approve { id, output },
-        Cmd::Open { id } => Control::Ui {
+        Cmd::Run { id, downstream } => Action::Run { id, downstream },
+        Cmd::Stop { id } => Action::Stop { id },
+        Cmd::Interrupt { id } => Action::Interrupt { id },
+        Cmd::Approve { id, output } => Action::Approve { id, output },
+        Cmd::Open { id } => Action::Ui {
             command: UiCommand::Open { id },
         },
         Cmd::Import { path } => {
@@ -316,13 +321,14 @@ fn main() -> Result<()> {
                 "Recipe file is too large"
             );
             let recipe: Recipe = serde_json::from_slice(&fs::read(path)?)?;
-            Control::ImportRecipe { recipe }
+            Action::ImportRecipe { recipe }
         }
         Cmd::Export { id, path } => {
-            let state: flowwm::model::State =
-                serde_json::from_value(ipc::send(&socket, &Control::Status)?)?;
-            let recipe = state
-                .recipes
+            let recipes: Vec<Recipe> = serde_json::from_value(ipc::send(
+                &socket,
+                &serde_json::json!({"action":"recipes"}),
+            )?)?;
+            let recipe = recipes
                 .iter()
                 .find(|r| r.id == id)
                 .context("Recipe not found")?;
@@ -330,18 +336,26 @@ fn main() -> Result<()> {
             println!("Exported {} to {}", recipe.name, path.display());
             return Ok(());
         }
-        Cmd::Send { json } => serde_json::from_str(&json)?,
-        Cmd::Quit => Control::Ui {
+        Cmd::Send { json } => {
+            let value: serde_json::Value = serde_json::from_str(&json)?;
+            if value.get("protocol").is_some() || value.get("signal_protocol").is_some() {
+                let result = flow_host::ipc::send(&flow_host::ipc::host_socket(), &value)?;
+                println!("{}", serde_json::to_string_pretty(&result)?);
+                return Ok(());
+            }
+            serde_json::from_value(value)?
+        }
+        Cmd::Quit => Action::Ui {
             command: UiCommand::Quit,
         },
     };
     let regular_launcher = matches!(
         control,
-        Control::Ui {
+        Action::Ui {
             command: UiCommand::Launcher
         }
     );
-    if matches!(control, Control::Ui { .. }) && !socket.exists() {
+    if matches!(control, Action::Ui { .. }) && !socket.exists() {
         let status = std::process::Command::new("systemctl")
             .args(["--user", "start", "flowwm.service"])
             .status();

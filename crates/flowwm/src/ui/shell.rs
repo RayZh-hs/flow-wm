@@ -1,7 +1,7 @@
 use super::canvas::{self, CanvasAction, View};
 use super::{Options, theme::Theme};
 use crate::{
-    engine::{Control, Engine, Presentation, UiCommand},
+    client::{Action, DesktopClient, Presentation, UiCommand},
     extensions::Macro,
     model::*,
     niri::{self, Desktop},
@@ -22,7 +22,7 @@ use std::{
 };
 
 pub fn run(
-    engine: Engine,
+    engine: DesktopClient,
     events: mpsc::Receiver<UiCommand>,
     macros: Vec<Macro>,
     options: Options,
@@ -91,7 +91,7 @@ pub fn run(
         });
         let mut signals = signal_hook::iterator::Signals::new([libc::SIGTERM, libc::SIGINT]).expect("signal handler");
         let signal_handle = signals.handle(); let signal_engine = engine.clone();
-        std::thread::spawn(move || { if signals.forever().next().is_some() { signal_engine.dispatch(Control::Ui { command: UiCommand::Quit }); } });
+        std::thread::spawn(move || { if signals.forever().next().is_some() { signal_engine.dispatch(Action::Ui { command: UiCommand::Quit }); } });
         app.connect_shutdown(move |_| signal_handle.close());
         let stop_signal = stop.clone(); app.connect_shutdown(move |_| stop_signal.store(true, Ordering::Relaxed));
         if !options.background { shell.show_nodes(); }
@@ -154,7 +154,7 @@ struct Shell {
     app: gtk::Application,
     fallback_window: gtk::ApplicationWindow,
     bar: gtk::ApplicationWindow,
-    engine: Engine,
+    engine: DesktopClient,
     macros: Vec<Macro>,
     desktop: Arc<Mutex<Desktop>>,
     fallback_canvas: super::surface::Surface,
@@ -267,7 +267,7 @@ impl Shell {
                     Rc::new(move |action| {
                         if let Some(shell) = weak.upgrade() {
                             if shell.engine.snapshot().state.selected_workspace != workspace {
-                                let _ = shell.engine.request(Control::SelectWorkspace {
+                                let _ = shell.engine.request(Action::SelectWorkspace {
                                     id: workspace.clone(),
                                 });
                                 shell.refresh();
@@ -293,7 +293,7 @@ impl Shell {
                     ) && let Some(shell) = weak.upgrade()
                         && shell.engine.snapshot().state.selected_workspace != workspace
                     {
-                        let _ = shell.engine.request(Control::SelectWorkspace {
+                        let _ = shell.engine.request(Action::SelectWorkspace {
                             id: workspace.clone(),
                         });
                         shell.refresh();
@@ -406,7 +406,7 @@ impl Shell {
 
     fn build(
         app: &gtk::Application,
-        engine: Engine,
+        engine: DesktopClient,
         macros: Vec<Macro>,
         options: Options,
         desktop: Arc<Mutex<Desktop>>,
@@ -627,7 +627,7 @@ impl Shell {
         on_click(&nodes_button, &shell, |s| s.fit());
         on_click(&fit_button, &shell, |s| s.fit());
         on_click(&run_button, &shell, |s| {
-            s.engine.dispatch(Control::RunWorkspace)
+            s.engine.dispatch(Action::RunWorkspace)
         });
         on_click(&notes_button, &shell, |s| s.notes());
         on_click(&bar_notes, &shell, |s| {
@@ -670,12 +670,12 @@ impl Shell {
             CanvasAction::Open(id) => self.open(&id),
             CanvasAction::Add => self.palette(),
             CanvasAction::Edit(id) => self.edit(&id),
-            CanvasAction::Delete(id) => self.engine.dispatch(Control::Delete { id }),
-            CanvasAction::Run(id) => self.engine.dispatch(Control::Run {
+            CanvasAction::Delete(id) => self.engine.dispatch(Action::Delete { id }),
+            CanvasAction::Run(id) => self.engine.dispatch(Action::Run {
                 id,
                 downstream: false,
             }),
-            CanvasAction::Stop(id) => self.engine.dispatch(Control::Stop { id }),
+            CanvasAction::Stop(id) => self.engine.dispatch(Action::Stop { id }),
             CanvasAction::Chat => self.agent_chat(),
             CanvasAction::ConnectSearch => self.connect_search(),
             CanvasAction::ConnectPin(endpoint, output) => self.connect_pin_search(endpoint, output),
@@ -689,7 +689,7 @@ impl Shell {
             CanvasAction::EditValue(id) => self.edit_value(&id),
             CanvasAction::Search => self.search_nodes(),
             CanvasAction::Help => self.help(),
-            CanvasAction::ClearHistory => self.engine.dispatch(Control::ClearHistory),
+            CanvasAction::ClearHistory => self.engine.dispatch(Action::ClearHistory),
             CanvasAction::Camera => self.prepare_camera(),
             CanvasAction::Escape => self.escape(),
         }
@@ -712,7 +712,7 @@ impl Shell {
             .filter(|n| n.workspace == state.selected_workspace)
             .map(|n| (n.id.clone(), self.view.borrow().position(n)))
             .collect();
-        match self.engine.request(Control::Arrange { positions }) {
+        match self.engine.request(Action::Arrange { positions }) {
             Ok(_) => {
                 let state = self.engine.snapshot().state;
                 let mut view = self.view.borrow_mut();
@@ -768,7 +768,7 @@ impl Shell {
         self.canvas().clipboard().set_text(&text);
         if cut {
             for id in selected {
-                self.engine.dispatch(Control::Delete { id });
+                self.engine.dispatch(Action::Delete { id });
             }
         }
     }
@@ -808,7 +808,7 @@ impl Shell {
                 offset.x += 40.;
                 offset.y += 40.;
             }
-            match shell.engine.request(Control::Paste { recipe, offset }) {
+            match shell.engine.request(Action::Paste { recipe, offset }) {
                 Ok(result) => {
                     let ids: Vec<String> =
                         serde_json::from_value(result["ids"].clone()).unwrap_or_default();
@@ -828,7 +828,7 @@ impl Shell {
                 .node(id)
                 .is_some_and(|n| n.flow.properties.contains_key("_alert"))
         }) {
-            self.engine.dispatch(Control::ClearAlert { id: id.clone() });
+            self.engine.dispatch(Action::ClearAlert { id: id.clone() });
         }
         let mut view = self.view.borrow_mut();
         view.selected = id.clone();
@@ -910,7 +910,7 @@ impl Shell {
         for node in state.nodes.iter().filter(|n| {
             n.workspace == state.selected_workspace && n.column_mode == ColumnMode::Window
         }) {
-            if let Err(error) = self.engine.request(Control::ColumnMode {
+            if let Err(error) = self.engine.request(Action::ColumnMode {
                 id: node.id.clone(),
                 mode: ColumnMode::Node,
             }) {
@@ -1610,7 +1610,7 @@ impl Shell {
             }
         }
         let state = self.engine.snapshot().state;
-        if let Err(error) = self.engine.request(Control::RowView {
+        if let Err(error) = self.engine.request(Action::RowView {
             workspace: state.selected_workspace.clone(),
             view: RowView::Nodes,
         }) {
@@ -1649,7 +1649,7 @@ impl Shell {
             return;
         }
         let desktop = self.desktop.lock().unwrap().clone();
-        if let Err(error) = self.engine.request(Control::SyncDesktop {
+        if let Err(error) = self.engine.request(Action::SyncDesktop {
             desktop: desktop.clone(),
         }) {
             self.show_error(&error.to_string());
@@ -1692,7 +1692,7 @@ impl Shell {
                         })
                 })
                 .context("No empty row is available for this group")?;
-            self.engine.request(Control::BindRow {
+            self.engine.request(Action::BindRow {
                 workspace: id.into(),
                 row: Row {
                     session: desktop.session.clone(),
@@ -1766,7 +1766,7 @@ impl Shell {
         if let Some(window) = selected.as_ref().and_then(|n| n.window_id) {
             self.return_window.set(Some(window));
         }
-        if let Err(error) = self.engine.request(Control::RowView {
+        if let Err(error) = self.engine.request(Action::RowView {
             workspace: state.selected_workspace.clone(),
             view: RowView::Windows,
         }) {
@@ -1846,7 +1846,7 @@ impl Shell {
         source: crate::graph::Endpoint,
         input: &str,
         reverse: bool,
-        application: Option<crate::engine::ApplicationSelection>,
+        application: Option<crate::client::ApplicationSelection>,
     ) {
         let Some(m) = self.macros.iter().find(|m| m.id == macro_id) else {
             return;
@@ -1906,12 +1906,12 @@ impl Shell {
         }
         match self
             .engine
-            .request(Control::Create {
+            .request(Action::Create {
                 node: Box::new(node),
             })
             .and_then(|_| {
                 self.engine
-                    .request(Control::ConnectPins { connection: edge })
+                    .request(Action::ConnectPins { connection: edge })
             }) {
             Ok(_) => {
                 self.show_nodes();
@@ -1925,7 +1925,7 @@ impl Shell {
                 self.edit(&id);
             }
             Err(error) => {
-                self.engine.dispatch(Control::Delete { id });
+                self.engine.dispatch(Action::Delete { id });
                 self.show_error(&error.to_string());
             }
         }
@@ -2012,7 +2012,7 @@ impl Shell {
                 self.show_error(&error.to_string());
                 return;
             }
-            if let Err(error) = self.engine.request(Control::SelectWorkspace {
+            if let Err(error) = self.engine.request(Action::SelectWorkspace {
                 id: node.workspace.clone(),
             }) {
                 self.show_error(&error.to_string());
@@ -2065,7 +2065,7 @@ impl Shell {
         }) else {
             return false;
         };
-        self.engine.dispatch(Control::Stop {
+        self.engine.dispatch(Action::Stop {
             id: node.id.clone(),
         });
         true
@@ -2091,13 +2091,19 @@ impl Shell {
                         let Some(node) = state.node(&id) else {
                             continue;
                         };
+                        if state.behavior(node) == Some(flow_core::providers::Behavior::Source) {
+                            if run {
+                                self.edit(&id);
+                            }
+                            continue;
+                        }
                         if run && !node.status.active() {
-                            self.engine.dispatch(Control::Run {
+                            self.engine.dispatch(Action::Run {
                                 id,
                                 downstream: false,
                             });
                         } else if !run && (node.status.active() || node.kind == NodeKind::Window) {
-                            self.engine.dispatch(Control::Stop { id });
+                            self.engine.dispatch(Action::Stop { id });
                         }
                     }
                 } else {
@@ -2179,7 +2185,7 @@ impl Shell {
                 self.show_nodes();
                 self.recipes();
             }
-            UiCommand::RunGroup => self.engine.dispatch(Control::RunWorkspace),
+            UiCommand::RunGroup => self.engine.dispatch(Action::RunWorkspace),
             UiCommand::Help => self.help(),
             UiCommand::BarGeometry { output, insets } => {
                 self.bar_geometry
@@ -2223,14 +2229,14 @@ impl Shell {
                     self.show_error(&error.to_string());
                     return;
                 }
-                match self.engine.request(Control::SelectWorkspace { id }) {
+                match self.engine.request(Action::SelectWorkspace { id }) {
                     Ok(_) => {
                         self.refresh();
                     }
                     Err(error) => self.show_error(&error.to_string()),
                 }
             }
-            UiCommand::Recipe { id } => match self.engine.request(Control::Instantiate { id }) {
+            UiCommand::Recipe { id } => match self.engine.request(Action::Instantiate { id }) {
                 Ok(_) => {
                     self.refresh();
                     self.show_nodes();
@@ -2311,7 +2317,7 @@ impl Shell {
             .iter()
             .filter(|n| matches!(n.status, Status::Review | Status::Failed))
             .count();
-        let edges: usize = visible.iter().map(|n| n.dependencies.len()).sum();
+        let edges: usize = state.connections.len();
         self.footer.set_text(&format!(
             "{} nodes  ·  {} connections  ·  saved locally",
             visible.len(),
@@ -2650,7 +2656,7 @@ impl Shell {
                         })
                     })
                 {
-                    if let Err(error) = self.engine.request(Control::RowView {
+                    if let Err(error) = self.engine.request(Action::RowView {
                         workspace: destination.id.clone(),
                         view: RowView::Windows,
                     }) {
@@ -2685,7 +2691,7 @@ impl Shell {
                         row.active_window_id = Some(window.id);
                     }
                 }
-                if let Err(error) = self.engine.request(Control::ColumnMode {
+                if let Err(error) = self.engine.request(Action::ColumnMode {
                     id: id.into(),
                     mode: ColumnMode::Window,
                 }) {
@@ -2723,7 +2729,7 @@ impl Shell {
                 return;
             }
             if node.flow.properties.contains_key("application") {
-                self.engine.dispatch(Control::Run {
+                self.engine.dispatch(Action::Run {
                     id: id.into(),
                     downstream: false,
                 });
@@ -2747,7 +2753,7 @@ impl Shell {
             self.show_error(&format!("Open workspace: {error:#}"));
             return;
         }
-        if let Err(error) = self.engine.request(Control::RowView {
+        if let Err(error) = self.engine.request(Action::RowView {
             workspace: node.workspace.clone(),
             view: RowView::Windows,
         }) {
@@ -2917,7 +2923,7 @@ impl Shell {
                 Ok(value) => {
                     let mut n = node.clone();
                     n.flow.properties.insert("value".into(), value);
-                    match shell.engine.request(Control::Update { node: Box::new(n) }) {
+                    match shell.engine.request(Action::Update { node: Box::new(n) }) {
                         Ok(_) => p.popdown(),
                         Err(e) => shell.show_error(&e.to_string()),
                     }
@@ -3039,7 +3045,7 @@ impl Shell {
                     node.writable = true;
                     let id = node.id.clone();
                     drop(view);
-                    if let Err(error) = shell.engine.request(Control::Create {
+                    if let Err(error) = shell.engine.request(Action::Create {
                         node: Box::new(node),
                     }) {
                         shell.show_error(&error.to_string());
@@ -3048,7 +3054,7 @@ impl Shell {
                     *current.borrow_mut() = Some(id.clone());
                     id
                 };
-                match shell.engine.request(Control::Chat { id, text }) {
+                match shell.engine.request(Action::Chat { id, text }) {
                     Ok(_) => entry.set_text(""),
                     Err(error) => shell.show_error(&error.to_string()),
                 }
@@ -3314,14 +3320,9 @@ impl Shell {
                 .properties
                 .insert("application".into(), serde_json::json!(id));
         }
-        if matches!(m.kind, NodeKind::Agent | NodeKind::Shell | NodeKind::Gate)
-            && let Some(selected) = view.selected.as_ref()
-        {
-            node.dependencies.push(selected.clone());
-        }
         let id = node.id.clone();
         drop(view);
-        match self.engine.request(Control::Create {
+        match self.engine.request(Action::Create {
             node: Box::new(node),
         }) {
             Ok(_) => {
@@ -3336,10 +3337,6 @@ impl Shell {
         let Some(node) = state.node(id).cloned() else {
             return;
         };
-        if node.kind == NodeKind::Metric && node.status.active() {
-            self.watcher(id);
-            return;
-        }
         if node.status.active() && node.kind != NodeKind::Window && !node.desktop_window {
             self.show_error("Stop this node before changing its parameters.");
             return;
@@ -3395,7 +3392,7 @@ impl Shell {
         }
         if matches!(node.kind, NodeKind::Shell | NodeKind::Metric) {
             let info = label(
-                "Runs as your user. Upstream results are JSON in $FLOWWM_INPUTS.",
+                "Runs as your user. Typed inputs are JSON in $FLOWWM_DATA_INPUTS; signal arguments are FLOWWM_ARG_*.",
                 "hint",
             );
             info.set_wrap(true);
@@ -3406,18 +3403,13 @@ impl Shell {
         if node.kind == NodeKind::Agent {
             root.append(&writable);
         }
-        let review = gtk::CheckButton::with_label("Ask me to review the result before continuing");
-        review.set_active(node.review);
-        if matches!(node.kind, NodeKind::Agent | NodeKind::Shell) {
-            root.append(&review);
-        }
         let interval = gtk::SpinButton::with_range(1.0, 86400.0, 1.0);
         interval.set_value(node.metric.interval_secs as f64);
         let unit = entry(&node.metric.unit);
         if node.kind == NodeKind::Metric {
             field(&root, "Sample every (seconds)", &interval);
             field(&root, "Unit", &unit);
-            let watchers = gtk::Button::with_label("Manage watchers");
+            let watchers = gtk::Button::with_label("Create threshold source");
             let weak = self.weak.clone();
             let id = node.id.clone();
             watchers.connect_clicked(move |_| {
@@ -3455,7 +3447,7 @@ impl Shell {
             let engine = self.engine.clone();
             let id = node.id.clone();
             clear.connect_clicked(move |button| {
-                engine.dispatch(Control::ClearAlert { id: id.clone() });
+                engine.dispatch(Action::ClearAlert { id: id.clone() });
                 button.set_sensitive(false);
             });
             root.append(&clear);
@@ -3488,14 +3480,23 @@ impl Shell {
             let b = editor.buffer();
             node.command = b.text(&b.start_iter(), &b.end_iter(), true).to_string();
             node.writable = writable.is_active();
-            node.review = review.is_active();
             node.metric.interval_secs = interval.value() as u64;
             node.metric.unit = unit.text().to_string();
-            // Preserve graph edits made while the parameters were open.
-            if let Some(current) = s.engine.snapshot().state.node(&node.id) {
-                node.dependencies = current.dependencies.clone();
+            if node.kind == NodeKind::Agent {
+                node.flow
+                    .properties
+                    .insert("writable".into(), serde_json::json!(node.writable));
             }
-            match s.engine.request(Control::Update {
+            if node.kind == NodeKind::Metric {
+                node.flow.properties.insert(
+                    "interval_secs".into(),
+                    serde_json::json!(node.metric.interval_secs),
+                );
+                node.flow
+                    .properties
+                    .insert("unit".into(), serde_json::json!(node.metric.unit));
+            }
+            match s.engine.request(Action::Update {
                 node: Box::new(node),
             }) {
                 Ok(_) => {
@@ -3541,7 +3542,7 @@ impl Shell {
         let d = dialog.clone();
         save.connect_clicked(move |_| {
             let b = text.buffer();
-            e.dispatch(Control::Notes {
+            e.dispatch(Action::Notes {
                 text: b.text(&b.start_iter(), &b.end_iter(), true).to_string(),
             });
             d.close();
@@ -3554,25 +3555,9 @@ impl Shell {
         command: flow_core::protocol::Command,
         caller: Option<String>,
     ) -> Result<serde_json::Value> {
-        let reply = self.engine.request(Control::Orchestrate {
-            request: Box::new(flow_core::protocol::Request {
-                protocol: 2,
-                id: crate::model::id(),
-                expected_revision: None,
-                caller: caller.map(Into::into),
-                command,
-            }),
-        })?;
-        if let Some(error) = reply.get("error").filter(|e| !e.is_null()) {
-            bail!(
-                "{}",
-                error["message"]
-                    .as_str()
-                    .unwrap_or("Workflow command failed")
-            );
-        }
-        Ok(reply["result"].clone())
+        self.engine.orchestrate(command, caller.map(Into::into))
     }
+
     fn workspace_dialog(&self) {
         use flow_core::{domain::*, protocol::Command};
         let value = match self.orchestrate(
@@ -3784,7 +3769,7 @@ impl Shell {
             let e = self.engine.clone();
             let d = dialog.clone();
             button.connect_clicked(move |_| {
-                e.dispatch(Control::Instantiate { id: id.clone() });
+                e.dispatch(Action::Instantiate { id: id.clone() });
                 d.close();
             });
             root.append(&button);
@@ -3808,7 +3793,7 @@ impl Shell {
         let d = dialog.clone();
         let w = self.weak.clone();
         save.connect_clicked(move |_| {
-            match e.request(Control::SaveRecipe {
+            match e.request(Action::SaveRecipe {
                 name: name.text().into(),
                 nodes: ids.clone(),
             }) {
@@ -3854,12 +3839,12 @@ impl Shell {
         target.set_active(Some(0));
         field(&root, "Queue this node", &target.widget);
         let note = label(
-            "Triggers once per threshold crossing. It rearms after the metric returns to the other side. The target’s normal input conditions still apply.",
+            "Creates a polling source connected to the selected node. It emits once per threshold crossing and rearms after the value returns to the other side.",
             "hint",
         );
         note.set_wrap(true);
         root.append(&note);
-        let create = gtk::Button::with_label("Enable watcher");
+        let create = gtk::Button::with_label("Create watcher node");
         create.add_css_class("accent");
         root.append(&create);
         let e = self.engine.clone();
@@ -3867,58 +3852,15 @@ impl Shell {
         let d = dialog.clone();
         create.connect_clicked(move |_| {
             if let Some(target) = target.active_id() {
-                e.dispatch(Control::Watch {
-                    watcher: Watcher {
-                        id: crate::model::id(),
-                        source: source.clone(),
-                        target: target.to_string(),
-                        threshold: threshold.value(),
-                        above: operator.active_id().as_deref() == Some("gt"),
-                        enabled: true,
-                        armed: true,
-                        last_triggered: None,
-                    },
+                e.dispatch(Action::Watch {
+                    source: source.clone(),
+                    target: target.to_string(),
+                    threshold: threshold.value(),
+                    above: operator.active_id().as_deref() == Some("gt"),
                 });
                 d.close();
             }
         });
-        for watcher in state.watchers.iter().filter(|w| w.source == id) {
-            let row = row(10);
-            row.append(&label(
-                &format!(
-                    "{} {} → {}",
-                    if watcher.above { ">" } else { "<" },
-                    watcher.threshold,
-                    state
-                        .node(&watcher.target)
-                        .map(|n| n.title.as_str())
-                        .unwrap_or("node")
-                ),
-                "muted",
-            ));
-            let remove = gtk::Button::with_label("Remove");
-            let enabled = gtk::Switch::new();
-            enabled.set_valign(gtk::Align::Center);
-            enabled.set_active(watcher.enabled);
-            let e = self.engine.clone();
-            let template = watcher.clone();
-            enabled.connect_active_notify(move |switch| {
-                let mut watcher = template.clone();
-                watcher.enabled = switch.is_active();
-                watcher.armed = true;
-                e.dispatch(Control::Watch { watcher });
-            });
-            row.append(&enabled);
-            let e = self.engine.clone();
-            let id = watcher.id.clone();
-            let r = row.clone();
-            remove.connect_clicked(move |_| {
-                e.dispatch(Control::DeleteWatcher { id: id.clone() });
-                r.set_visible(false);
-            });
-            row.append(&remove);
-            root.append(&row);
-        }
         dialog.set_child(Some(&gtk::ScrolledWindow::builder().child(&root).build()));
         dialog.present();
     }
@@ -4017,7 +3959,7 @@ fn window_interface<'a>(
 }
 
 fn apply_interface_fields(
-    engine: &Engine,
+    engine: &DesktopClient,
     id: &str,
     fields: &[(String, gtk::Entry)],
 ) -> Result<()> {
@@ -4045,7 +3987,7 @@ fn apply_interface_fields(
         }
     }
     if changed {
-        engine.request(Control::Update {
+        engine.request(Action::Update {
             node: Box::new(node),
         })?;
     }
@@ -4143,12 +4085,12 @@ impl ExtensionPanel {
                     }
                     use flow_core::providers::InterfaceOperation;
                     engine.dispatch(match &operation {
-                        InterfaceOperation::Activate => Control::Run {
+                        InterfaceOperation::Activate => Action::Run {
                             id: id.clone(),
                             downstream: false,
                         },
-                        InterfaceOperation::Interrupt => Control::Interrupt { id: id.clone() },
-                        InterfaceOperation::Emit { pin, args } => Control::Emit {
+                        InterfaceOperation::Interrupt => Action::Interrupt { id: id.clone() },
+                        InterfaceOperation::Emit { pin, args } => Action::Emit {
                             source: crate::graph::Endpoint {
                                 node: id.clone(),
                                 pin: pin.clone(),

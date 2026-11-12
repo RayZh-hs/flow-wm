@@ -160,17 +160,10 @@ pub fn arrange(state: &State, width: i32, height: i32, wrap_zoom: f64) -> Vec<(S
         .map(|n| (n.id.clone(), n))
         .collect();
     let mut edges = BTreeSet::new();
-    for node in nodes.values() {
-        for source in &node.dependencies {
-            edges.insert((source.clone(), node.id.clone()));
-        }
-    }
     for e in &state.connections {
         edges.insert((e.source.node.clone(), e.target.node.clone()));
     }
-    for w in &state.watchers {
-        edges.insert((w.source.clone(), w.target.clone()));
-    }
+
     edges.retain(|(a, b)| nodes.contains_key(a) && nodes.contains_key(b) && a != b);
     let mut pending: BTreeSet<_> = nodes.keys().cloned().collect();
     let mut ranks = BTreeMap::<String, usize>::new();
@@ -397,7 +390,16 @@ mod tests {
     fn arranging_persists_and_replaces_the_live_window_offsets() {
         let mut state = scene(2, 0);
         let source = state.nodes[0].id.clone();
-        state.nodes[1].dependencies.push(source);
+        state.connections.push(crate::graph::Connection {
+            source: crate::graph::Endpoint {
+                node: source,
+                pin: "on_exit".into(),
+            },
+            target: crate::graph::Endpoint {
+                node: state.nodes[1].id.clone(),
+                pin: "in".into(),
+            },
+        });
         let mut layout = Arrangement::default();
         layout.update(&state, 1200, 800);
         let positions = arrange(&state, 1200, 800, DEFAULT_WRAP_ZOOM);
@@ -481,15 +483,24 @@ mod tests {
     #[test]
     fn wrapped_layers_clear_mixed_card_heights_and_preserve_dependencies() {
         let mut state = scene(12, 3);
-        let mut target = Node::new(
+        let target = Node::new(
             &state.selected_workspace,
             NodeKind::Human,
             "/tmp".into(),
             Position::default(),
         );
-        target
-            .dependencies
-            .extend(state.nodes.iter().map(|n| n.id.clone()));
+        for node in &state.nodes {
+            state.connections.push(crate::graph::Connection {
+                source: crate::graph::Endpoint {
+                    node: node.id.clone(),
+                    pin: "on_exit".into(),
+                },
+                target: crate::graph::Endpoint {
+                    node: target.id.clone(),
+                    pin: "in".into(),
+                },
+            });
+        }
         let target_id = target.id.clone();
         state.nodes.push(target);
         let positions: HashMap<_, _> = arrange(&state, 1200, 800, DEFAULT_WRAP_ZOOM)

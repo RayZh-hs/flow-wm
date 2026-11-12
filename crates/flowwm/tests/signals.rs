@@ -1,3 +1,4 @@
+mod support;
 use flowwm::{graph::*, model::*};
 use serde_json::{Value, json};
 use std::sync::{Arc, atomic::AtomicBool};
@@ -30,7 +31,21 @@ fn wire(state: &mut State, a: &str, out: &str, b: &str, input: &str) {
     .unwrap();
 }
 fn run(state: State, root: &str, signal: Option<(&str, Value)>) -> Evaluation {
-    evaluate(state, root, signal, Arc::new(AtomicBool::new(false))).unwrap()
+    flow_builtins::evaluate(
+        state.graph(),
+        EvaluationContext {
+            workflow: state.selected_workspace.clone().into(),
+            published: state
+                .nodes
+                .iter()
+                .map(|n| (n.id.clone().into(), n.flow.values.clone()))
+                .collect(),
+        },
+        root,
+        signal,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -231,7 +246,7 @@ fn window_exit_delivers_unsigned_status_and_rejects_invalid_payloads() {
     ] {
         assert!(
             evaluate(
-                state.clone(),
+                state.graph(),
                 &window,
                 Some(("on_exit", args)),
                 Arc::new(AtomicBool::new(false))
@@ -400,6 +415,7 @@ fn extensions_register_types_casts_nodes_and_exposed_properties() {
         source: "value.toString()".into(),
     });
     state.node_types.push(NodeDefinition {
+        behavior: flow_core::providers::Behavior::Lazy,
         window: None,
         id: "custom".into(),
         name: "Custom".into(),
@@ -517,7 +533,7 @@ fn a_data_diamond_shares_computation_but_the_next_request_is_fresh() {
 #[test]
 fn extension_loading_registers_definitions_without_evaluating_code() {
     let directory = tempfile::tempdir().unwrap();
-    std::fs::write(directory.path().join("custom.json"), serde_json::to_vec(&json!({"version":2,"types":[{"name":"Count","representation":{"kind":"int"}}],"nodes":[{"id":"custom","name":"Custom","source":"intentionally invalid; never evaluated on load"}]})).unwrap()).unwrap();
+    std::fs::write(directory.path().join("custom.json"), serde_json::to_vec(&json!({"version":3,"types":[{"name":"Count","representation":{"kind":"int"}}],"nodes":[{"id":"custom","name":"Custom","source":"intentionally invalid; never evaluated on load"}]})).unwrap()).unwrap();
     let bundle = flowwm::extensions::load_bundle(directory.path()).unwrap();
     assert!(
         bundle
@@ -545,7 +561,7 @@ fn vox_bindings_preserve_strings_and_empty_records() {
     assert_eq!(result.answer["empty"], json!({}));
 }
 
-fn wait_for(engine: &flowwm::engine::Engine, predicate: impl Fn(&State) -> bool) {
+fn wait_for(engine: &flowwm::client::DesktopClient, predicate: impl Fn(&State) -> bool) {
     let start = std::time::Instant::now();
     loop {
         if predicate(&engine.snapshot().state) {
@@ -562,7 +578,7 @@ fn wait_for(engine: &flowwm::engine::Engine, predicate: impl Fn(&State) -> bool)
 
 #[test]
 fn engine_delivers_each_signal_with_its_own_arguments_and_lazy_data() {
-    use flowwm::{engine::Control, store::Store};
+    use flowwm::client::Action;
     let directory = tempfile::tempdir().unwrap();
     let mut state = State::empty(directory.path().into());
     let source = node(&mut state, NodeKind::Shell);
@@ -583,11 +599,10 @@ fn engine_delivers_each_signal_with_its_own_arguments_and_lazy_data() {
     n.flow.inputs.push(Pin::new("number", Type::Int));
     wire(&mut state, &source, "out", &sink, "in");
     wire(&mut state, &value, "value", &sink, "number");
-    let (engine, _) =
-        engine_with_worker(state, Store::new(directory.path().join("state")).unwrap());
+    let (engine, _) = support::fixture(state);
     for count in [1, 2] {
         engine
-            .request(Control::Emit {
+            .request(Action::Emit {
                 source: Endpoint {
                     node: source.clone(),
                     pin: "out".into(),
@@ -608,7 +623,7 @@ fn engine_delivers_each_signal_with_its_own_arguments_and_lazy_data() {
 
 #[test]
 fn stop_interrupts_vox_and_python_loops_without_blocking_control() {
-    use flowwm::{engine::Control, store::Store};
+    use flowwm::client::Action;
     for (kind, source) in [
         (NodeKind::Vox, "{ for (true) { } { value = 1, } }"),
         (NodeKind::Python, "while True: pass"),
@@ -617,17 +632,21 @@ fn stop_interrupts_vox_and_python_loops_without_blocking_control() {
         let mut state = State::empty(directory.path().into());
         let id = node(&mut state, kind);
         state.node_mut(&id).unwrap().command = source.into();
-        let (engine, _) =
-            engine_with_worker(state, Store::new(directory.path().join("state")).unwrap());
+        let (engine, _) = support::fixture(state);
         engine
-            .request(Control::Activate {
+            .request(Action::Activate {
                 id: id.clone(),
                 args: json!({}),
             })
             .unwrap();
-        wait_for(&engine, |s| s.node(&id).unwrap().status == Status::Running);
+        wait_for(&engine, |s| {
+            matches!(
+                s.node(&id).unwrap().status,
+                Status::Queued | Status::Running
+            )
+        });
         std::thread::sleep(std::time::Duration::from_millis(100));
-        engine.request(Control::Stop { id: id.clone() }).unwrap();
+        engine.request(Action::Stop { id: id.clone() }).unwrap();
         wait_for(&engine, |s| s.node(&id).unwrap().status == Status::Stopped);
         let mut updated = engine.snapshot().state.node(&id).unwrap().clone();
         updated.command = if kind == NodeKind::Vox {
@@ -638,7 +657,7 @@ fn stop_interrupts_vox_and_python_loops_without_blocking_control() {
         let start = std::time::Instant::now();
         loop {
             if engine
-                .request(Control::Update {
+                .request(Action::Update {
                     node: Box::new(updated.clone()),
                 })
                 .is_ok()
@@ -649,7 +668,7 @@ fn stop_interrupts_vox_and_python_loops_without_blocking_control() {
             std::thread::sleep(std::time::Duration::from_millis(15));
         }
         engine
-            .request(Control::Run {
+            .request(Action::Run {
                 id: id.clone(),
                 downstream: false,
             })
@@ -681,21 +700,13 @@ fn alert_nodes_evaluate_their_message_lazily_and_emit_only_when_triggered() {
     assert!(run(state.clone(), &alert, None).alerts.is_empty());
     let result = run(state, &alert, Some(("", json!({}))));
     assert!(result.errors.is_empty(), "{:?}", result.errors);
-    assert_eq!(result.alerts.len(), 1);
-    assert_eq!(result.alerts[0].message, "Build needs review");
-    assert_eq!(result.values[&observer]["value"], "continued");
-}
-
-fn engine_with_worker(
-    state: flowwm::model::State,
-    store: flowwm::store::Store,
-) -> (
-    flowwm::engine::Engine,
-    std::sync::mpsc::Receiver<flowwm::engine::UiCommand>,
-) {
-    flowwm::engine::Engine::with_worker(
-        state,
-        store,
-        Some(std::path::PathBuf::from(env!("CARGO_BIN_EXE_flowwm"))),
-    )
+    assert_eq!(result.activations.len(), 1);
+    assert_eq!(
+        result.activations[0].inputs["message"],
+        "Build needs review"
+    );
+    assert!(
+        !result.values.contains_key(&observer),
+        "The alert provider must complete before downstream work starts"
+    );
 }

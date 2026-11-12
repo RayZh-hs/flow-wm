@@ -1,19 +1,69 @@
-//! The desktop owns its presentation file; the headless host owns runtime state.
-use crate::engine::{Snapshot, SnapshotObserver};
-use anyhow::{Context, Result, ensure};
-use flow_core::migration::PresentationDocument;
+//! WM-owned layout, preferences and recipes. Native bindings belong to the desktop provider.
+use crate::model::State;
+use anyhow::{Result, ensure};
+use flow_core::domain::*;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
+    collections::BTreeMap,
     fs::{File, OpenOptions},
     io::Write,
     os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
-    path::PathBuf,
-    sync::{Arc, Mutex},
+    path::{Path, PathBuf},
 };
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PresentationDocument {
+    pub selected_workflow: WorkflowId,
+    #[serde(default)]
+    pub recipes: Vec<crate::model::Recipe>,
+    pub workflows: BTreeMap<WorkflowId, Value>,
+    pub nodes: BTreeMap<NodeId, Value>,
+}
+impl PresentationDocument {
+    pub fn capture(state: &State) -> Self {
+        Self {
+            selected_workflow: state.selected_workspace.clone().into(),
+            recipes:state.recipes.clone(),
+            workflows: state.workspaces.iter().map(|row| (row.id.clone().into(),
+                serde_json::json!({"cwd":row.cwd,"notes":row.notes,"view":row.view,"window_array":row.window_array,"graph_arranged":row.graph_arranged}))).collect(),
+            nodes: state.nodes.iter().map(|node| (node.id.clone().into(),
+                serde_json::json!({"position":node.position,"column":node.column,"column_mode":node.column_mode}))).collect(),
+        }
+    }
+    pub fn apply(&self, state: &mut State) -> Result<()> {
+        state.recipes = self.recipes.clone();
+        for row in &mut state.workspaces {
+            if let Some(value) = self.workflows.get(&row.id.clone().into()) {
+                if let Some(cwd) = value.get("cwd") {
+                    row.cwd = serde_json::from_value(cwd.clone())?;
+                }
+                row.notes = value["notes"].as_str().unwrap_or_default().into();
+                row.view = serde_json::from_value(value["view"].clone())?;
+                row.window_array = serde_json::from_value(value["window_array"].clone())?;
+                row.graph_arranged = serde_json::from_value(value["graph_arranged"].clone())?;
+            }
+        }
+        for node in &mut state.nodes {
+            if let Some(value) = self.nodes.get(&node.id.clone().into()) {
+                node.position = serde_json::from_value(value["position"].clone())?;
+                node.column = serde_json::from_value(value["column"].clone())?;
+                node.column_mode = serde_json::from_value(value["column_mode"].clone())?;
+            }
+        }
+        if state
+            .workspaces
+            .iter()
+            .any(|w| w.id == self.selected_workflow.0)
+        {
+            state.selected_workspace = self.selected_workflow.0.clone();
+        }
+        Ok(())
+    }
+}
 
 pub struct Writer {
     directory: PathBuf,
     _lock: File,
-    previous: Mutex<Option<PresentationDocument>>,
 }
 impl Writer {
     pub fn new(directory: PathBuf) -> Result<Self> {
@@ -27,26 +77,28 @@ impl Writer {
             .open(directory.join("presentation.lock"))?;
         ensure!(
             unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
-            "Another desktop is writing presentation in {}",
+            "Another WM owns presentation in {}",
             directory.display()
         );
         Ok(Self {
             directory,
             _lock: lock,
-            previous: Mutex::new(None),
         })
     }
-    pub fn observer(self) -> SnapshotObserver {
-        let writer = Arc::new(self);
-        Arc::new(move |snapshot| writer.save(snapshot))
+    pub fn directory(&self) -> &Path {
+        &self.directory
     }
-    fn save(&self, snapshot: &Snapshot) -> Result<()> {
-        let document = PresentationDocument::capture(&snapshot.state);
-        let mut previous = self.previous.lock().unwrap();
-        if previous.as_ref() == Some(&document) {
-            return Ok(());
+    pub fn load(&self, state: &mut State) -> Result<()> {
+        let path = self.directory.join("presentation.json");
+        if path.exists() {
+            let document: PresentationDocument = serde_json::from_slice(&std::fs::read(path)?)?;
+            document.apply(state)?;
         }
-        let temporary = self.directory.join("presentation-v2.json.tmp");
+        Ok(())
+    }
+    pub fn save(&self, state: &State) -> Result<()> {
+        let document = PresentationDocument::capture(state);
+        let temporary = self.directory.join("presentation.json.tmp");
         let mut file = OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -55,10 +107,8 @@ impl Writer {
             .open(&temporary)?;
         file.write_all(&serde_json::to_vec_pretty(&document)?)?;
         file.sync_all()?;
-        std::fs::rename(temporary, self.directory.join("presentation-v2.json"))
-            .context("Save desktop presentation")?;
+        std::fs::rename(temporary, self.directory.join("presentation.json"))?;
         File::open(&self.directory)?.sync_all()?;
-        *previous = Some(document);
         Ok(())
     }
 }
