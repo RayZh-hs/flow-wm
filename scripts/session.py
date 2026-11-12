@@ -58,11 +58,11 @@ def command(kind, arguments=()):
         return [str(ROOT / "bin/niri"), "--config", str(Path(data["config"]) / "config.kdl"), "--session"]
     if kind == "host":
         return [str(ROOT / "bin/flow-core"), "--data-dir", data["workflow_data"]]
+    if kind == "desktop":
+        return [str(ROOT / "bin/flowwm-desktop")]
     if kind == "shell":
-        command = [str(ROOT / "bin/flowwm"), "--data-dir", data["workflow_data"], "start", "--dms", "--background"]
-        if (ROOT / "bin/flow-core").is_file():
-            command.extend(["--host-socket", str(Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "flow-core.sock")])
-        return command
+        return [str(ROOT / "bin/flowwm"), "start", "--dms", "--background", "--host-socket",
+                str(Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "flow-core.sock")]
     if kind == "agent-sessions":
         return [sys.executable, str(ROOT / "extensions/agent-sessions/agent_sessions.py"), "watch"]
     if kind == "dms":
@@ -127,6 +127,9 @@ def main():
             raise RuntimeError(f"FlowWM's private plugin slot is not a symlink: {plugin}")
         plugin.symlink_to(target, target_is_directory=True)
     argv = command(kind, arguments)
+    for required in ("flow-core", "flowwm", "flowwm-shell", "flowwm-desktop", "niri", "dms.real"):
+        if not os.access(ROOT / "bin" / required, os.X_OK):
+            raise RuntimeError(f"Missing required FlowWM component: {required}; install a complete matching bundle")
     # Theme workers pass their own profile; nested shells must not write into the installed desktop.
     explicit_theme_profile = (kind == "dms-cli" and arguments[:1] == ["matugen"]
                               and any(arg == "--config-dir" or arg.startswith("--config-dir=") for arg in arguments))

@@ -28,11 +28,11 @@ def main():
     ids = []
     for kind, title, command, x, y in specs:
         node_id = flow("add", kind, title, "--cwd", repo, "--command", command)["id"]
-        send({"op": "move", "id": node_id, "position": {"x": x, "y": y}})
+        send({"action": "move", "id": node_id, "position": {"x": x, "y": y}})
         ids.append(node_id)
     for source, target in zip(ids[:2], ids[1:3]):
-        send({"op": "connect", "source": source, "target": target})
-    send({"op": "save_recipe", "name": "Inspect and decide", "nodes": ids[:3]})
+        send({"action": "connect", "source": source, "target": target})
+    send({"action": "save_recipe", "name": "Inspect and decide", "nodes": ids[:3]})
     print("Created four idle nodes and an Inspect and decide recipe. Nothing was executed.")
 
 

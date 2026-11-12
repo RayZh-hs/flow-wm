@@ -13,6 +13,20 @@ installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
 
 
+def current_bundle(bundle, metadata=None):
+    bundle = Path(bundle)
+    (bundle / 'bin').mkdir(parents=True, exist_ok=True)
+    for name in ('flow-core', 'flowwm', 'flowwm-shell', 'flowwm-desktop', 'niri', 'dms.real'):
+        path = bundle / 'bin' / name
+        path.write_text('fixture')
+        path.chmod(0o755)
+    for name in ('sdk/python/flow_sdk.py', 'extensions/agent-sessions/agent_sessions.py'):
+        path = bundle / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('fixture')
+    (bundle / 'installation.json').write_text(json.dumps({'orchestrator_protocol':3,'runtime_format':3,**(metadata or {})}))
+
+
 class ProfileIsolation(unittest.TestCase):
     def profile(self, root):
         arguments = [root / 'config', root / 'state', root / 'cache', root / 'bundle', root / 'original', root / 'original-state', root / 'original-cache', root / 'bin/flowwm-session']
@@ -195,6 +209,7 @@ class LoginIsolation(unittest.TestCase):
             with self.subTest(arguments=arguments), patch.object(runtime, 'settings', return_value=data), \
                  patch.dict(os.environ, caller, clear=True), \
                  patch.object(runtime.sys, 'argv', ['flowwm-session', 'dms-cli', *arguments]), \
+                 patch.object(runtime.os, 'access', return_value=True), \
                  patch.object(runtime.os, 'execvpe') as execute:
                 runtime.main()
                 executable, command, environment = execute.call_args.args
@@ -320,7 +335,7 @@ class ReplaceSession(unittest.TestCase):
         self.new = self.root / 'new snapshot'
         for bundle in (self.old, self.new):
             bundle.mkdir()
-            (bundle / 'installation.json').write_text(json.dumps({'config':str(self.root / 'config'), 'state':str(self.root / 'state')}))
+            current_bundle(bundle, {'config':str(self.root / 'config'), 'state':str(self.root / 'state')})
         self.pin = str(self.old)
         self.pids = {'flowwm-compositor.service': 100, 'flowwm.service': 101, 'flowwm-dms.service': 102}
         self.environments = {pid: os.fsencode('FLOWWM_INSTALL_ROOT=' + self.pin) + b'\0'
@@ -370,18 +385,15 @@ class ReplaceSession(unittest.TestCase):
         else:
             self.fail(f'Unexpected service operation: {operation}')
 
-    def test_rollback_to_legacy_stops_the_independent_host_before_claiming_its_state(self):
-        self.pin = str(self.new)
+    def test_rollback_to_incompatible_bundle_is_rejected_without_stopping_the_host(self):
+        (self.old / 'installation.json').write_text('{}')
         self.pids['flowwm-core.service'] = 199
-        installer.replace_session(self.old, installer.running_session())
-        self.assertNotIn('flowwm-core.service', self.pids)
-        stop = next(i for i, call in enumerate(self.calls) if call[2:] == ('stop', 'flowwm-core.service'))
-        start = next(i for i, call in enumerate(self.calls) if call[2] == 'start')
-        self.assertLess(stop, start)
+        with self.assertRaisesRegex(RuntimeError, 'Unsupported bundle'):
+            installer.prepare_runtime_replacement(self.old)
+        self.assertEqual(self.pids['flowwm-core.service'], 199)
+        self.assertEqual(self.calls, [])
 
     def test_replacing_a_host_capable_shell_keeps_the_existing_runtime(self):
-        (self.new / 'bin').mkdir()
-        (self.new / 'bin/flow-core').write_text('fixture')
         self.pids['flowwm-core.service'] = 199
         installer.replace_session(self.new, installer.running_session())
         self.assertEqual(self.pids['flowwm-core.service'], 199)
@@ -400,15 +412,12 @@ class ReplaceSession(unittest.TestCase):
             self.assertNotIn('niri.service', command)
             self.assertNotIn('dms.service', command)
 
-    def test_extension_adopts_the_snapshot_and_old_snapshot_rollback_skips_it(self):
-        extension = self.new / 'extensions/agent-sessions/agent_sessions.py'
-        extension.parent.mkdir(parents=True)
-        extension.touch()
+    def test_extension_is_required_in_both_current_bundles(self):
         installer.replace_session(self.new, installer.running_session())
         self.assertIn('flowwm-agent-sessions.service', self.pids)
-        self.assertEqual(installer.services_for(self.old), installer.REPLACE_SERVICES[:2])
+        self.assertEqual(installer.services_for(self.old), installer.REPLACE_SERVICES)
         installer.replace_session(self.old, installer.running_session())
-        self.assertNotIn('flowwm-agent-sessions.service', self.pids)
+        self.assertIn('flowwm-agent-sessions.service', self.pids)
 
     def test_partial_start_failure_restores_previous_services_and_pin(self):
         self.failed_roots.add(str(self.new))
@@ -457,17 +466,17 @@ class InstallReplace(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.home = self.root / 'home'
         self.repo = self.root / 'repo'
-        for relative in ('target/release/flowwm', 'target/release/flow-core', 'target/release/flowwm-shell',
+        for relative in ('target/release/flowwm', 'target/release/flow-core', 'target/release/flowwm-shell', 'target/release/flowwm-desktop',
                          'target/niri/release/niri', 'components/dms/core/bin/dms',
                          'components/dms/quickshell/PLUGINS/FlowWM/manifest.json',
-                         'scripts/session.py', 'scripts/configuration.py', 'config/dms-niri.kdl'):
+                         'scripts/session.py', 'scripts/configuration.py', 'config/dms-niri.kdl', 'sdk/python/flow_sdk.py', 'extensions/agent-sessions/agent_sessions.py'):
             path = self.repo / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('fixture\n')
         self.installed = self.home / 'data/flowwm/installed'
         self.old = self.installed / 'versions/old'
         self.old.mkdir(parents=True)
-        (self.old / 'installation.json').write_text('{}')
+        current_bundle(self.old)
         (self.installed / 'current').symlink_to(self.old, target_is_directory=True)
         self.environment = {'XDG_CONFIG_HOME': str(self.home / 'config'),
                             'XDG_STATE_HOME': str(self.home / 'state'),
@@ -521,6 +530,7 @@ class InstallReplace(unittest.TestCase):
     def test_rollback_replace_reloads_the_previous_snapshot(self):
         previous = self.installed / 'versions/previous'
         previous.mkdir()
+        current_bundle(previous)
         (self.installed / 'previous').symlink_to(previous, target_is_directory=True)
         with patch('sys.argv', ['install.py', '--rollback', '--replace']), \
              patch.object(installer, 'running_session', return_value=(100, str(self.old))), \
@@ -540,6 +550,45 @@ class InstallReplace(unittest.TestCase):
         run.assert_not_called()
         self.assertEqual((self.installed / 'current').resolve(), self.old)
 
+
+
+class NativeDataBackup(unittest.TestCase):
+    def test_matching_backup_restores_offline_and_retains_the_replaced_data(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            bundle=root/'bundle'
+            current_bundle(bundle)
+            data=root/'data'
+            data.mkdir()
+            old='{"version":3,"runtime":{"revision":4}}'
+            (data/'runtime.json').write_text(old)
+            installer.backup_data(bundle,data)
+            (data/'runtime.json').write_text('{"version":3,"runtime":{"revision":8}}')
+            with (data/'runtime.lock').open('a+') as lock:
+                installer.fcntl.flock(lock,installer.fcntl.LOCK_EX)
+                with self.assertRaisesRegex(RuntimeError,'Stop the host'):
+                    installer.restore_data(bundle,data)
+            installer.restore_data(bundle,data)
+            self.assertEqual((data/'runtime.json').read_text(),old)
+            self.assertTrue(list(data.glob('before-rollback-*/runtime.json')))
+
+    def test_missing_provider_is_rejected_before_services_are_stopped(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            bundle=Path(temporary)
+            current_bundle(bundle)
+            (bundle/'bin/flowwm-desktop').unlink()
+            with patch.object(installer,'running_session',return_value=(1,str(bundle))),patch.object(installer,'run') as run:
+                with self.assertRaisesRegex(RuntimeError,'flowwm-desktop'):
+                    installer.replace_session(bundle,(1,str(bundle)))
+                run.assert_not_called()
+
+    def test_old_json_shortcuts_are_upgraded_only_in_explicit_cli_arguments(self):
+        from configuration import current_wm_commands
+        argument=json.dumps('{"op":"ui","command":{"action":"nodes"}}')
+        original='spawn "flowwm" "send" '+argument
+        upgraded=current_wm_commands(original)
+        self.assertEqual(json.loads(json.loads(upgraded.split('"send" ',1)[1]))['action'],'ui')
+        self.assertEqual(current_wm_commands('custom '+argument),'custom '+argument)
 
 if __name__ == '__main__':
     unittest.main()

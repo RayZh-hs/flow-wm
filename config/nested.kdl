@@ -10,10 +10,10 @@ hotkey-overlay {
 
 binds {
     Mod+Tab repeat=false allow-inhibiting=false { spawn "flowwm" "toggle"; }
-    Mod+Q repeat=false allow-inhibiting=false { spawn "flowwm" "send" r#"{"op":"ui","command":{"action":"stop_selected"}}"#; }
+    Mod+Q repeat=false allow-inhibiting=false { spawn "flowwm" "send" r#"{"action":"ui","command":{"action":"stop_selected"}}"#; }
     Mod+Space repeat=false { spawn "flowwm" "new"; }
-    Mod+Minus { spawn "flowwm" "send" r#"{"op":"ui","command":{"action":"zoom_out"}}"#; }
-    Mod+Equal { spawn "flowwm" "send" r#"{"op":"ui","command":{"action":"zoom_in"}}"#; }
+    Mod+Minus { spawn "flowwm" "send" r#"{"action":"ui","command":{"action":"zoom_out"}}"#; }
+    Mod+Equal { spawn "flowwm" "send" r#"{"action":"ui","command":{"action":"zoom_in"}}"#; }
     Mod+Page_Down { focus-workspace-down; }
     Mod+Page_Up { focus-workspace-up; }
     Mod+Shift+E { quit skip-confirmation=true; }

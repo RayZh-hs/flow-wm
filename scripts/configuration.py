@@ -45,9 +45,9 @@ def native_bindings(bindings, launcher):
         for key in binding['keys']:
             # Reassign only the former shipped defaults, preserving custom commands.
             if key.lower() == 'mod+return' and command == 'spawn "alacritty"':
-                command_for_key = 'spawn "flowwm" "send" ' + json.dumps('{"op":"ui","command":{"action":"run_selected"}}')
+                command_for_key = 'spawn "flowwm" "send" ' + json.dumps('{"action":"ui","command":{"action":"run_selected"}}')
             elif key.lower() == 'mod+q' and command == 'close-window':
-                command_for_key = 'spawn "flowwm" "send" ' + json.dumps('{"op":"ui","command":{"action":"stop_selected"}}')
+                command_for_key = 'spawn "flowwm" "send" ' + json.dumps('{"action":"ui","command":{"action":"stop_selected"}}')
             else:
                 command_for_key = command
             normalized = '+'.join(sorted(part.casefold().replace('super', 'mod') for part in key.split('+')))
@@ -90,11 +90,33 @@ def activate_launcher_bindings(config, state, launcher, compositor):
     return True
 
 
+def current_wm_commands(text):
+    """Upgrade only JSON arguments of explicit flowwm send commands in KDL."""
+    pattern = re.compile(r'((?:"flowwm"|"[^"\n]*/flowwm")\s+"send"\s+)("(?:\\.|[^"\\])*")')
+    def upgrade(match):
+        try:
+            command = json.loads(json.loads(match[2]))
+        except (ValueError, TypeError):
+            return match[0]
+        if not isinstance(command, dict) or "op" not in command:
+            return match[0]
+        command["action"] = command.pop("op")
+        return match[1] + json.dumps(json.dumps(command, separators=(",", ":")))
+    return pattern.sub(upgrade, text)
+
+
 def migrate(config, state, defaults, launcher, atomic_text):
     """Preserve the originals before inlining known legacy files; never overwrite edits on reinstall."""
     main = config / 'config.kdl'
     legacy = [config / name for name in ('keybindings.json', 'keybindings.kdl', 'local.kdl', 'environment.json') if (config / name).is_file()]
     if main.exists() and not legacy:
+        original = main.read_text()
+        upgraded = current_wm_commands(original)
+        if original != upgraded:
+            backup = state / "config-backups/before-current-protocol/config.kdl"
+            if not backup.exists():
+                atomic_text(backup, original, mode=main.stat().st_mode & 0o777)
+            atomic_text(main, upgraded, mode=main.stat().st_mode & 0o777)
         return
     text = main.read_text() if main.exists() else defaults
     if main.exists():
@@ -134,7 +156,7 @@ def migrate(config, state, defaults, launcher, atomic_text):
     mode = main.stat().st_mode & 0o777 if main.exists() else 0o644
     for path in legacy:
         mode &= path.stat().st_mode & 0o777
-    atomic_text(main, text, mode=mode)
+    atomic_text(main, current_wm_commands(text), mode=mode)
     for path in legacy:
         path.unlink()
 

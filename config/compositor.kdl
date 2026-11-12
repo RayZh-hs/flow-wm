@@ -66,24 +66,24 @@ recent-windows {
 binds {
     Mod+Tab hotkey-overlay-title="Nodes / Windows (leave window peek first)" repeat=false allow-inhibiting=false { spawn "flowwm" "toggle"; }
     Mod+Shift+Tab hotkey-overlay-title="Return to windows" repeat=false allow-inhibiting=false { spawn "flowwm" "windows"; }
-    Mod+equal hotkey-overlay-title="Zoom in (Nodes) / increase column width (Windows)" repeat=true { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"zoom_in\"}}"; }
-    Mod+minus hotkey-overlay-title="Zoom out (Nodes) / decrease column width (Windows)" repeat=true { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"zoom_out\"}}"; }
+    Mod+equal hotkey-overlay-title="Zoom in (Nodes) / increase column width (Windows)" repeat=true { spawn "flowwm" "send" "{\"action\": \"ui\", \"command\": {\"action\": \"zoom_in\"}}"; }
+    Mod+minus hotkey-overlay-title="Zoom out (Nodes) / decrease column width (Windows)" repeat=true { spawn "flowwm" "send" "{\"action\": \"ui\", \"command\": {\"action\": \"zoom_out\"}}"; }
     Mod+Space hotkey-overlay-title="Dux app search (Windows) / create a node (Nodes)" repeat=false allow-inhibiting=false { spawn-with-keyboard-focus "flowwm" "new" namespace="dms:spotlight" wait-for-ready=true; }
     Alt+Space hotkey-overlay-title="Open Dux app search" repeat=false allow-inhibiting=false { spawn-with-keyboard-focus "flowwm" "launcher" namespace="dms:spotlight" wait-for-ready=true; }
     Mod+Shift+Space hotkey-overlay-title="Find a node in Dux" repeat=false allow-inhibiting=false { spawn-with-keyboard-focus "flowwm" "search" namespace="dms:spotlight" wait-for-ready=true; }
-    Mod+Shift+slash hotkey-overlay-title="Show key bindings" repeat=false allow-inhibiting=false { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"help\"}}"; }
+    Mod+Shift+slash hotkey-overlay-title="Show key bindings" repeat=false allow-inhibiting=false { spawn "flowwm" "send" "{\"action\": \"ui\", \"command\": {\"action\": \"help\"}}"; }
     Mod+Left hotkey-overlay-title="Select node / focus window left" repeat=true allow-inhibiting=false { spawn "flowwm" "navigate" "left"; }
-    Mod+Ctrl+Left hotkey-overlay-title="Move selection / window left" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"left\"}}"; }
-    Mod+Ctrl+H hotkey-overlay-title="Move selection / window left" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"left\"}}"; }
+    Mod+Ctrl+Left hotkey-overlay-title="Move selection / window left" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"action\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"left\"}}"; }
+    Mod+Ctrl+H hotkey-overlay-title="Move selection / window left" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"action\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"left\"}}"; }
     Mod+Down hotkey-overlay-title="Select node / focus window down" repeat=true allow-inhibiting=false { spawn "flowwm" "navigate" "down"; }
-    Mod+Ctrl+Down hotkey-overlay-title="Move selection / window down" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"down\"}}"; }
-    Mod+Ctrl+J hotkey-overlay-title="Move selection / window down" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"down\"}}"; }
+    Mod+Ctrl+Down hotkey-overlay-title="Move selection / window down" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"action\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"down\"}}"; }
+    Mod+Ctrl+J hotkey-overlay-title="Move selection / window down" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"action\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"down\"}}"; }
     Mod+Up hotkey-overlay-title="Select node / focus window up" repeat=true allow-inhibiting=false { spawn "flowwm" "navigate" "up"; }
-    Mod+Ctrl+Up hotkey-overlay-title="Move selection / window up" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"up\"}}"; }
-    Mod+Ctrl+K hotkey-overlay-title="Move selection / window up" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"up\"}}"; }
+    Mod+Ctrl+Up hotkey-overlay-title="Move selection / window up" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"action\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"up\"}}"; }
+    Mod+Ctrl+K hotkey-overlay-title="Move selection / window up" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"action\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"up\"}}"; }
     Mod+Right hotkey-overlay-title="Select node / focus window right" repeat=true allow-inhibiting=false { spawn "flowwm" "navigate" "right"; }
-    Mod+Ctrl+Right hotkey-overlay-title="Move selection / window right" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"right\"}}"; }
-    Mod+Ctrl+L hotkey-overlay-title="Move selection / window right" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"op\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"right\"}}"; }
+    Mod+Ctrl+Right hotkey-overlay-title="Move selection / window right" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"action\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"right\"}}"; }
+    Mod+Ctrl+L hotkey-overlay-title="Move selection / window right" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"action\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"right\"}}"; }
     Mod+T hotkey-overlay-title="Open terminal" repeat=false { spawn "alacritty"; }
     Mod+K hotkey-overlay-title="Open terminal" repeat=false { spawn "alacritty"; }
     Alt+F4 hotkey-overlay-title="Close window" repeat=false { close-window; }
@@ -193,8 +193,8 @@ binds {
     XF86AudioNext hotkey-overlay-title="Next track" repeat=false allow-when-locked=true { spawn-sh "playerctl next"; }
     XF86MonBrightnessUp hotkey-overlay-title="Increase brightness" repeat=true { spawn "brightnessctl" "--class=backlight" "set" "+10%"; }
     XF86MonBrightnessDown hotkey-overlay-title="Decrease brightness" repeat=true { spawn "brightnessctl" "--class=backlight" "set" "10%-"; }
-    Mod+Return repeat=false allow-inhibiting=false hotkey-overlay-title="Run selection / open terminal" { spawn "flowwm" "send" "{\"op\":\"ui\",\"command\":{\"action\":\"run_selected\"}}"; }
-    Mod+Q repeat=false allow-inhibiting=false hotkey-overlay-title="Stop selection / close window" { spawn "flowwm" "send" "{\"op\":\"ui\",\"command\":{\"action\":\"stop_selected\"}}"; }
+    Mod+Return repeat=false allow-inhibiting=false hotkey-overlay-title="Run selection / open terminal" { spawn "flowwm" "send" "{\"action\":\"ui\",\"command\":{\"action\":\"run_selected\"}}"; }
+    Mod+Q repeat=false allow-inhibiting=false hotkey-overlay-title="Stop selection / close window" { spawn "flowwm" "send" "{\"action\":\"ui\",\"command\":{\"action\":\"stop_selected\"}}"; }
 }
 
 // Native graph settings. Keys use niri syntax; action="none" disables a graph key.

@@ -1,0 +1,23 @@
+// Headless runtime settings. Includes are resolved relative to this file.
+// Give each peer a stable, unique host-id before connecting hosts.
+// host-id "workstation"
+max-concurrent 8
+serialize-working-directories true
+execution-timeout-secs 3600
+metric-timeout-secs 20
+evaluator-timeout-secs 60
+interrupt-grace-ms 1000
+terminate-grace-ms 1000
+source-interval-secs 30
+signal-queue-capacity 4096
+replay-capacity 65536
+systemd-workspace true
+remote-retry-secs 2
+remote-timeout-secs 10
+remote-batch-size 4
+// include "hosts.kdl"
+// host "builder" {
+//     transport "ssh"
+//     destination "my-build-host"
+//     command "flow-core" "--stdio"
+// }

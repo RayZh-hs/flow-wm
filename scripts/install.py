@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Explicitly install an independent FlowWM runtime; development builds never update it."""
 import argparse
+from contextlib import ExitStack
+import fcntl
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -17,8 +19,74 @@ ROOT = Path(__file__).resolve().parents[1]
 REPLACE_SERVICES = ("flowwm.service", "flowwm-dms.service", "flowwm-agent-sessions.service")
 
 
+def validate_bundle(bundle):
+    bundle = Path(bundle)
+    metadata = json.loads((bundle / "installation.json").read_text())
+    if metadata.get("orchestrator_protocol") != 3 or metadata.get("runtime_format") != 3:
+        raise RuntimeError("Unsupported bundle; use a matching current-architecture bundle and data backup")
+    for name in ("flow-core", "flowwm", "flowwm-shell", "flowwm-desktop", "niri", "dms.real"):
+        if not os.access(bundle / "bin" / name, os.X_OK):
+            raise RuntimeError(f"Bundle is missing required executable: {name}")
+    for name in ("sdk/python/flow_sdk.py", "extensions/agent-sessions/agent_sessions.py"):
+        if not (bundle / name).is_file():
+            raise RuntimeError(f"Bundle is missing required client: {name}")
+    return metadata
+
+
+DATA_DOCUMENTS = ("runtime.json", "presentation.json", "desktop.json")
+
+
+def backup_data(bundle, directory):
+    """Copy atomically published documents, never process sockets or writer locks."""
+    bundle, directory = Path(bundle), Path(directory)
+    temporary = bundle / "data-backup.new"
+    shutil.rmtree(temporary, ignore_errors=True)
+    temporary.mkdir()
+    for name in DATA_DOCUMENTS:
+        source = directory / name
+        if source.is_file():
+            shutil.copy2(source, temporary / name)
+    atomic_text(temporary / "backup.json", json.dumps({"runtime_format":3,"bundle":bundle.name}) + "\n")
+    destination = bundle / "data-backup"
+    if destination.exists():
+        archived = bundle / ("data-backup-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ"))
+        destination.rename(archived)
+    temporary.rename(destination)
+
+
+def restore_data(bundle, directory):
+    """An explicit, offline rollback; all persistence owners must be stopped."""
+    bundle, directory = Path(bundle), Path(directory)
+    validate_bundle(bundle)
+    backup = bundle / "data-backup"
+    metadata = json.loads((backup / "backup.json").read_text())
+    if metadata != {"runtime_format":3,"bundle":bundle.name}:
+        raise RuntimeError("Data backup does not match the selected bundle")
+    document = backup / "runtime.json"
+    if not document.is_file() or json.loads(document.read_text()).get("version") != 3:
+        raise RuntimeError("Rollback requires a current native runtime data backup")
+    directory.mkdir(parents=True, exist_ok=True)
+    with ExitStack() as owners:
+        for name in ("runtime", "presentation", "desktop"):
+            lock = owners.enter_context((directory / (name + ".lock")).open("a+"))
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise RuntimeError("Stop the host, desktop provider and GTK before restoring data") from error
+        recovery = directory / ("before-rollback-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ"))
+        recovery.mkdir()
+        for name in DATA_DOCUMENTS:
+            current = directory / name
+            if current.exists():
+                shutil.copy2(current, recovery / name)
+            saved = backup / name
+            if saved.exists():
+                atomic_text(current, saved.read_text(), mode=0o600)
+
+
 def services_for(bundle):
-    return REPLACE_SERVICES if (Path(bundle) / "extensions/agent-sessions/agent_sessions.py").is_file() else REPLACE_SERVICES[:2]
+    validate_bundle(bundle)
+    return REPLACE_SERVICES
 
 
 def run(*arguments, **kwargs):
@@ -75,6 +143,8 @@ def prepare_profile(config, state, cache, bundle, user_config, user_state, user_
     terminal = next((name for name in (os.environ.get("TERMINAL", ""), "alacritty", "foot", "kitty", "konsole", "gnome-terminal", "xterm") if name and shutil.which(name)), "alacritty")
     defaults = defaults.replace('spawn "alacritty"', 'spawn ' + json.dumps(terminal)).replace('terminal "alacritty"', 'terminal ' + json.dumps(terminal))
     migrate(config, state, defaults, launcher, atomic_text)
+    if not (config / "runtime.kdl").exists():
+        atomic_text(config / "runtime.kdl", (ROOT / "config/runtime.kdl").read_text())
     extensions = config / "extensions"
     extensions.mkdir(exist_ok=True)
     for original in (ROOT / "config/extensions").glob("*.json"):
@@ -140,7 +210,6 @@ After=graphical-session-pre.target
 
 [Service]
 Type=simple
-ExecCondition=/bin/sh -c 'test -x "$$FLOWWM_INSTALL_ROOT/bin/flow-core"'
 ExecStart={command} host
 KillMode=mixed
 WorkingDirectory={user_home}
@@ -148,9 +217,11 @@ Restart=on-failure
 RestartSec=2
 TimeoutStopSec=8
 ''')
-    for name, operation, service_type in [("flowwm", "shell", "simple"), ("flowwm-dms", "dms", "notify")]:
-        host_dependency = "Requires=flowwm-core.service\nAfter=flowwm-core.service\n" if name == "flowwm" else ""
-        extra = "" if name == "flowwm" else "NotifyAccess=main\nEnvironment=QS_DISABLE_CRASH_HANDLER=1\nExecReload=/bin/kill -USR1 $MAINPID\nRestartForceExitStatus=TEMPFAIL\nSuccessExitStatus=TEMPFAIL\nTimeoutStartSec=90s\n"
+    for name, operation, service_type in [("flowwm-desktop", "desktop", "simple"), ("flowwm", "shell", "simple"), ("flowwm-dms", "dms", "notify")]:
+        host_dependency = "Requires=flowwm-core.service\nAfter=flowwm-core.service\n" if name in ("flowwm", "flowwm-desktop") else ""
+        if name == "flowwm":
+            host_dependency += "Requires=flowwm-desktop.service\nAfter=flowwm-desktop.service\n"
+        extra = "" if name in ("flowwm", "flowwm-desktop") else "NotifyAccess=main\nEnvironment=QS_DISABLE_CRASH_HANDLER=1\nExecReload=/bin/kill -USR1 $MAINPID\nRestartForceExitStatus=TEMPFAIL\nSuccessExitStatus=TEMPFAIL\nTimeoutStartSec=90s\n"
         atomic_text(units / f"{name}.service", f'''[Unit]
 Description=FlowWM {operation}
 {host_dependency}PartOf=graphical-session.target flowwm-session.target
@@ -224,21 +295,22 @@ def verify_services(bundle, compositor_pid):
 
 
 def prepare_runtime_replacement(bundle):
-    if not (Path(bundle) / "bin/flow-core").is_file() and service_pid("flowwm-core.service"):
-        print("The selected legacy snapshot owns its runtime; stopping the independent host before rollback.", flush=True)
-        run("systemctl", "--user", "stop", "flowwm-core.service")
+    validate_bundle(bundle)
+    # A running host remains pinned to its matching bundle for compatible WM updates.
+    # Protocol changes are coordinated upgrades, never an embedded fallback.
 
 
 def replace_session(bundle, session):
     if running_session() != session:
         raise RuntimeError("The running FlowWM session changed during installation; run --replace again.")
     bundle = bundle.resolve()
+    prepare_runtime_replacement(bundle)
     previous = session[1]
+    validate_bundle(previous)
     print(f"Reloading FlowWM and DMS from {bundle}; application windows stay open.", flush=True)
     try:
         # Stop both services before the DMS launcher repoints its plugin to the new shell.
         run("systemctl", "--user", "stop", *REPLACE_SERVICES)
-        prepare_runtime_replacement(bundle)
         run("systemctl", "--user", "set-environment", "FLOWWM_INSTALL_ROOT=" + str(bundle))
         run("systemctl", "--user", "start", *services_for(bundle))
         verify_services(bundle, session[0])
@@ -270,7 +342,10 @@ def main():
     mode.add_argument("--rollback", action="store_true", help="select the previous installed snapshot for the next login")
     parser.add_argument("--replace", action="store_true",
                         help="reload FlowWM and DMS using the selected snapshot, keeping the compositor and application windows open")
+    parser.add_argument("--restore-data", action="store_true", help="with --rollback, restore its matching backup while all persistence owners are stopped")
     args = parser.parse_args()
+    if args.restore_data and (not args.rollback or args.replace):
+        parser.error("--restore-data requires --rollback and cannot be used with --replace")
     session = None
     if args.replace:
         try:
@@ -288,6 +363,9 @@ def main():
         if not current.is_symlink() or not previous.is_symlink():
             parser.error("no previous installed snapshot is available")
         before, after = current.resolve(strict=True), previous.resolve(strict=True)
+        validate_bundle(after)
+        if args.restore_data:
+            restore_data(after, user_data / "flowwm")
         point(current, after)
         point(previous, before)
         print(f"Next FlowWM login will use {after}.")
@@ -312,7 +390,7 @@ def main():
     try:
         (bundle / "bin").mkdir()
         sources = {"niri": ROOT / "target/niri/release/niri", "flowwm": ROOT / "target/release/flowwm",
-                   "flow-core": ROOT / "target/release/flow-core", "flowwm-shell": ROOT / "target/release/flowwm-shell", "dms.real": ROOT / "components/dms/core/bin/dms"}
+                   "flow-core": ROOT / "target/release/flow-core", "flowwm-desktop": ROOT / "target/release/flowwm-desktop", "flowwm-shell": ROOT / "target/release/flowwm-shell", "dms.real": ROOT / "components/dms/core/bin/dms"}
         for name, source in sources.items():
             shutil.copy2(source, bundle / "bin" / name)
             (bundle / "bin" / name).chmod(0o755)
@@ -328,7 +406,7 @@ def main():
         config = profile
         state = user_state / "flow-wm"
         cache = user_cache / "flow-wm"
-        metadata = {"commit": commit, "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)), "installed_at": version, "config": str(config), "state": str(state),
+        metadata = {"orchestrator_protocol": 3, "runtime_format": 3, "commit": commit, "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)), "installed_at": version, "config": str(config), "state": str(state),
                     "cache": str(cache), "workflow_data": str(user_data / "flowwm"),
                     "sha256": {name: hashlib.sha256((bundle / "bin" / name).read_bytes()).hexdigest() for name in sources}}
         atomic_text(bundle / "installation.json", json.dumps(metadata, indent=2) + "\n")
@@ -355,8 +433,13 @@ os.execv(sys.executable,[sys.executable,str(script),*sys.argv[1:]])
         cli = f'#!/bin/sh\nexec {json.dumps(str(launcher))} cli "$@"\n'
         atomic_text(user_home / ".local/bin/flowwm", cli, 0o755)
         install_units(user_config, launcher, user_home)
+        validate_bundle(bundle)
         if current.is_symlink():
-            point(installed / "previous", current.resolve())
+            previous_bundle = current.resolve()
+            if (previous_bundle / "installation.json").is_file() and json.loads((previous_bundle / "installation.json").read_text()).get("runtime_format") == 3:
+                backup_data(previous_bundle, user_data / "flowwm")
+            point(installed / "previous", previous_bundle)
+        backup_data(bundle, user_data / "flowwm")
         point(current, bundle)
     except BaseException:
         # A failed installation must not reload any running services.
