@@ -9,6 +9,100 @@ use flowwm::{
 use serde_json::json;
 
 #[test]
+fn agent_macros_can_be_connected_before_their_first_instance_exists() {
+    let mut initial = State::empty("/tmp".into());
+    let human = Node::new(
+        &initial.selected_workspace,
+        NodeKind::Human,
+        "/tmp".into(),
+        Default::default(),
+    );
+    initial.nodes.push(human.clone());
+    let (engine, _) = support::fixture(initial);
+    for macro_id in ["agent", "agent_workflow"] {
+        let m = extensions::builtins()
+            .into_iter()
+            .find(|m| m.id == macro_id)
+            .unwrap();
+        let mut node = Node::new(
+            &engine.snapshot().state.selected_workspace,
+            m.kind,
+            "/tmp".into(),
+            Default::default(),
+        );
+        node.title = m.name;
+        node.command = m.command;
+        node.flow = m.flow;
+        let catalog = Catalog::new(
+            &engine.snapshot(),
+            Presentation {
+                lookup_node: Some(human.id.clone()),
+                lookup_input: macro_id == "agent",
+                ..Default::default()
+            },
+            &extensions::builtins(),
+        );
+        assert!(catalog.lookup.unwrap().outputs.iter().any(|output| {
+            output
+                .targets
+                .iter()
+                .any(|target| target.create && target.id == macro_id)
+        }));
+        let edge = if macro_id == "agent" {
+            Connection {
+                source: Endpoint {
+                    node: node.id.clone(),
+                    pin: "on_session_finish".into(),
+                },
+                target: Endpoint {
+                    node: human.id.clone(),
+                    pin: "in".into(),
+                },
+            }
+        } else {
+            Connection {
+                source: Endpoint {
+                    node: human.id.clone(),
+                    pin: "accepted".into(),
+                },
+                target: Endpoint {
+                    node: node.id.clone(),
+                    pin: "in".into(),
+                },
+            }
+        };
+        let mut candidate = (*engine.snapshot().state).clone();
+        candidate.nodes.push(node.clone());
+        candidate.connections.push(edge.clone());
+        candidate.validate().unwrap();
+        engine
+            .request(Action::Create {
+                node: Box::new(node.clone()),
+            })
+            .unwrap();
+        engine
+            .request(Action::ConnectPins { connection: edge })
+            .unwrap();
+        let state = engine.snapshot().state;
+        let created = state.node(&node.id).unwrap();
+        assert_eq!(created.spec().type_id, node.spec().type_id);
+        assert_eq!(created.kind, m.kind);
+        assert!(!pins(&state, created, true).is_empty());
+    }
+    assert!(
+        engine
+            .snapshot()
+            .state
+            .orchestration
+            .as_ref()
+            .unwrap()
+            .executions
+            .is_empty()
+    );
+    engine.shutdown();
+}
+
+#[test]
 fn clipboard_copies_internal_edges_as_idle_nodes_with_fresh_ids() {
     let mut state = State::empty("/tmp".into());
     let mut constant = Node::new(

@@ -12,6 +12,8 @@ pub struct Flow {
     #[knuffel(child, unwrap(argument))]
     pub motion_ms: Option<u32>,
     #[knuffel(child, unwrap(argument))]
+    pub popup_open_ms: Option<u32>,
+    #[knuffel(child, unwrap(argument))]
     pub removal_ms: Option<u32>,
     #[knuffel(child, unwrap(argument))]
     pub inertia_decay: Option<f64>,
@@ -53,6 +55,7 @@ impl crate::utils::MergeWith<Flow> for Flow {
             notification_command,
             desktop_save_interval_ms,
             motion_ms,
+            popup_open_ms,
             removal_ms,
             inertia_decay,
             arrange_wrap_zoom,
@@ -173,13 +176,14 @@ mod tests {
         use crate::utils::MergeWith;
         let mut flow = crate::Config::parse_mem(r##"flow { motion-ms 200; running-color "#71c68c"; running-opacity 0.17; running-width 0.0; binds { r action="run"; Ctrl+r action="stop"; }; }"##).unwrap().flow;
         let override_flow = crate::Config::parse_mem(
-            r#"flow { removal-ms 140; running-opacity 0.25; arrange-wrap-zoom 0.4; desktop-save-interval-ms 500; binds { r action="none"; }; }"#,
+            r#"flow { removal-ms 140; popup-open-ms 70; running-opacity 0.25; arrange-wrap-zoom 0.4; desktop-save-interval-ms 500; binds { r action="none"; }; }"#,
         )
         .unwrap()
         .flow;
         flow.merge_with(&override_flow);
         assert_eq!(flow.motion_ms, Some(200));
         assert_eq!(flow.removal_ms, Some(140));
+        assert_eq!(flow.popup_open_ms, Some(70));
         assert_eq!(flow.running_opacity, Some(0.25));
         assert_eq!(flow.running_width, Some(0.0));
         assert_eq!(flow.arrange_wrap_zoom, Some(0.4));

@@ -45,6 +45,11 @@ its `--data-dir` must match the host; it does not start or choose another runtim
 Without a compositor, the independent provider and `flowwm start --windowed` can
 be used for a standalone editor.
 
+The host's `info` response includes `node_types`, the registered providers' graph
+schemas. Desktop clients use them for pin lookup and validation before creating
+the first node of a provider type. Workflow graphs still store only the provider
+schemas they use; schema discovery never starts a provider execution.
+
 Installed systemd units start `flowwm-core.service`, `flowwm-desktop.service` and
 `flowwm.service` in that order. GTK and DMS replacement preserves a compatible
 running host and desktop provider. Runtime upgrades require a coordinated restart

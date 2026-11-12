@@ -54,6 +54,7 @@ pub struct Theme {
     pub radius: f64,
     pub font: String,
     pub motion_ms: u32,
+    pub popup_open_ms: u32,
     pub removal_ms: u32,
     pub running: Color,
     pub running_opacity: f64,
@@ -76,6 +77,7 @@ impl Default for Theme {
             radius: 12.0,
             font: "sans-serif".into(),
             motion_ms: flow.motion_ms.unwrap_or(220),
+            popup_open_ms: flow.popup_open_ms.unwrap_or(50),
             removal_ms: flow.removal_ms.unwrap_or(180),
             running: flow
                 .running_color
@@ -158,6 +160,7 @@ impl Theme {
             || settings["reduceMotion"].as_bool() == Some(true)
         {
             theme.motion_ms = 0;
+            theme.popup_open_ms = 0;
             theme.removal_ms = 0;
         }
         if let Some(font) = settings["fontFamily"].as_str().filter(|s| {
@@ -229,6 +232,7 @@ impl Theme {
         css.push_str(
             &include_str!("style.css")
                 .replace("__RADIUS__", &format!("{}px", self.radius))
+                .replace("__POPUP_OPEN_MS__", &self.popup_open_ms.to_string())
                 .replace("__FONT__", &self.font),
         );
         css

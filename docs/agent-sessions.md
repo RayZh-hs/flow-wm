@@ -78,4 +78,7 @@ harness "custom" {
 The implementation lives in `flow-builtins::agent`; it does not add agent logic
 to the portable runtime. Tests use fake CLIs and do not call models. The isolated
 desktop check `python3 scripts/smoke_extensions.py` additionally uses the sibling
-`FlowWM-Lark` checkout, Xvfb, grim, xdotool, and Tesseract with English data.
+`FlowWM-Lark` checkout, Xvfb, grim, xdotool, and Tesseract with English data. It
+checks connected creation before either agent or Lark node types have an instance,
+native settings, a fake Lark send, visible graph errors, interactive terminal
+input, and session completion delivery.

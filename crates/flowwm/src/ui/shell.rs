@@ -166,6 +166,7 @@ struct Shell {
     connection: gtk::Label,
     bar_status: gtk::Label,
     error: gtk::Label,
+    error_dialog: RefCell<Option<(gtk::Window, gtk::Label)>>,
     windows: RefCell<HashMap<String, NodeWindow>>,
     revision: Cell<u64>,
     weak: Weak<Shell>,
@@ -592,6 +593,7 @@ impl Shell {
                 connection,
                 bar_status,
                 error,
+                error_dialog: RefCell::new(None),
                 windows: RefCell::new(HashMap::new()),
                 revision: Cell::new(u64::MAX),
                 weak: weak.clone(),
@@ -2207,7 +2209,7 @@ impl Shell {
                 self.ensure_row_surfaces(&self.engine.snapshot().state);
                 self.apply_insets();
             }
-            UiCommand::Open { id } => self.open(&id),
+            UiCommand::Open { id } => self.focus_node(&id, true),
             UiCommand::Select { id } => self.select(Some(id)),
             UiCommand::Focus { id, expand } => self.focus_node(&id, expand),
             UiCommand::Search { mode } => self.search(Some(&mode)),
@@ -2635,6 +2637,40 @@ impl Shell {
     }
     fn show_error(&self, text: &str) {
         eprintln!("FlowWM: {text}");
+        // Native row canvases do not contain the standalone editor's error banner.
+        if self.native_nodes {
+            if let Some((_, message)) = self.error_dialog.borrow().as_ref() {
+                message.set_text(text);
+                return;
+            }
+            let dialog = self.dialog("FlowWM error", 480, -1);
+            dialog.set_namespace(Some("flowwm-error"));
+            let root = column(14);
+            root.add_css_class("dialog-body");
+            root.append(&label("Could not complete the action", "dialog-title"));
+            let message = label(text, "");
+            message.set_wrap(true);
+            message.set_max_width_chars(55);
+            root.append(&message);
+            let close = gtk::Button::with_label("Close");
+            close.add_css_class("accent");
+            close.set_halign(gtk::Align::End);
+            let d = dialog.clone();
+            close.connect_clicked(move |_| d.close());
+            root.append(&close);
+            dialog.set_child(Some(&root));
+            dialog.set_default_widget(Some(&close));
+            let weak = self.weak.clone();
+            dialog.connect_close_request(move |_| {
+                if let Some(shell) = weak.upgrade() {
+                    shell.error_dialog.borrow_mut().take();
+                }
+                glib::Propagation::Proceed
+            });
+            *self.error_dialog.borrow_mut() = Some((dialog.clone(), message));
+            dialog.present();
+            return;
+        }
         self.error.set_text(text);
         self.error.set_visible(true);
     }
@@ -3629,6 +3665,7 @@ impl Shell {
         };
         let overrides: Env = serde_json::from_value(value["settings"].clone()).unwrap_or_default();
         let dialog = self.dialog("Row settings", 520, 560);
+        dialog.connect_map(|dialog| dialog.add_css_class("flow-popup-enter"));
         dialog.set_resizable(false);
         let root = column(12);
         root.add_css_class("dialog-body");

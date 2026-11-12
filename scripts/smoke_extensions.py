@@ -117,7 +117,8 @@ harness "fixture" {{
                 input("mousemove",x,y,"click",1)
                 time.sleep(0.15)
             ui("nodes")
-            ui("create_macro", id="lark.send")
+            trigger = json.loads(subprocess.check_output([str(ROOT / "target/debug/flowwm"), "add", "human", "Trigger", "--cwd", temporary], env=environment, text=True))["id"]
+            ui("create_connected", id="lark.send", source={"node":trigger,"pin":"accepted"}, input="in", reverse=False)
             wait(lambda: any(layer.get("namespace") == "flowwm-dialog" for layer in request(niri,"Layers")["Layers"]), compositor)
             time.sleep(0.3)
             capture("lark-login.png")
@@ -144,12 +145,42 @@ harness "fixture" {{
             sent=json.loads((runtime / "fake-sent.json").read_text())
             assert sent["body"]["receive_id"]=="alice"
             assert json.loads(sent["body"]["content"])["text"]=="Hello from native settings"
+            ui("create_connected", id="lark.search", source={"node":trigger,"pin":"accepted"}, input="in", reverse=False)
+            search_node = wait(lambda: next((n for n in request(wm,{"action":"view"})["nodes"] if n["flow"]["node_type"] == "lark.search"), None), compositor)
+            wait(lambda: any(layer.get("namespace") == "flowwm-dialog" for layer in request(niri,"Layers")["Layers"]), compositor)
+            capture("lark-search-parameters.png")
+            input("key", "Escape")
+            wait(lambda: not any(layer.get("namespace") == "flowwm-dialog" for layer in request(niri,"Layers")["Layers"]), compositor)
+            assert {"source":{"node":trigger,"pin":"accepted"},"target":{"node":search_node["id"],"pin":"in"}} in request(wm,{"action":"view"})["connections"]
+            # A rejected graph edit must surface its error on the native desktop.
+            ui("create_connected", id="lark.send", source={"node":trigger,"pin":"accepted"}, input="missing", reverse=False)
+            wait(lambda: any(layer.get("namespace") == "flowwm-error" for layer in request(niri,"Layers")["Layers"]), compositor)
+            capture("graph-error.png")
+            input("key", "Escape")
+            wait(lambda: not any(layer.get("namespace") == "flowwm-error" for layer in request(niri,"Layers")["Layers"]), compositor)
+            # Exercise first-time creation through the launcher's connected-node path.
+            for macro, type_id, source_pin, target_pin, reverse in [
+                ("agent", "agent_sessions.terminal", "in", "on_session_finish", True),
+                ("agent_workflow", "agent_sessions.session", "out", "in", False),
+            ]:
+                ui("create_connected", id=macro, source={"node":lark_node["id"],"pin":source_pin}, input=target_pin, reverse=reverse)
+                created = wait(lambda: next((n for n in request(wm,{"action":"view"})["nodes"] if n["flow"]["node_type"] == type_id), None), compositor)
+                wait(lambda: any(layer.get("namespace") == "flowwm-dialog" for layer in request(niri,"Layers")["Layers"]), compositor)
+                capture(macro + "-parameters.png")
+                input("key", "Escape")
+                wait(lambda: not any(layer.get("namespace") == "flowwm-dialog" for layer in request(niri,"Layers")["Layers"]), compositor)
+                source = {"node":created["id"],"pin":target_pin} if reverse else {"node":lark_node["id"],"pin":source_pin}
+                target = {"node":lark_node["id"],"pin":source_pin} if reverse else {"node":created["id"],"pin":target_pin}
+                assert {"source":source,"target":target} in request(wm,{"action":"view"})["connections"]
             # Add a native agent application using the same authoritative graph API.
             state = request(wm,{"action":"view"})
             node = dict(lark_node)
             node.update(id="native-agent-fixture",kind="window",title="Native agent",cwd=str(runtime),command="Initial prompt",desktop_window=False,window_id=None,status="idle",position={"x":450,"y":100})
             node["flow"]={"node_type":"agent_sessions.terminal","properties":{"harness":"fixture"}}
             request(wm,{"action":"create","node":node})
+            other_row = next(w["id"] for w in catalog()["workspaces"] if w.get("row") and w["id"] != node["workspace"])
+            ui("workspace", id=other_row)
+            wait(lambda: catalog()["selected_workspace"] == other_row, compositor)
             ui("open",id=node["id"])
             started = wait(lambda: json.loads((runtime / "native-started.json").read_text()) if (runtime / "native-started.json").exists() else None, compositor)
             assert started["tty"] is True, started
@@ -158,12 +189,14 @@ harness "fixture" {{
                 state=request(wm,{"action":"view"})
                 return next((n for n in state["nodes"] if n["id"]==node["id"] and n.get("window_id") is not None),None)
             attached_node=wait(attached,compositor)
+            owner_row = next(w["row"]["id"] for w in catalog()["workspaces"] if w["id"] == node["workspace"])
+            assert next(w for w in request(niri,"Windows")["Windows"] if w["id"] == attached_node["window_id"])["workspace_id"] == owner_row
             ui("select",id=node["id"])
             ui("fit")
             time.sleep(0.3)
             capture("agent-window-card.png")
             ui("open",id=node["id"])
-            time.sleep(0.3)
+            wait(lambda: any(w["id"] == attached_node["window_id"] and w["is_focused"] for w in request(niri,"Windows")["Windows"]), compositor)
             input("type","--clearmodifiers","interactive input")
             input("key","Return")
             wait(lambda: (runtime / "native-input.txt").exists(), compositor)
@@ -178,7 +211,7 @@ harness "fixture" {{
             input("key","Return")
             wait(lambda: any(n["id"]==gate["id"] and n["status"]=="review" for n in request(wm,{"action":"view"})["nodes"]),compositor)
             wait(lambda: any(n["id"]==node["id"] and n.get("window_id") is None for n in request(wm,{"action":"view"})["nodes"]), compositor)
-            print(json.dumps({"native_settings":True,"native_chat_selection":"Alice","fake_send_through_runtime":True,"agent_terminal_is_interactive":True,"session_finished_reaches_graph":True,"agent_node_retained_after_close":True,"artifacts":str(artifacts)},indent=2))
+            print(json.dumps({"native_settings":True,"native_chat_selection":"Alice","fake_send_through_runtime":True,"first_lark_nodes_create_with_connections":True,"graph_errors_are_visible":True,"first_agent_nodes_create_with_connections":True,"agent_terminal_is_interactive":True,"session_finished_reaches_graph":True,"agent_node_retained_after_close":True,"artifacts":str(artifacts)},indent=2))
         finally:
             for child in reversed(children):
                 child.terminate()

@@ -35,6 +35,20 @@ pub struct Definition {
     #[serde(default)]
     pub renderer: Option<RendererContract>,
 }
+impl Definition {
+    pub fn node_schema(&self) -> crate::graph::NodeDefinition {
+        crate::graph::NodeDefinition {
+            behavior: self.behavior.clone(),
+            id: self.id.clone(),
+            name: self.id.clone(),
+            inputs: self.inputs.clone(),
+            outputs: self.outputs.clone(),
+            properties: self.properties.clone(),
+            source: String::new(),
+            window: self.window.clone(),
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WindowInterface {
     pub title: String,
@@ -223,16 +237,7 @@ impl Registry {
         for definition in self.definitions() {
             if graph.nodes.iter().any(|n| n.type_id == definition.id) {
                 graph.node_types.retain(|d| d.id != definition.id);
-                graph.node_types.push(crate::graph::NodeDefinition {
-                    behavior: definition.behavior.clone(),
-                    id: definition.id.clone(),
-                    name: definition.id.clone(),
-                    inputs: definition.inputs.clone(),
-                    outputs: definition.outputs.clone(),
-                    properties: definition.properties.clone(),
-                    source: String::new(),
-                    window: definition.window.clone(),
-                });
+                graph.node_types.push(definition.node_schema());
             }
         }
     }

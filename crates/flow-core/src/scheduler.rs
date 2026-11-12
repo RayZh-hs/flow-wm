@@ -79,16 +79,7 @@ pub fn evaluate(
         if state.nodes.iter().any(|n| n.type_id == definition.id)
             && !state.node_types.iter().any(|d| d.id == definition.id)
         {
-            state.node_types.push(NodeDefinition {
-                behavior: definition.behavior.clone(),
-                id: definition.id.clone(),
-                name: definition.id.clone(),
-                inputs: definition.inputs.clone(),
-                outputs: definition.outputs.clone(),
-                properties: definition.properties.clone(),
-                source: String::new(),
-                window: definition.window.clone(),
-            });
+            state.node_types.push(definition.node_schema());
         }
     }
     context.apply(&mut state);

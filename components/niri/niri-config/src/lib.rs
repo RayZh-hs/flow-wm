@@ -1013,6 +1013,7 @@ mod tests {
                 notification_command: None,
                 desktop_save_interval_ms: None,
                 motion_ms: None,
+                popup_open_ms: None,
                 removal_ms: None,
                 inertia_decay: None,
                 arrange_wrap_zoom: None,

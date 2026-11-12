@@ -325,6 +325,9 @@ impl DesktopClient {
         .unwrap_or_else(crate::notifications::default_command);
         let writer = Writer::new(directory)?;
         let mut state = State::empty(std::env::current_dir()?);
+        // Creation and pin lookup need provider schemas before their first node exists.
+        state.node_types =
+            serde_json::from_value(info.get("node_types").cloned().unwrap_or_else(|| json!([])))?;
         crate::projection::apply(&mut state, &host.snapshot()?);
         writer.load(&mut state)?;
         let bindings = crate::desktop_provider::bindings_at(&provider_socket)?;

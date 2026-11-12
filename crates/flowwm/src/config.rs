@@ -43,6 +43,7 @@ pub fn flow() -> &'static niri_config::flow::Flow {
                 config.animations.slowdown
             };
             flow.motion_ms = Some((flow.motion_ms.unwrap_or(220) as f64 * scale) as u32);
+            flow.popup_open_ms = Some((flow.popup_open_ms.unwrap_or(50) as f64 * scale) as u32);
             flow.removal_ms = Some((flow.removal_ms.unwrap_or(180) as f64 * scale) as u32);
             flow
         }

@@ -174,6 +174,11 @@ and add row variables, then save. Running nodes keep their existing environment.
 The older `flowwm workflows` manager remains available for creating workflows,
 references, and ownership changes.
 
+Row Settings fades in with the same 50 ms easing as the Spotlight launcher.
+Set `flow { popup-open-ms 100; }` in `config.kdl` to change the duration, or use
+zero to open it immediately. Niri's animation off/slowdown settings and Dux's
+reduced-motion setting apply to the fade.
+
 Row variables become `FLOWWM_ROWSET_<NAME>` on top of the session environment.
 The builtin `pwd` setting defaults to home and sets supported terminals' startup
 directory. Nodes with an **Env** data input inherit this row environment when the
@@ -219,6 +224,7 @@ Global `binds` use native niri actions and properties such as `repeat`, `allow-w
 flow {
     terminal "alacritty"
     motion-ms 220
+    popup-open-ms 50
     removal-ms 180
     inertia-decay 10.0
     arrange-wrap-zoom 0.4

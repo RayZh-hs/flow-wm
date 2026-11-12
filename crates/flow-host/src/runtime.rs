@@ -22,6 +22,7 @@ pub struct Host {
     tx: mpsc::SyncSender<Message>,
     shared: Arc<Shared>,
     directory: PathBuf,
+    node_types: Arc<Vec<flow_core::graph::NodeDefinition>>,
     remotes: BTreeMap<String, Remote>,
 }
 struct Shared {
@@ -111,6 +112,12 @@ impl Host {
                 messaging: Some(Arc::new(Mailbox(tx.clone()))),
             },
         )?;
+        let node_types = Arc::new(
+            registry
+                .definitions()
+                .map(Definition::node_schema)
+                .collect(),
+        );
         let mut orchestrator = Orchestrator::new(state, registry);
         orchestrator.signal_capacity = limits.signal_queue_capacity;
         orchestrator.replay_capacity = limits.replay_capacity;
@@ -150,6 +157,7 @@ impl Host {
             tx,
             shared,
             directory: store.directory().into(),
+            node_types,
             remotes,
         })
     }
@@ -190,7 +198,7 @@ impl Host {
                 id: request.id,
                 revision: self.snapshot().revision,
                 result: Some(
-                    json!({"protocol":ORCHESTRATOR_VERSION,"data_directory":self.directory,"config_directory":config::directory(),"worker":self.worker}),
+                    json!({"protocol":ORCHESTRATOR_VERSION,"data_directory":self.directory,"config_directory":config::directory(),"worker":self.worker,"node_types":self.node_types}),
                 ),
                 error: None,
             });
