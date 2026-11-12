@@ -1,12 +1,19 @@
 # Python SDK
 
-Add this directory to `PYTHONPATH`, then use `flow_sdk.Client`. `control()` retains
-v1/v2 application hook compatibility; `request()` uses the versioned orchestrator.
-An application can expose typed outputs and emit completion events without
-registering executable source. The bundled `agent-sessions` extension uses this API.
+Add this directory to `PYTHONPATH`, then use `flow_sdk.Client`. The default endpoint
+is `$XDG_RUNTIME_DIR/flow-core.sock`, overridden by `FLOWWM_HOST_SOCKET`. The SDK
+supports Orchestrator Protocol 3 and Signal Protocol 1. Older runtime and application
+hook requests are rejected.
 
-`negotiate()` advertises versions before use. Preserve invocation/delivery IDs when
-retrying. `subscribe(after=revision)` sends a fresh authorized snapshot on reconnect;
-clients replace their cache and then apply subsequent snapshots by revision.
-Receive is a peek; acknowledge only after processing. Delivery IDs remain in the
-bounded replay ledger. A full queue or ledger is an error, never silent data loss.
+`request()` sends current commands. `snapshot()` and `subscribe()` expose native
+workflow, invocation, source and application records. Preserve invocation and
+delivery IDs across retries. Reconnect with a fresh snapshot; reject older revisions.
+
+Applications register with `register_application()`, declare typed outputs with
+`expose_output()`, publish values with `publish()`, and send session-scoped events
+with `emit()`. The independent desktop provider owns native bindings; its compact
+binding service lets desktop integrations find an application node without exposing
+native handles to the runtime.
+
+Receive peeks; acknowledge after processing. Full delivery queues and replay ledgers
+return errors. An invocation with an unknown outcome is never rerun automatically.

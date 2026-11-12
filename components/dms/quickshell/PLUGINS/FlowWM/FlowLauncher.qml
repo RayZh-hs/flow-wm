@@ -56,7 +56,7 @@ Scope {
             return { keepOpen: true, query: "", selectApplication: app => {
                 bridge?.completeSelection();
                 const selected = {id: app.id, name: app.name, app_id: app.startupClass || app.id.replace(/\.desktop$/, "")};
-                const request = connectedApplication ? pending : { op: "ui", command: { action: "create_application", id: selected.id, name: selected.name, app_id: selected.app_id } };
+                const request = connectedApplication ? pending : { action: "ui", command: { action: "create_application", id: selected.id, name: selected.name, app_id: selected.app_id } };
                 if (connectedApplication) request.command.application = selected;
                 Qt.callLater(() => bridge?.command(["send", JSON.stringify(request)]));
             } };

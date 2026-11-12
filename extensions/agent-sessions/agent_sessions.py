@@ -23,8 +23,16 @@ sys.path.insert(0, str(HERE.parents[1] / "sdk/python"))
 from flow_sdk import Client, exchange
 
 
+def desktop_bindings():
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    reply = exchange(os.environ.get("FLOWWM_DESKTOP_SOCKET", str(runtime / "flowwm-desktop.sock")), {"desktop_protocol": 1, "command": "bindings"})
+    if "error" in reply:
+        raise RuntimeError(reply["error"])
+    return reply["ok"]
+
+
 def flow(request):
-    return Client().control(request)
+    return Client().request(request)
 
 
 def windows():
@@ -58,20 +66,20 @@ def bind_terminal(pid=None):
         native = next((w for w in native_windows if w.get("is_focused") and any(name in (w.get("app_id") or "").lower() for name in TERMINALS)), None)
     if not native:
         return None
-    node = next((n for n in flow({"op": "status"})["nodes"] if n.get("window_id") == native["id"] and n["kind"] == "window"), None)
+    node = next((node for node, binding in desktop_bindings()["applications"].items() if binding["window"] == native["id"]), None)
     if node:
-        expose(node["id"])
-        return node["id"]
+        expose(node)
+        return node
     return None
 
 
 def expose(node):
-    flow({"op": "expose_output", "id": node, "pin": {"name": "on_session_finish", "ty": SIGNAL_TYPE}})
+    Client().expose_output(node, "on_session_finish", SIGNAL_TYPE, [{"name":"Error","representation":{"kind":"record","fields":{"code":{"kind":"int"},"kind":{"kind":"string"},"message":{"kind":"string"}},"open":False}}])
 
 
 def finish(node, agent, code=0, kind="", message="", session=""):
     error = {"code": code, "kind": kind or ("none" if code == 0 else "process_exit"), "message": message}
-    flow({"op": "emit", "source": {"node": node, "pin": "on_session_finish"}, "args": {"ERROR": error, "AGENT": agent, "SESSION": session}})
+    Client().emit(node, "on_session_finish", {"ERROR": error, "AGENT": agent, "SESSION": session})
 
 
 def executable(agent):
@@ -213,7 +221,7 @@ def agent_process(pid):
 
 def scan(native, state, tracked):
     terminals = {w["pid"]: w["id"] for w in native if w.get("pid") and any(name in (w.get("app_id") or "").lower() for name in TERMINALS)}
-    nodes = {n.get("window_id"): n["id"] for n in state["nodes"] if n["kind"] == "window"}
+    nodes = {binding["window"]: node for node, binding in state["applications"].items()}
     found = {}
     if terminals:
         for path in Path("/proc").iterdir():
@@ -262,7 +270,7 @@ def watch():
                             native = windows()
                         if time.monotonic() < scanned + 2:
                             continue
-                    tracked = scan(native, flow({"op": "status"}), tracked)
+                    tracked = scan(native, desktop_bindings(), tracked)
                     scanned = time.monotonic()
         except (OSError, ValueError, KeyError, RuntimeError) as error:
             print(f"FlowWM session observer: {error}", file=sys.stderr)

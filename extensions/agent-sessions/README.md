@@ -30,7 +30,7 @@ The adapters locate the terminal through niri's window PID and `/proc` ancestry.
 FLOWWM_AGENT_NODE=<terminal-node-id> codex
 ```
 
-FlowWM-owned workflow processes bypass the terminal adapter because the engine already owns their completion handling. The adapters locate the real CLI later in PATH, so install/authenticate Codex or Claude normally. An absolute executable path or shell alias that bypasses the adapter gets observer-only reporting.
+FlowWM-owned workflow processes bypass the terminal adapter because the runtime provider already owns their completion handling. The adapters locate the real CLI later in PATH, so install/authenticate Codex or Claude normally. An absolute executable path or shell alias that bypasses the adapter gets observer-only reporting.
 
 ## Observer and limits
 

@@ -44,13 +44,13 @@ Scope {
         command(["search"]);
     }
     function action(action) {
-        command(["send", JSON.stringify({ op: "ui", command: { action: action } })]);
+        command(["send", JSON.stringify({ action: "ui", command: { action: action } })]);
     }
     function geometry(output, insets) {
         if (!output || !online)
             return;
         barGeometries[output] = insets;
-        command(["send", JSON.stringify({ op: "ui", command: { action: "bar_geometry", output: output, insets: insets } })]);
+        command(["send", JSON.stringify({ action: "ui", command: { action: "bar_geometry", output: output, insets: insets } })]);
     }
 
     onLauncherOpenChanged: {
@@ -77,7 +77,7 @@ Scope {
             const nodes = root.catalog.nodes || [];
             nodes.filter(node => node.window_id && identities.includes(String(node.app_id || "").toLowerCase())).forEach(node => {
                 if (NiriService.windows.some(window => window.id === node.window_id && window.is_focused)) return;
-                root.command(["send", JSON.stringify({op:"alert", id:node.id, message:notification.summary || notification.body || "", critical:notification.urgency === 2, notify:false})]);
+                root.command(["send", JSON.stringify({action:"alert", id:node.id, message:notification.summary || notification.body || "", critical:notification.urgency === 2, notify:false})]);
             });
         }
     }
@@ -114,7 +114,7 @@ Scope {
             onConnectionStateChanged: {
                 if (root.channel && root.channel !== socket) return;
                 if (connected) {
-                    write('{"op":"subscribe","launcher":true}\n');
+                    write('{"wm_protocol":1,"command":{"action":"subscribe","launcher":true}}\n');
                     flush();
                     return;
                 }

@@ -136,7 +136,7 @@ function connectionItems(catalog, query, outputName, targetKey) {
             return;
         }
         targets.forEach(function (target) {
-            var command = target.create ? { op: "ui", command: { action: "create_connected", id: target.id, source: {node:lookup.node,pin:output.name}, input:target.input, reverse:!!lookup.input } } : { op:"connect_pins",connection:{source:{node:lookup.node,pin:output.name},target:{node:target.id,pin:target.input}} };
+            var command = target.create ? { action: "ui", command: { action: "create_connected", id: target.id, source: {node:lookup.node,pin:output.name}, input:target.input, reverse:!!lookup.input } } : { action:"connect_pins",connection:{source:{node:lookup.node,pin:output.name},target:{node:target.id,pin:target.input}} };
             if (lookup.input && !target.create) {
                 var swap = command.connection.source;
                 command.connection.source = command.connection.target;
