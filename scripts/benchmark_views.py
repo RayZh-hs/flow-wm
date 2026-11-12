@@ -255,6 +255,25 @@ def run(args):
                     wait(lambda: not any(n["id"] == target["id"] for n in request(flow, {"action": "view"})["nodes"]), compositor)
                     result["verified"].append(f"external close removes an unconnected {view} window despite its shared process")
 
+                remaining = [n for n in request(flow, {"action": "catalog"})["nodes"] if n.get("window_id")]
+                if remaining:
+                    target = remaining[0]
+                    others = {w["id"] for w in request(niri, "Windows")["Windows"]} - {target["window_id"]}
+                    ui("nodes")
+                    wait(lambda: rows(), compositor)
+                    ui("select", id=target["id"])
+                    time.sleep(0.4)
+                    subprocess.run(["xdotool", "key", "--clearmodifiers", "Delete"], env=env, check=True)
+                    wait(lambda: not any(w["id"] == target["window_id"] for w in request(niri, "Windows")["Windows"]), compositor)
+                    wait(lambda: not any(n["id"] == target["id"] for n in request(flow, {"action": "view"})["nodes"]), compositor)
+                    ui("windows")
+                    wait(lambda: not rows(), compositor)
+                    assert others == {w["id"] for w in request(niri, "Windows")["Windows"]}, "deleting a node left a ghost window or closed another window"
+                    ui("nodes")
+                    wait(lambda: rows(), compositor)
+                    assert not any(n["id"] == target["id"] for n in request(flow, {"action": "view"})["nodes"])
+                    result["verified"].append("Delete removes an application node and its window across both views")
+
                 workspaces = sorted(request(niri, "Workspaces")["Workspaces"], key=lambda w: w["idx"])
                 first, second = (w["id"] for w in workspaces[:2])
 

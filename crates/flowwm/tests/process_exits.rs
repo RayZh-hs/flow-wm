@@ -1,7 +1,10 @@
 //! The production desktop-provider process owns compositor lifetime and exit events.
 mod support;
 use flow_core::{domain::*, graph::*, protocol::Command};
-use flowwm::model::State;
+use flowwm::{
+    client::Action,
+    model::{Node, NodeKind, RowView, State},
+};
 use serde_json::json;
 use std::{
     io::{BufRead, BufReader, Write},
@@ -11,28 +14,51 @@ use std::{
 };
 struct Compositor {
     streams: Arc<Mutex<Vec<UnixStream>>>,
+    close_requests: Arc<Mutex<Vec<u64>>>,
     socket: std::path::PathBuf,
     _directory: tempfile::TempDir,
 }
 impl Compositor {
     fn new(pid: i32) -> Self {
+        Self::with_close_error(pid, None)
+    }
+    fn with_close_error(pid: i32, close_error: Option<&'static str>) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("niri.sock");
         let listener = UnixListener::bind(&socket).unwrap();
-        let streams = Arc::new(Mutex::new(Vec::new()));
+        let streams = Arc::new(Mutex::new(Vec::<UnixStream>::new()));
         let peers = streams.clone();
+        let close_requests = Arc::new(Mutex::new(Vec::new()));
+        let closes = close_requests.clone();
         std::thread::spawn(move || {
             for mut stream in listener.incoming().flatten() {
                 let mut line = String::new();
                 BufReader::new(stream.try_clone().unwrap())
                     .read_line(&mut line)
                     .unwrap();
-                if line.trim() != "\"EventStream\"" {
+                let request: niri_ipc::Request = serde_json::from_str(&line).unwrap();
+                if let niri_ipc::Request::Action(niri_ipc::Action::CloseWindow { id: Some(id) }) =
+                    request
+                {
+                    closes.lock().unwrap().push(id);
+                    if let Some(error) = close_error {
+                        writeln!(stream, "{}", json!({"Err":error})).unwrap();
+                    } else {
+                        // Deliver the event before acknowledging the request to
+                        // exercise a client that closes immediately.
+                        for peer in peers.lock().unwrap().iter_mut() {
+                            writeln!(peer, "{}", json!({"WindowClosed":{"id":id}})).unwrap();
+                        }
+                        writeln!(stream, "{}", json!({"Ok":"Handled"})).unwrap();
+                    }
+                    continue;
+                }
+                if !matches!(request, niri_ipc::Request::EventStream) {
                     continue;
                 }
                 writeln!(stream, "{}", json!({"Ok":"Handled"})).unwrap();
                 let workspace = json!({"id":1,"idx":1,"name":null,"output":"TEST","is_urgent":false,"is_active":true,"is_focused":true,"active_window_id":1});
-                let window = json!({"id":1,"workspace_id":1,"title":"Shared app","app_id":"test.shared","pid":pid,"is_focused":true,"is_floating":false,"is_urgent":false,"layout":{"pos_in_scrolling_layout":[1,1],"tile_size":[800,600],"window_size":[800,600],"tile_pos_in_workspace_view":[0,0],"window_offset_in_tile":[0,0]},"focus_timestamp":null});
+                let window = window(pid, 1, "Shared app");
                 writeln!(
                     stream,
                     "{}",
@@ -45,8 +71,14 @@ impl Compositor {
         });
         Self {
             streams,
+            close_requests,
             socket,
             _directory: directory,
+        }
+    }
+    fn publish(&self, event: serde_json::Value) {
+        for stream in self.streams.lock().unwrap().iter_mut() {
+            writeln!(stream, "{event}").unwrap();
         }
     }
     fn disconnect(&self) {
@@ -55,6 +87,137 @@ impl Compositor {
         }
     }
 }
+
+fn window(pid: i32, id: u64, title: &str) -> serde_json::Value {
+    json!({"id":id,"workspace_id":1,"title":title,"app_id":"test.shared","pid":pid,"is_focused":true,"is_floating":false,"is_urgent":false,"layout":{"pos_in_scrolling_layout":[1,1],"tile_size":[800,600],"window_size":[800,600],"tile_pos_in_workspace_view":[0,0],"window_offset_in_tile":[0,0]},"focus_timestamp":null})
+}
+
+fn application_node() -> (State, String) {
+    let mut state = State::empty("/tmp".into());
+    state.workspaces[0].view = RowView::Nodes;
+    let mut node = Node::new(
+        &state.selected_workspace,
+        NodeKind::Window,
+        "/tmp".into(),
+        Default::default(),
+    );
+    node.flow
+        .properties
+        .insert("application".into(), json!("test.shared"));
+    let id = node.id.clone();
+    state.nodes.push(node);
+    (state, id)
+}
+
+#[test]
+fn deleting_an_application_in_nodes_closes_only_its_window_and_removes_both_views() {
+    let pid = std::process::id() as i32;
+    let compositor = Compositor::new(pid);
+    let (state, id) = application_node();
+    let workflow = state.selected_workspace.clone();
+    let (desktop, _) = support::fixture_with_niri(state, Some(&compositor.socket));
+    support::wait(|| {
+        desktop
+            .bindings()
+            .applications
+            .get(&id)
+            .is_some_and(|b| b.window == 1)
+            && desktop
+                .snapshot()
+                .state
+                .node(&id)
+                .is_some_and(|n| n.window_id == Some(1))
+    });
+    compositor.publish(json!({"WindowOpenedOrChanged":{"window":window(pid, 2, "Other window")}}));
+    support::wait(|| desktop.bindings().applications.len() == 2);
+
+    desktop.request(Action::Delete { id: id.clone() }).unwrap();
+    assert_eq!(*compositor.close_requests.lock().unwrap(), vec![1]);
+    support::wait(|| !desktop.bindings().applications.contains_key(&id));
+
+    // A queued update for the closing window must not recreate its node.
+    compositor
+        .publish(json!({"WindowOpenedOrChanged":{"window":window(pid, 1, "Closing window")}}));
+    compositor.publish(json!({"WindowOpenedOrChanged":{"window":window(pid, 2, "Still alive")}}));
+    support::wait(|| {
+        desktop
+            .bindings()
+            .applications
+            .values()
+            .any(|b| b.title == "Still alive")
+    });
+    for view in [RowView::Windows, RowView::Nodes] {
+        desktop
+            .request(Action::RowView {
+                workspace: workflow.clone(),
+                view,
+            })
+            .unwrap();
+        let snapshot = desktop.snapshot();
+        assert!(snapshot.state.node(&id).is_none());
+        assert!(snapshot.state.nodes.iter().all(|n| n.window_id != Some(1)));
+        assert!(snapshot.state.nodes.iter().any(|n| n.window_id == Some(2)));
+    }
+    let runtime = desktop.orchestrate(Command::Snapshot, None).unwrap();
+    assert!(
+        runtime["workflows"][&workflow]["graph"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|n| n["id"] != id)
+    );
+    assert!(runtime["applications"].get(&id).is_none());
+    assert_eq!(desktop.bindings().applications.len(), 1);
+    desktop.shutdown();
+}
+
+#[test]
+fn a_failed_window_close_keeps_the_application_node_and_binding() {
+    let compositor = Compositor::with_close_error(std::process::id() as i32, Some("Close failed"));
+    let (state, id) = application_node();
+    let workflow = state.selected_workspace.clone();
+    let (desktop, _) = support::fixture_with_niri(state, Some(&compositor.socket));
+    support::wait(|| desktop.bindings().applications.contains_key(&id));
+    support::wait(|| {
+        desktop
+            .snapshot()
+            .state
+            .node(&id)
+            .is_some_and(|n| n.window_id == Some(1))
+    });
+
+    let error = desktop
+        .request(Action::Delete { id: id.clone() })
+        .unwrap_err();
+    assert!(error.to_string().contains("Close failed"));
+    assert_eq!(*compositor.close_requests.lock().unwrap(), vec![1]);
+    assert_eq!(
+        desktop.snapshot().state.node(&id).unwrap().window_id,
+        Some(1)
+    );
+    assert!(desktop.bindings().applications.contains_key(&id));
+    assert!(!desktop.bindings().disowned.contains(&1));
+    let runtime = desktop.orchestrate(Command::Snapshot, None).unwrap();
+    assert!(
+        runtime["workflows"][&workflow]["graph"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["id"] == id)
+    );
+    assert!(runtime["applications"].get(&id).is_some());
+    desktop.shutdown();
+}
+
+#[test]
+fn deleting_an_unlaunched_application_does_not_need_a_live_window() {
+    let (state, id) = application_node();
+    let (desktop, _) = support::fixture(state);
+    desktop.request(Action::Delete { id: id.clone() }).unwrap();
+    assert!(desktop.snapshot().state.node(&id).is_none());
+    desktop.shutdown();
+}
+
 #[test]
 fn provider_observes_application_exit_after_the_gtk_client_closes() {
     let mut application = Process::new("python3")

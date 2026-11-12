@@ -876,7 +876,7 @@ impl DesktopClient {
             Action::Delete { id } => {
                 let node = state.node(&id).context("Node not found")?;
                 if node.desktop_window && node.window_id.is_some() {
-                    self.application_operation(&id, "disown")?;
+                    self.application_operation(&id, "delete")?;
                 }
                 self.edit_graph(&node.workspace, |g| {
                     g.nodes.retain(|n| n.id.0 != id);

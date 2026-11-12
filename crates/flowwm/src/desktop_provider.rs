@@ -162,8 +162,9 @@ enum Event {
         row: crate::model::Row,
         reply: mpsc::Sender<std::result::Result<(), String>>,
     },
-    Disown {
+    Detach {
         node: String,
+        close_window: bool,
         reply: mpsc::Sender<std::result::Result<(), String>>,
     },
     Exit(u64, std::result::Result<u8, String>),
@@ -294,10 +295,11 @@ pub fn run() -> Result<()> {
                                 Some("interrupt") => {
                                     applications.interrupt(&binding.window.to_string())?
                                 }
-                                Some("disown") => {
+                                Some("delete" | "disown") => {
                                     let (reply, rx) = mpsc::channel();
-                                    mutations.send(Event::Disown {
+                                    mutations.send(Event::Detach {
                                         node: node.into(),
+                                        close_window: request["command"] == "delete",
                                         reply,
                                     })?;
                                     rx.recv_timeout(std::time::Duration::from_secs(5))?
@@ -412,13 +414,23 @@ pub fn run() -> Result<()> {
                 .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
-            Event::Disown { node, reply } => {
+            Event::Detach {
+                node,
+                close_window,
+                reply,
+            } => {
                 let result = (|| -> Result<()> {
                     let binding = bindings
                         .applications
                         .get(&node)
                         .cloned()
                         .ok_or_else(|| anyhow::anyhow!("Application is detached"))?;
+                    // Serialize closing and detaching with desktop events, so
+                    // an immediate close cannot invalidate the attachment
+                    // between the two operations. A failed close keeps it live.
+                    if close_window {
+                        DesktopApplications.close_window(&binding.window.to_string())?;
+                    }
                     host.command(Command::UnregisterApplication {
                         node: node.clone().into(),
                         token: binding.token.clone(),
