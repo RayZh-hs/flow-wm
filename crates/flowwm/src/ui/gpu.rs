@@ -5,7 +5,7 @@ use super::{
 use crate::model::*;
 use gtk::{gdk, graphene, gsk, prelude::*};
 use std::{
-    collections::{HashMap, hash_map::DefaultHasher},
+    collections::{HashMap, HashSet, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
 };
 #[derive(Default)]
@@ -347,6 +347,7 @@ pub fn native_windows(
     width: i32,
     height: i32,
 ) -> Vec<niri_ipc::node_row::NodeWindow> {
+    let mut windows = HashSet::new();
     let viewport = Rect {
         x: 0.,
         y: 0.,
@@ -367,6 +368,11 @@ pub fn native_windows(
             let (_, rect, t) = window_geometry(node, view);
             let content = window_content(rect, t, view.zoom);
             if content.width <= 0. || content.height <= 0. || !content.overlaps(viewport) {
+                return None;
+            }
+            // Invalid scenes disconnect the entire GTK Wayland client. Keep
+            // publication valid even when recovering an older duplicate binding.
+            if !windows.insert(id) {
                 return None;
             }
             Some(niri_ipc::node_row::NodeWindow {
@@ -719,6 +725,26 @@ mod tests {
         view.local_windows = Some(std::collections::HashSet::new());
         assert!(native_windows(&state, &view, 1200, 800).is_empty());
         assert!(native_canvas_region(&state, &view, 1200, 800).contains_point(50, 50));
+    }
+
+    #[test]
+    fn native_scenes_never_publish_duplicate_window_ids() {
+        let (mut state, view) = expanded_window_with_fading_peers(1.);
+        let window = state.nodes[0].window_id;
+        state.nodes[1].window_id = window;
+        let scene = niri_ipc::node_row::NodeRowScene {
+            windows: native_windows(&state, &view, 1200, 800),
+            insets: [0; 4],
+        };
+        assert!(scene.validate());
+        assert_eq!(
+            scene
+                .windows
+                .iter()
+                .filter(|w| Some(w.id) == window)
+                .count(),
+            1
+        );
     }
 
     #[test]

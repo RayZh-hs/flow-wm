@@ -90,6 +90,22 @@ pub fn bindings_at(path: &std::path::Path) -> Result<Bindings> {
     )?)?)
 }
 impl Bindings {
+    fn start_session(&mut self, session: &str) {
+        if self.session != session {
+            // Compositor IDs are only meaningful within their original session.
+            // Keep declarative selectors and row hints for reconnection.
+            self.applications.clear();
+            self.disowned.clear();
+            self.session = session.into();
+        }
+    }
+    fn restore_row_hints(&self, state: &mut crate::model::State) {
+        for row in &mut state.workspaces {
+            if let Some(binding) = self.rows.get(&row.id) {
+                row.row = Some(binding.clone());
+            }
+        }
+    }
     pub fn apply(&self, state: &mut crate::model::State) {
         self.apply_native(state);
         if state.workspaces.iter().any(|w| w.id == self.selected) {
@@ -103,12 +119,17 @@ impl Bindings {
             }
         }
         for row in &mut state.workspaces {
-            if let Some(binding) = self.rows.get(&row.id) {
-                row.row = Some(binding.clone());
-            }
+            row.row = self
+                .rows
+                .get(&row.id)
+                .filter(|r| !self.session.is_empty() && r.session == self.session)
+                .cloned();
         }
+        let mut windows = BTreeSet::new();
         for node in &mut state.nodes {
-            if let Some(binding) = self.applications.get(&node.id) {
+            if let Some(binding) = self.applications.get(&node.id).filter(|binding| {
+                binding.workflow == node.workspace && windows.insert(binding.window)
+            }) {
                 node.window_id = Some(binding.window);
                 node.desktop_window = true;
                 node.column = binding.column.clone();
@@ -161,6 +182,7 @@ fn save_bindings(directory: &std::path::Path, bindings: &Bindings) -> Result<()>
     File::open(directory)?.sync_all()?;
     Ok(())
 }
+
 pub fn run() -> Result<()> {
     let host = Client::new(flow_host::ipc::host_socket());
     let directory: PathBuf =
@@ -181,6 +203,9 @@ pub fn run() -> Result<()> {
     } else {
         Bindings::default()
     };
+    // Do this before serving GTK: its first snapshot must not contain handles
+    // restored from a previous login while the initial desktop events arrive.
+    bindings.start_session(&std::env::var("NIRI_SOCKET").unwrap_or_default());
     let shared = Arc::new((Mutex::new((0u64, bindings.clone())), Condvar::new()));
     let (tx, rx) = mpsc::channel();
     let mutations = tx.clone();
@@ -457,13 +482,13 @@ pub fn run() -> Result<()> {
                     }
                     watches.clear();
                     watched.clear();
-                    bindings.applications.clear();
-                    bindings.disowned.clear();
+                    bindings.start_session(&desktop.session);
+                    bindings.apply_native(&mut state);
                 }
-                bindings.session = desktop.session.clone();
                 desktop
                     .windows
                     .retain(|w| !bindings.disowned.contains(&w.id));
+                bindings.restore_row_hints(&mut state);
                 // A closed automatically observed card has no definition to keep.
                 // Keep nodes with exit listeners until their process produces on_exit.
                 let mut closed = BTreeMap::<WorkflowId, BTreeSet<String>>::new();
@@ -506,6 +531,7 @@ pub fn run() -> Result<()> {
                     &desktop,
                     &Default::default(),
                 );
+                bindings.rows.clear();
                 for row in &state.workspaces {
                     if !runtime.workflows.contains_key(&row.id.clone().into()) {
                         host.command(Command::Create {
@@ -527,11 +553,16 @@ pub fn run() -> Result<()> {
                     }
                 }
                 bindings.selected = state.selected_workspace.clone();
+                let mut applications = BTreeMap::new();
                 for node in state.nodes.iter().filter(|n| n.window_id.is_some()) {
                     let window = node.window_id.unwrap();
-                    let native = desktop.windows.iter().find(|w| w.id == window);
-                    if let Some(native)=native {bindings.selectors.insert(node.id.clone(),crate::groups::selector(native));}
-                    let pid = native.and_then(|w| w.pid);
+                    let Some(native) = desktop.windows.iter().find(|w| w.id == window) else {
+                        continue;
+                    };
+                    bindings
+                        .selectors
+                        .insert(node.id.clone(), crate::groups::selector(native));
+                    let pid = native.pid;
                     if !runtime
                         .workflows
                         .values()
@@ -550,7 +581,9 @@ pub fn run() -> Result<()> {
                     let registration_token = bindings
                         .applications
                         .get(&node.id)
-                        .filter(|b| b.window == window && b.pid == pid)
+                        .filter(|b| {
+                            b.window == window && b.pid == pid && b.workflow == node.workspace
+                        })
                         .map(|b| b.token.clone())
                         .unwrap_or_else(crate::model::id);
                     if runtime
@@ -576,7 +609,7 @@ pub fn run() -> Result<()> {
                             },
                         })?;
                     }
-                    bindings.applications.insert(
+                    applications.insert(
                         node.id.clone(),
                         Binding {
                             window,
@@ -599,10 +632,10 @@ pub fn run() -> Result<()> {
                         }
                     }
                 }
-                let live: BTreeSet<_> = desktop.windows.iter().map(|w| w.id).collect();
-                bindings
-                    .applications
-                    .retain(|_, b| live.contains(&b.window));
+                // Reconciliation decides which node owns each window. Retaining
+                // bindings by live window ID also kept detached owners, which
+                // later runtime snapshots could reattach to the same preview.
+                bindings.applications = applications;
             }
             Event::Exit(token, result) => {
                 if let Some((node, registration_token, incarnation)) = watches.remove(&token)
@@ -635,4 +668,67 @@ pub fn run() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_login_drops_live_handles_but_keeps_reconnection_hints() {
+        let mut bindings = Bindings {
+            session: "previous-login".into(),
+            ..Default::default()
+        };
+        bindings.applications.insert(
+            "editor".into(),
+            Binding {
+                window: 85,
+                pid: Some(100),
+                workflow: "workflow".into(),
+                token: "old-token".into(),
+                column: None,
+                title: "Editor".into(),
+            },
+        );
+        bindings.disowned.insert(153);
+        bindings
+            .selectors
+            .insert("editor".into(), "test.editor::Editor".into());
+        bindings.start_session("previous-login");
+        assert_eq!(bindings.applications.len(), 1);
+        bindings.start_session("new-login");
+        assert!(bindings.applications.is_empty());
+        assert!(bindings.disowned.is_empty());
+        assert_eq!(bindings.selectors["editor"], "test.editor::Editor");
+        assert_eq!(bindings.session, "new-login");
+    }
+
+    #[test]
+    fn stale_rows_are_private_reconnection_hints_until_reconciled() {
+        let mut state = crate::model::State::empty("/tmp".into());
+        let mut bindings = Bindings {
+            session: "new-login".into(),
+            ..Default::default()
+        };
+        bindings.rows.insert(
+            state.selected_workspace.clone(),
+            crate::model::Row {
+                session: "previous-login".into(),
+                id: 1,
+                index: 1,
+                output: Some("TEST".into()),
+                name: None,
+            },
+        );
+        bindings.apply_native(&mut state);
+        assert!(state.workspace().row.is_none());
+        bindings.restore_row_hints(&mut state);
+        assert_eq!(
+            state.workspace().row.as_ref().unwrap().session,
+            "previous-login"
+        );
+        bindings.apply_native(&mut state);
+        assert!(state.workspace().row.is_none());
+    }
 }

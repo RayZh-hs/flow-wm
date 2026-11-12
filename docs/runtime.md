@@ -148,6 +148,11 @@ and native open/close/disown operations. It continues observing after GTK exits.
 Registrations use the current session incarnation and an opaque token. Core sees
 semantic capabilities and typed events, not native window IDs or process handles.
 Stale tokens/incarnations and repeated delivery IDs cannot emit duplicate exits.
+Each native window has one node owner. Reconciliation replaces saved attachments
+with the current owners, so detached nodes cannot regain the same window on a
+runtime update. A new compositor session discards saved native handles before
+serving clients; selectors and row hints reconnect the persistent definitions.
+GTK also filters duplicate IDs when projecting attachments and publishing scenes.
 Automatic `on_exit(exit_code: UInt8)` observation requires Linux 6.15+ pidfd exit
 information. Several windows may share a process: closing a window does not permit
 killing that process. Application interruption requires an explicit safe capability.

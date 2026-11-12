@@ -182,3 +182,67 @@ fn compositor_teardown_cleans_current_desktop_assignments_without_killing_shared
     let _ = application.kill();
     let _ = application.wait();
 }
+
+#[test]
+fn provider_repairs_saved_duplicate_owners_and_does_not_republish_them() {
+    use flowwm::model::{Node, NodeKind, Position};
+
+    let compositor = Compositor::new(std::process::id() as i32);
+    let mut state = State::empty("/tmp".into());
+    let workflow = state.selected_workspace.clone();
+    for _ in 0..3 {
+        let mut node = Node::new(
+            &workflow,
+            NodeKind::Window,
+            "/tmp".into(),
+            Position::default(),
+        );
+        node.window_id = Some(1);
+        node.desktop_window = true;
+        // Saved launchers must remain in the graph even when detached.
+        node.flow
+            .properties
+            .insert("application".into(), json!("test.shared"));
+        state.nodes.push(node);
+    }
+    let (desktop, _) = support::fixture_with_niri(state, Some(&compositor.socket));
+    support::wait(|| desktop.bindings().applications.len() == 1);
+    let bindings = desktop.bindings();
+    let owner = bindings.applications.keys().next().unwrap();
+    for revision in 0..3 {
+        let runtime = desktop.orchestrate(Command::Snapshot, None).unwrap();
+        let mut graph: FlowNet =
+            serde_json::from_value(runtime["workflows"][&workflow]["graph"].clone()).unwrap();
+        assert_eq!(graph.nodes.len(), 3);
+        for node in &mut graph.nodes {
+            node.flow
+                .properties
+                .insert("title".into(), json!(format!("Revision {revision}")));
+        }
+        desktop
+            .orchestrate(
+                Command::ReplaceGraph {
+                    workflow: workflow.clone().into(),
+                    graph,
+                },
+                None,
+            )
+            .unwrap();
+        support::wait(|| {
+            desktop.snapshot().state.nodes.iter().all(|n| {
+                n.flow.properties.get("title") == Some(&json!(format!("Revision {revision}")))
+            })
+        });
+        let snapshot = desktop.snapshot();
+        let attached: Vec<_> = snapshot
+            .state
+            .nodes
+            .iter()
+            .filter(|n| n.window_id == Some(1))
+            .collect();
+        assert_eq!(attached.len(), 1);
+        assert_eq!(&attached[0].id, owner);
+        assert_eq!(desktop.bindings().applications.len(), 1);
+    }
+    desktop.shutdown();
+}

@@ -51,6 +51,9 @@ impl std::ops::Deref for TestClient {
     }
 }
 impl TestClient {
+    pub fn bindings(&self) -> flowwm::desktop_provider::Bindings {
+        flowwm::desktop_provider::bindings_at(&self._processes.provider_socket).unwrap()
+    }
     pub fn configure_agent(&self, command: serde_json::Value) {
         std::fs::write(
             self._processes._directory.path().join("config/agent.json"),
@@ -145,6 +148,9 @@ pub fn fixture_with_niri(
     writer.save(&state).unwrap();
     drop(writer);
     let mut bindings = flowwm::desktop_provider::Bindings {
+        session: niri
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
         selected: state.selected_workspace.clone(),
         ..Default::default()
     };
