@@ -1,6 +1,5 @@
 use flow_core::{
-    domain::*, graph::*, model::*, orchestrator::Orchestrator, protocol::Command, providers::*,
-    scheduler,
+    domain::*, graph::*, orchestrator::Orchestrator, protocol::Command, providers::*, scheduler,
 };
 use serde_json::{Value, json};
 use std::sync::{
@@ -32,7 +31,13 @@ impl ExecutionProvider for Provider {
 }
 struct NoScripts;
 impl ScriptEvaluator for NoScripts {
-    fn evaluate(&self, _: &Node, _: &Record, _: &Value, _: &AtomicBool) -> anyhow::Result<Value> {
+    fn evaluate(
+        &self,
+        _: &NodeSpec,
+        _: &Record,
+        _: &Value,
+        _: &AtomicBool,
+    ) -> anyhow::Result<Value> {
         panic!("Registered provider must implement this computation")
     }
 }
@@ -56,6 +61,7 @@ fn headless_graph_uses_registered_computation_and_work_without_central_dispatch(
                     capabilities: Default::default(),
                     window: None,
                     renderer: None,
+                    properties: Default::default(),
                 },
                 Definition {
                     id: "test.work".into(),
@@ -73,6 +79,7 @@ fn headless_graph_uses_registered_computation_and_work_without_central_dispatch(
                     capabilities: Default::default(),
                     window: None,
                     renderer: None,
+                    properties: Default::default(),
                 },
             ],
             provider.clone(),
@@ -132,9 +139,13 @@ fn headless_graph_uses_registered_computation_and_work_without_central_dispatch(
     core.execute(Command::Create { workflow }, None, Arc::new(|_| {}))
         .unwrap();
     for delivery in 1..=2 {
-        let state = scheduler::graph_state(&core.state.workflows[&"workflow".into()]).unwrap();
+        let state = core.state.workflows[&"workflow".into()].graph.clone();
         let frame = scheduler::evaluate(
             state,
+            EvaluationContext {
+                workflow: "workflow".into(),
+                ..Default::default()
+            },
             "work",
             Some(("", json!({}))),
             Arc::new(AtomicBool::new(false)),
@@ -168,6 +179,9 @@ fn headless_graph_uses_registered_computation_and_work_without_central_dispatch(
             Arc::new(|_| panic!("Duplicate invocation")),
         )
         .unwrap();
+        let output = completions.clone();
+        core.dispatch_ready(8, false, Arc::new(move |e| output.lock().unwrap().push(e)))
+            .unwrap();
         let completion = completions.lock().unwrap().pop().unwrap();
         core.state
             .complete(
@@ -179,9 +193,13 @@ fn headless_graph_uses_registered_computation_and_work_without_central_dispatch(
             .unwrap();
     }
     assert_eq!(provider.invocations.lock().unwrap().len(), 2);
-    let state = scheduler::graph_state(&core.state.workflows[&"workflow".into()]).unwrap();
+    let state = core.state.workflows[&"workflow".into()].graph.clone();
     let frame = scheduler::evaluate(
         state,
+        EvaluationContext {
+            workflow: "workflow".into(),
+            ..Default::default()
+        },
         "work",
         None,
         Arc::new(AtomicBool::new(false)),

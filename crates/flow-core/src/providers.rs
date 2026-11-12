@@ -10,11 +10,13 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Behavior {
+    #[default]
     Lazy,
     Invoked,
+    Join,
     Application,
     Source,
 }
@@ -26,6 +28,8 @@ pub struct Definition {
     pub inputs: Vec<Pin>,
     pub outputs: Vec<Pin>,
     pub capabilities: BTreeSet<String>,
+    #[serde(default)]
+    pub properties: BTreeMap<String, crate::graph::Property>,
     #[serde(default)]
     pub window: Option<WindowInterface>,
     #[serde(default)]
@@ -91,8 +95,9 @@ impl WindowInterface {
         Ok(())
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Invocation {
+    pub input: String,
     pub id: InvocationId,
     pub workflow: WorkflowId,
     pub node: NodeId,
@@ -101,7 +106,7 @@ pub struct Invocation {
     pub args: Value,
     pub generation: u64,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Completion {
     pub invocation: InvocationId,
     pub generation: u64,
@@ -118,6 +123,22 @@ pub struct Output {
 }
 pub type OutputSink = Arc<dyn Fn(Output) + Send + Sync>;
 pub trait ExecutionProvider: Send + Sync {
+    fn validate(&self, _type_id: &str, _properties: &Record) -> Result<()> {
+        Ok(())
+    }
+    fn subscription(&self, _source: &SourceRegistration) -> Result<Option<SignalSubscription>> {
+        Ok(None)
+    }
+    fn resources(&self, _invocation: &Invocation) -> Result<Vec<ResourceClaim>> {
+        Ok(Vec::new())
+    }
+    fn subscribe(&self, _source: SourceRegistration, _events: SourceSink) -> Result<String> {
+        anyhow::bail!("Provider does not support sources")
+    }
+    fn unsubscribe(&self, _handle: &str) -> Result<()> {
+        Ok(())
+    }
+
     /// Read lazy data for one delivery frame. This must never emit signals or start work.
     fn read(&self, _invocation: Invocation) -> Result<Value> {
         anyhow::bail!("This provider does not publish lazy computations")
@@ -158,17 +179,32 @@ impl Registry {
     pub fn definitions(&self) -> impl Iterator<Item = &Definition> {
         self.definitions.values()
     }
+    pub fn validate_graph(&self, graph: &FlowNet) -> Result<()> {
+        for node in &graph.nodes {
+            if let Ok(definition) = self.definition(&node.type_id) {
+                let mut properties = node.flow.properties.clone();
+                for (name, property) in &definition.properties {
+                    if let Some(value) = &property.default {
+                        properties.entry(name.clone()).or_insert(value.clone());
+                    }
+                }
+                self.provider(&definition.owner)?
+                    .validate(&node.type_id, &properties)?;
+            }
+        }
+        Ok(())
+    }
     pub fn prepare_graph(&self, graph: &mut FlowNet) {
         for definition in self.definitions() {
-            if graph.nodes.iter().any(|n| n.type_id == definition.id)
-                && !graph.node_types.iter().any(|d| d.id == definition.id)
-            {
+            if graph.nodes.iter().any(|n| n.type_id == definition.id) {
+                graph.node_types.retain(|d| d.id != definition.id);
                 graph.node_types.push(crate::graph::NodeDefinition {
+                    behavior: definition.behavior.clone(),
                     id: definition.id.clone(),
                     name: definition.id.clone(),
                     inputs: definition.inputs.clone(),
                     outputs: definition.outputs.clone(),
-                    properties: Default::default(),
+                    properties: definition.properties.clone(),
                     source: String::new(),
                     window: definition.window.clone(),
                 });
@@ -195,6 +231,17 @@ impl Registry {
                 ids.insert(&definition.id) && !self.definitions.contains_key(&definition.id),
                 "Duplicate node definition"
             );
+            if definition.behavior == Behavior::Source
+                && let Some(window) = &definition.window
+            {
+                ensure!(
+                    window.actions.iter().all(|a| !matches!(
+                        a.operation,
+                        InterfaceOperation::Activate | InterfaceOperation::Interrupt
+                    )),
+                    "Sources cannot expose ordinary Run or Interrupt controls"
+                );
+            }
             if let Some(window) = &definition.window {
                 window.validate()?;
             }
@@ -253,4 +300,69 @@ pub trait ApplicationProvider: Send + Sync {
     fn close_window(&self, handle: &str) -> Result<()>;
     fn interrupt(&self, handle: &str) -> Result<()>;
     fn disown(&self, handle: &str) -> Result<()>;
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SourceRegistration {
+    pub subscription: Option<SignalSubscription>,
+    pub workflow: WorkflowId,
+    pub node: NodeId,
+    pub type_id: String,
+    pub provider: ProviderId,
+    pub generation: u64,
+    pub handle: String,
+    pub properties: Record,
+    pub sequence: u64,
+    pub state: Value,
+}
+#[derive(Clone, Debug)]
+pub struct SourceEvent {
+    pub delivery: Option<DeliveryId>,
+    pub node: NodeId,
+    pub generation: u64,
+    pub sequence: u64,
+    pub pin: String,
+    pub args: Value,
+    pub values: Record,
+    pub state: Value,
+}
+pub type SourceSink = Arc<dyn Fn(SourceEvent) -> Result<()> + Send + Sync>;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ApplicationRegistration {
+    pub workflow: WorkflowId,
+    pub node: NodeId,
+    pub workspace: WorkspaceId,
+    pub incarnation: String,
+    pub token: String,
+    pub operations: ApplicationOperations,
+}
+
+/// Messaging is a provider capability; transports implement it outside core.
+pub trait Messaging: Send + Sync {
+    fn broadcast(&self, delivery: Delivery) -> Result<bool>;
+    fn receive(&self, workflow: WorkflowId, channel: String) -> Result<Option<Delivery>>;
+    fn acknowledge(&self, workflow: WorkflowId, delivery: DeliveryId) -> Result<()>;
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResourceClaim {
+    pub key: String,
+    pub exclusive: bool,
+}
+/// The provider guarantees that no side effect started. Core may retain this
+/// invocation in its queue and retry with the same identity when capacity returns.
+#[derive(Debug)]
+pub struct ProviderBusy;
+impl std::fmt::Display for ProviderBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Provider capacity is temporarily full")
+    }
+}
+impl std::error::Error for ProviderBusy {}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SignalSubscription {
+    pub channel: String,
+    pub ty: crate::graph::Type,
 }

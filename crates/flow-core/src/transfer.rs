@@ -4,11 +4,13 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransferBundle {
+    pub queue: crate::scheduler::Queue,
     pub transfer: Transfer,
     pub workflow: Workflow,
     pub executions: Vec<Execution>,
     pub deliveries: Vec<Delivery>,
     pub ancestors: Vec<Workflow>,
+    pub references: Vec<Workflow>,
     pub workspaces: Vec<WorkspaceDefinition>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -40,7 +42,69 @@ impl RuntimeState {
             ancestors.push(shadow);
             parent = ancestor.owner.as_ref();
         }
+        let nodes: std::collections::BTreeSet<_> =
+            workflow.graph.nodes.iter().map(|n| n.id.clone()).collect();
+        let mut queue = self.queue.clone();
+        queue.accepted.retain(|_, id| id == &workflow.id);
+        queue.frames.retain(|f| f.workflow == workflow.id);
+        queue
+            .invocations
+            .retain(|_, c| c.request.workflow == workflow.id);
+        queue
+            .resources
+            .retain(|id, _| queue.invocations.contains_key(id));
+        queue
+            .completions
+            .retain(|id, _| queue.invocations.contains_key(id));
+        queue.routed.retain(|id| {
+            self.executions
+                .get(id)
+                .is_some_and(|e| e.workflow == workflow.id)
+        });
+        for execution in self
+            .executions
+            .values()
+            .filter(|e| e.workflow == workflow.id && !e.active() && !queue.routed.contains(&e.id))
+        {
+            queue
+                .completions
+                .entry(execution.id.clone())
+                .or_insert(crate::providers::Completion {
+                    invocation: execution.id.clone(),
+                    generation: execution.generation,
+                    status: execution.status.clone(),
+                    result: execution.result.clone(),
+                });
+        }
+        queue.published.retain(|id, _| nodes.contains(id));
+        queue.computed.retain(|id, _| nodes.contains(id));
+        queue.source_state.retain(|id, _| nodes.contains(id));
+        for source in self.sources.values().filter(|s| s.workflow == workflow.id) {
+            queue
+                .source_state
+                .insert(source.node.clone(), (source.sequence, source.state.clone()));
+        }
+        queue
+            .joins
+            .retain(|key, _| key.starts_with(&format!("{}:", workflow.id)));
+        queue
+            .join_args
+            .retain(|key, _| key.starts_with(&format!("{}:", workflow.id)));
+        queue
+            .joins_done
+            .retain(|key| key.starts_with(&format!("{}:", workflow.id)));
         Ok(TransferBundle {
+            queue,
+            references: workflow
+                .references
+                .iter()
+                .filter_map(|id| self.workflows.get(id))
+                .cloned()
+                .map(|mut w| {
+                    w.graph = Default::default();
+                    w
+                })
+                .collect(),
             ancestors,
             workspaces: self.workspaces.definitions().cloned().collect(),
             transfer: transfer.clone(),
@@ -153,7 +217,7 @@ impl RuntimeState {
         for definition in bundle.workspaces {
             self.workspaces.register(definition)?;
         }
-        for ancestor in bundle.ancestors {
+        for ancestor in bundle.ancestors.into_iter().chain(bundle.references) {
             self.workflows
                 .entry(ancestor.id.clone())
                 .or_insert(ancestor);
@@ -167,6 +231,24 @@ impl RuntimeState {
             self.executions
                 .entry(execution.id.clone())
                 .or_insert(execution);
+        }
+        self.queue.completions.extend(bundle.queue.completions);
+        self.queue.routed.extend(bundle.queue.routed);
+        self.queue.invocations.extend(bundle.queue.invocations);
+        self.queue.resources.extend(bundle.queue.resources);
+        self.queue.published.extend(bundle.queue.published);
+        self.queue.computed.extend(bundle.queue.computed);
+        self.queue.source_state.extend(bundle.queue.source_state);
+        self.queue.accepted.extend(bundle.queue.accepted);
+        self.queue.joins.extend(bundle.queue.joins);
+        self.queue.joins_done.extend(bundle.queue.joins_done);
+        self.queue.join_args.extend(bundle.queue.join_args);
+        for frame in bundle.queue.frames {
+            if !self.queue.frames.iter().any(|f| f.id == frame.id)
+                && !self.queue.accepted.contains_key(&frame.id)
+            {
+                self.queue.frames.push_back(frame);
+            }
         }
         for delivery in bundle.deliveries {
             if !self.acknowledged.contains(&delivery.id)

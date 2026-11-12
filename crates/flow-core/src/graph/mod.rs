@@ -4,10 +4,10 @@ mod runtime;
 mod types;
 
 pub use runtime::{Activation, Evaluation, evaluate, signal_environment};
-pub use runtime::{ScriptEvaluator, evaluate_with};
+pub use runtime::{EvaluationContext, ScriptEvaluator, evaluate_with};
 pub use types::*;
 
-use crate::model::{Node, NodeKind, State};
+use crate::domain::{FlowNet, NodeSpec as Node};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -29,7 +29,7 @@ pub struct Flow {
     pub inputs: Vec<Pin>,
     #[serde(default)]
     pub outputs: Vec<Pin>,
-    /// Last published output properties. Never used to cache pure computations.
+    /// Per-frame values, overlaid exclusively from EvaluationContext.
     #[serde(default)]
     pub values: Record,
 }
@@ -119,6 +119,8 @@ pub struct Property {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct NodeDefinition {
+    #[serde(default)]
+    pub behavior: crate::providers::Behavior,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<crate::providers::WindowInterface>,
     pub id: String,
@@ -134,56 +136,24 @@ pub struct NodeDefinition {
 }
 
 pub fn type_id(node: &Node) -> &str {
-    if !node.flow.node_type.is_empty() {
-        return &node.flow.node_type;
-    }
-    match node.kind {
-        NodeKind::Constant => "constant",
-        NodeKind::Display => "display",
-        NodeKind::Alert => "alert",
-        NodeKind::BreakSignal => "break_signal",
-        NodeKind::MergeSignal => "merge_signal",
-        NodeKind::Conditional => "conditional",
-        NodeKind::Vox => "vox",
-        NodeKind::Python => "python",
-        NodeKind::Window => "window",
-        NodeKind::Extension => "extension",
-        _ => "workflow",
-    }
+    node.type_id.strip_prefix("local.").unwrap_or(&node.type_id)
 }
 
-/// Preserve connected ports from the former workflow schema when reading old
-/// graphs. Unconnected window outputs use only the new built-in exit signal.
-pub fn preserve_legacy_window_outputs(nodes: &mut [Node], connections: &[Connection]) {
-    for node in nodes.iter_mut().filter(|n| n.kind == NodeKind::Window) {
-        if type_id(node) != "window" {
-            continue;
-        }
-        for edge in connections.iter().filter(|e| e.source.node == node.id) {
-            let name = edge.source.pin.as_str();
-            if node.flow.outputs.iter().any(|p| p.name == name) {
-                continue;
-            }
-            let ty = match name {
-                "out" | "failed" => Type::Signal {
-                    args: BTreeMap::new(),
-                    open: true,
-                },
-                "output" => Type::String,
-                _ => continue,
-            };
-            node.flow.outputs.push(Pin::new(name, ty));
-        }
-    }
+pub fn pins(state: &FlowNet, node: &Node, output: bool) -> Vec<Pin> {
+    pins_for(
+        node,
+        state.node_types.iter().find(|d| d.id == node.type_id),
+        output,
+    )
 }
-
-pub fn pins(state: &State, node: &Node, output: bool) -> Vec<Pin> {
+/// Inspect a single node without cloning a graph or requiring its other instances.
+pub fn pins_for(node: &Node, definition: Option<&NodeDefinition>, output: bool) -> Vec<Pin> {
     let signal = || Type::trigger();
     let event = || Type::Signal {
         args: BTreeMap::new(),
         open: true,
     };
-    let mut pins = if let Some(def) = state.node_types.iter().find(|d| d.id == type_id(node)) {
+    let mut pins = if let Some(def) = definition {
         if output {
             def.outputs.clone()
         } else {
@@ -251,6 +221,12 @@ pub fn pins(state: &State, node: &Node, output: bool) -> Vec<Pin> {
             ],
         }
     };
+    if output
+        && type_id(node) == "constant"
+        && let Some(value) = pins.iter_mut().find(|p| p.name == "value")
+    {
+        value.ty = constant_type(node);
+    }
     for pin in if output {
         &node.flow.outputs
     } else {
@@ -266,53 +242,43 @@ pub fn pins(state: &State, node: &Node, output: bool) -> Vec<Pin> {
 }
 
 /// Human names leave persisted endpoint IDs stable for extensions and saved graphs.
-pub fn pin_label(node: &Node, pin: &Pin, output: bool) -> String {
-    match (pin.name.as_str(), output) {
-        ("in", false) => "Run".into(),
-        ("out", true) if !node.kind.primitive() => "Completed".into(),
-        ("out", true) => "Continue".into(),
-        ("failed", true) => "Failed".into(),
-        ("output", true) => "Output text".into(),
-        ("on_exit", true) => "On exit".into(),
-        ("on_session_finish", true) => "Session finished".into(),
-        _ => pin.name.replace('_', " "),
-    }
-}
-pub fn pin_description(pin: &Pin, output: bool) -> &'static str {
-    match (pin.name.as_str(), output) {
-        ("in", false) => "Start this step when an event arrives",
-        ("out", true) => "Emits after successful completion",
-        ("failed", true) => "Emits when this step fails; connect a recovery step",
-        ("output", true) => "Text produced by this step; read on demand",
-        ("on_exit", true) => "Emits when the application process exits; exit_code is UInt8",
-        ("on_session_finish", true) => "Agent session ended; ERROR describes any failure",
-        _ if pin.ty.is_signal() => "Event connection",
-        _ => "Data value; evaluated on demand",
-    }
-}
-
-pub fn property(state: &State, node: &Node, name: &str) -> Option<Value> {
+pub fn property(state: &FlowNet, node: &Node, name: &str) -> Option<Value> {
     node.flow.properties.get(name).cloned().or_else(|| {
         state
             .node_types
             .iter()
-            .find(|d| d.id == type_id(node))
+            .find(|d| d.id == node.type_id)
             .and_then(|d| d.properties.get(name))
             .and_then(|p| p.default.clone())
     })
 }
 
-pub fn validate(state: &State) -> Result<()> {
+pub fn validate(state: &FlowNet) -> Result<()> {
     validate_registry(state)?;
     for node in &state.nodes {
-        if node.kind == NodeKind::Constant
+        if type_id(node) == "constant"
             && let Some(value) = node.flow.properties.get("value")
         {
             check_value(state, value, &constant_type(node))?;
         }
         ensure!(
-            node.kind != NodeKind::Extension
-                || state.node_types.iter().any(|d| d.id == type_id(node)),
+            matches!(
+                type_id(node),
+                "constant"
+                    | "display"
+                    | "alert"
+                    | "break_signal"
+                    | "merge_signal"
+                    | "conditional"
+                    | "vox"
+                    | "python"
+                    | "window"
+                    | "shell"
+                    | "agent"
+                    | "human"
+                    | "gate"
+                    | "metric"
+            ) || state.node_types.iter().any(|d| d.id == node.type_id),
             "Unknown node type: {}",
             type_id(node)
         );
@@ -331,7 +297,7 @@ pub fn validate(state: &State) -> Result<()> {
                 }
             }
         }
-        if let Some(def) = state.node_types.iter().find(|d| d.id == type_id(node)) {
+        if let Some(def) = state.node_types.iter().find(|d| d.id == node.type_id) {
             for (name, prop) in &def.properties {
                 if let Some(value) = node.flow.properties.get(name) {
                     check_value(state, value, &prop.ty)?;
@@ -369,10 +335,6 @@ pub fn validate(state: &State) -> Result<()> {
         let target = state
             .node(&edge.target.node)
             .context("Missing target node")?;
-        ensure!(
-            source.workspace == target.workspace,
-            "Cross-workspace connection"
-        );
         let from = pins(state, source, true)
             .into_iter()
             .find(|p| p.name == edge.source.pin)
@@ -399,7 +361,7 @@ pub fn validate(state: &State) -> Result<()> {
         }
     }
     fn visit<'a>(
-        state: &'a State,
+        state: &'a FlowNet,
         id: &'a str,
         active: &mut HashSet<&'a str>,
         done: &mut HashSet<&'a str>,
@@ -414,7 +376,7 @@ pub fn validate(state: &State) -> Result<()> {
                 .iter()
                 .any(|p| p.name == edge.source.pin && !p.ty.is_signal())
             {
-                visit(state, &source.id, active, done)?;
+                visit(state, &source.id.0, active, done)?;
             }
         }
         active.remove(id);
@@ -423,19 +385,12 @@ pub fn validate(state: &State) -> Result<()> {
     }
     let mut done = HashSet::new();
     for node in &state.nodes {
-        visit(state, &node.id, &mut HashSet::new(), &mut done)?;
+        visit(state, &node.id.0, &mut HashSet::new(), &mut done)?;
     }
     Ok(())
 }
 
-pub fn connect(state: &mut State, connection: Connection) -> Result<()> {
-    let target = state
-        .node(&connection.target.node)
-        .context("Missing target node")?;
-    ensure!(
-        !target.status.active(),
-        "Stop the target before changing its inputs"
-    );
+pub fn connect(state: &mut FlowNet, connection: Connection) -> Result<()> {
     if state.connections.contains(&connection) {
         return Ok(());
     }

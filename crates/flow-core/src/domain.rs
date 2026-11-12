@@ -142,7 +142,27 @@ impl WorkspaceRegistry {
 pub struct NodeSpec {
     pub id: NodeId,
     pub type_id: String,
+    #[serde(
+        serialize_with = "definition_flow",
+        deserialize_with = "read_definition_flow"
+    )]
     pub flow: Flow,
+}
+fn definition_flow<S: serde::Serializer>(flow: &Flow, serializer: S) -> Result<S::Ok, S::Error> {
+    let mut definition = serde_json::to_value(flow).map_err(serde::ser::Error::custom)?;
+    definition.as_object_mut().unwrap().remove("values");
+    definition.serialize(serializer)
+}
+fn read_definition_flow<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Flow, D::Error> {
+    let flow = Flow::deserialize(deserializer)?;
+    if !flow.values.is_empty() {
+        return Err(serde::de::Error::custom(
+            "FlowNet definitions cannot contain evaluated values; publish values through the runtime API",
+        ));
+    }
+    Ok(flow)
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct FlowNet {
@@ -175,6 +195,8 @@ pub struct Workflow {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionStatus {
+    Queued,
+    Waiting,
     Running,
     Interrupting,
     Complete,
@@ -198,7 +220,10 @@ impl Execution {
     pub fn active(&self) -> bool {
         matches!(
             self.status,
-            ExecutionStatus::Running | ExecutionStatus::Interrupting
+            ExecutionStatus::Queued
+                | ExecutionStatus::Waiting
+                | ExecutionStatus::Running
+                | ExecutionStatus::Interrupting
         )
     }
 }
@@ -229,8 +254,32 @@ pub struct Transfer {
     pub phase: TransferPhase,
     pub revision: u64,
 }
+/// Transport health is separate from invocation outcomes and provider availability.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerStatus {
+    Connected,
+    Disconnected,
+    Unavailable,
+    Failed,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerHealth {
+    pub status: PeerStatus,
+    pub detail: String,
+}
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RuntimeState {
+    #[serde(default)]
+    pub peers: BTreeMap<HostId, PeerHealth>,
+    #[serde(default)]
+    pub tombstones: BTreeMap<WorkflowId, Workflow>,
+    #[serde(default)]
+    pub queue: crate::scheduler::Queue,
+    #[serde(default)]
+    pub sources: BTreeMap<NodeId, crate::providers::SourceRegistration>,
+    #[serde(default)]
+    pub applications: BTreeMap<NodeId, crate::providers::ApplicationRegistration>,
     #[serde(default)]
     pub transfer_acks: BTreeSet<TransferId>,
     #[serde(default = "local_host")]
@@ -367,7 +416,10 @@ impl RuntimeState {
                 "Private workflows need one owner; public workflows cannot have an owner"
             ),
         }
-        self.destroyed.remove(&workflow.id);
+        ensure!(
+            !self.destroyed.contains(&workflow.id),
+            "Workflow identity was destroyed; create a fresh ID"
+        );
         self.workflows.insert(workflow.id.clone(), workflow);
         self.revision += 1;
         Ok(())
@@ -475,6 +527,15 @@ impl RuntimeState {
                     },
                 });
         }
+        self.queue.frames.retain(|f| !removed.contains(&f.workflow));
+        self.queue
+            .invocations
+            .retain(|_, c| !removed.contains(&c.request.workflow));
+        for workflow in self.workflows.values().filter(|w| removed.contains(&w.id)) {
+            let mut tombstone = workflow.clone();
+            tombstone.graph = Default::default();
+            self.tombstones.insert(workflow.id.clone(), tombstone);
+        }
         self.destroyed.extend(removed.iter().cloned());
         self.workflows.retain(|id, _| !removed.contains(id));
         for w in self.workflows.values_mut() {
@@ -496,6 +557,16 @@ impl RuntimeState {
             .values_mut()
             .filter(|t| removed.contains(&t.workflow) && t.phase != TransferPhase::Committed)
         {
+            if transfer.source == self.host_id {
+                self.pending_remote
+                    .push_back(crate::transfer::RemoteCommand {
+                        host: transfer.destination.host().into(),
+                        caller: None,
+                        command: crate::protocol::Command::Destroy {
+                            workflow: transfer.workflow.clone(),
+                        },
+                    });
+            }
             transfer.phase = TransferPhase::Aborted;
         }
         self.revision += 1;
@@ -531,7 +602,10 @@ impl RuntimeState {
         ensure!(
             !matches!(
                 status,
-                ExecutionStatus::Running | ExecutionStatus::Interrupting
+                ExecutionStatus::Queued
+                    | ExecutionStatus::Waiting
+                    | ExecutionStatus::Running
+                    | ExecutionStatus::Interrupting
             ),
             "Expected a terminal execution status"
         );
@@ -551,6 +625,10 @@ impl RuntimeState {
         self.lookup(&delivery.target, Some(&delivery.source))?;
         let workflow = &self.workflows[&delivery.target];
         ensure!(
+            workflow.authority == self.host_id,
+            "Deliver signals at the authoritative host"
+        );
+        ensure!(
             workflow.transfer.is_none(),
             "Destination is transferring; retry with the same delivery ID"
         );
@@ -563,12 +641,23 @@ impl RuntimeState {
             self.deliveries.len() < capacity,
             "Signal queue is full; retry with the same delivery ID"
         );
-        let mut validation = crate::model::State::empty(".".into());
-        validation.types = workflow.graph.types.clone();
-        validation.casts = workflow.graph.casts.clone();
-        crate::graph::validate_type(&validation, &delivery.ty, 0)?;
+        let validation = &workflow.graph;
+        crate::graph::validate_type(validation, &delivery.ty, 0)?;
         ensure!(delivery.ty.is_signal(), "Broadcast requires a signal type");
-        crate::graph::check_value(&validation, &delivery.args, &delivery.ty)?;
+        crate::graph::check_value(validation, &delivery.args, &delivery.ty)?;
+        for subscription in self
+            .sources
+            .values()
+            .filter(|s| s.workflow == delivery.target)
+            .filter_map(|s| s.subscription.as_ref())
+            .filter(|s| s.channel == delivery.channel)
+        {
+            ensure!(
+                crate::graph::can_cast(&workflow.graph, &delivery.ty, &subscription.ty),
+                "Signal channel type is incompatible with its receiver"
+            );
+            crate::graph::check_value(&workflow.graph, &delivery.args, &subscription.ty)?;
+        }
         self.deliveries.push_back(delivery);
         self.revision += 1;
         Ok(true)
@@ -659,6 +748,8 @@ impl RuntimeState {
     pub fn validate(&self) -> Result<()> {
         for (id, w) in &self.workflows {
             ensure!(id == &w.id, "Workflow identity mismatch");
+            w.graph.validate()?;
+            self.validate_node_identity(id, &w.graph)?;
             if let Some(workspace) = &w.workspace {
                 self.workspaces.definition(workspace)?;
             }
@@ -701,4 +792,13 @@ pub struct RendererContract {
 
 fn local_host() -> HostId {
     "local".into()
+}
+
+impl FlowNet {
+    pub fn node(&self, id: &str) -> Option<&NodeSpec> {
+        self.nodes.iter().find(|node| node.id.0 == id)
+    }
+    pub fn node_mut(&mut self, id: &str) -> Option<&mut NodeSpec> {
+        self.nodes.iter_mut().find(|node| node.id.0 == id)
+    }
 }

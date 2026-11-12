@@ -19,6 +19,8 @@ use vox_runtime::{HostCallArgument, HostFunctionHandler, Runtime};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Activation {
+    #[serde(default)]
+    pub pin: String,
     pub id: String,
     pub args: Value,
     pub inputs: Value,
@@ -42,15 +44,29 @@ pub struct Alert {
     pub critical: bool,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct EvaluationContext {
+    pub workflow: crate::domain::WorkflowId,
+    pub published: BTreeMap<crate::domain::NodeId, Record>,
+}
+impl EvaluationContext {
+    pub fn apply(&self, graph: &mut FlowNet) {
+        for node in &mut graph.nodes {
+            node.flow.values = self.published.get(&node.id).cloned().unwrap_or_default();
+        }
+    }
+}
+
 struct ContextData {
-    state: State,
-    queue: VecDeque<(String, Value, Type)>,
+    state: FlowNet,
+    queue: VecDeque<(String, Value, Type, String)>,
     cache: HashMap<String, String>,
     visiting: HashSet<String>,
     stack: Vec<String>,
     current_args: Value,
     current_args_type: Type,
     current_node: String,
+    current_pin: String,
     root: String,
     data: bool,
     steps: usize,
@@ -62,7 +78,7 @@ struct ContextData {
 /// A fresh evaluation frame is used for every delivered signal. Data fanout
 /// shares results within that frame; later signals always request fresh data.
 pub fn evaluate(
-    state: State,
+    state: FlowNet,
     root: &str,
     signal: Option<(&str, Value)>,
     cancel: Arc<AtomicBool>,
@@ -99,7 +115,7 @@ impl ScriptEvaluator for NoScripts {
 }
 
 pub fn evaluate_with(
-    state: State,
+    state: FlowNet,
     root: &str,
     signal: Option<(&str, Value)>,
     cancel: Arc<AtomicBool>,
@@ -116,6 +132,7 @@ pub fn evaluate_with(
         current_args: json!({}),
         current_args_type: Type::record(),
         current_node: root.into(),
+        current_pin: String::new(),
         root: root.into(),
         data: signal.is_none(),
         steps: 0,
@@ -132,9 +149,12 @@ pub fn evaluate_with(
                 .find(|p| p.ty.is_signal())
                 .map(|p| p.ty)
                 .unwrap_or_else(Type::trigger);
-            context
-                .queue
-                .push_back((root.into(), args, argument_type(&Type::record(), &ty)));
+            context.queue.push_back((
+                root.into(),
+                args,
+                argument_type(&Type::record(), &ty),
+                String::new(),
+            ));
         } else {
             context.lock().unwrap().emit(root, pin, args)?;
         }
@@ -359,6 +379,7 @@ impl ContextData {
                 edge.target.node.clone(),
                 args,
                 argument_type(&source_type, &input.ty),
+                edge.target.pin.clone(),
             ));
         }
         Ok(())
@@ -383,7 +404,13 @@ impl ContextData {
             }
             "kind" => {
                 let node = self.node(a)?;
-                Ok(match self.scripts.behavior(node) {
+                Ok(match self.scripts.behavior(node).or_else(|| {
+                    self.state
+                        .node_types
+                        .iter()
+                        .find(|d| d.id == node.type_id)
+                        .map(|d| d.behavior.clone())
+                }) {
                     Some(crate::providers::Behavior::Lazy) => "provider",
                     Some(_) => "workflow",
                     None => type_id(node),
@@ -391,11 +418,11 @@ impl ContextData {
                 .into())
             }
             "next" => {
-                let (node, args, ty) = self.queue.pop_front().context("Empty signal queue")?;
+                let (node, args, ty, pin) = self.queue.pop_front().context("Empty signal queue")?;
                 self.current_args = args;
+                self.current_pin = pin;
                 self.current_args_type = ty;
                 self.current_node = node.clone();
-                self.cache.clear();
                 self.visiting.clear();
                 self.stack.clear();
                 self.result.executed.push(node.clone());
@@ -424,7 +451,7 @@ impl ContextData {
                         self.state
                             .node_types
                             .iter()
-                            .find(|d| d.id == type_id(node))
+                            .find(|d| d.id == node.type_id)
                             .and_then(|d| d.properties.get(&name))
                             .filter(|p| p.output)
                             .and_then(|p| p.default.as_ref())
@@ -456,7 +483,7 @@ impl ContextData {
                     .context("Missing pin")?;
                 let value = property(&self.state, node, pin.property.as_deref().unwrap_or(b))
                     .or(pin.default)
-                    .with_context(|| format!("Unconnected input: {}.{b}", node.title))?;
+                    .with_context(|| format!("Unconnected input: {}.{b}", node.id))?;
                 Ok(value.to_string())
             }
             "property" => Ok(property(&self.state, self.node(a)?, b)
@@ -551,7 +578,6 @@ impl ContextData {
             "snapshot" => {
                 let node = self.node(a)?;
                 let mut values = node.flow.values.clone();
-                values.insert("output".into(), json!(node.output));
                 for pin in self.data_pins(a, true) {
                     if let Some(name) = &pin.property
                         && let Some(value) = node.flow.values.get(name)
@@ -563,6 +589,7 @@ impl ContextData {
             }
             "defer" => {
                 self.result.activations.push(Activation {
+                    pin: self.current_pin.clone(),
                     id: a.into(),
                     inputs: parse(b)?,
                     args: parse(c)?,
@@ -669,7 +696,7 @@ impl ContextData {
         let node = self.node(id)?;
         // Exposed input properties override the local property for this invocation.
         let mut properties = node.flow.properties.clone();
-        if let Some(def) = self.state.node_types.iter().find(|d| d.id == type_id(node)) {
+        if let Some(def) = self.state.node_types.iter().find(|d| d.id == node.type_id) {
             for (name, p) in &def.properties {
                 if let Some(value) = &p.default {
                     properties.entry(name.clone()).or_insert(value.clone());
@@ -690,7 +717,7 @@ impl ContextData {
         ]);
         let value = if let Some(value) = self.scripts.compute(node, &bindings, &args) {
             value?
-        } else if node.kind == NodeKind::Python {
+        } else if type_id(node) == "python" {
             self.scripts
                 .evaluate(node, &bindings, &args, &self.cancel)?
         } else {
@@ -698,16 +725,22 @@ impl ContextData {
                 .state
                 .node_types
                 .iter()
-                .find(|d| d.id == type_id(node))
+                .find(|d| d.id == node.type_id)
                 .map(|d| d.source.as_str())
-                .unwrap_or(&node.command);
+                .unwrap_or_else(|| {
+                    node.flow
+                        .properties
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                });
             let input_types = self
                 .data_pins(id, false)
                 .into_iter()
                 .map(|p| (p.name, p.ty))
                 .collect();
             let mut property_types = BTreeMap::new();
-            if let Some(def) = self.state.node_types.iter().find(|d| d.id == type_id(node)) {
+            if let Some(def) = self.state.node_types.iter().find(|d| d.id == node.type_id) {
                 property_types.extend(
                     def.properties
                         .iter()

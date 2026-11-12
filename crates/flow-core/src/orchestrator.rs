@@ -27,9 +27,181 @@ impl Orchestrator {
         &mut self,
         command: Command,
         caller: Option<&WorkflowId>,
-        events: EventSink,
+        _events: EventSink,
     ) -> Result<Value> {
         match command {
+            Command::UnregisterApplication {
+                node,
+                token,
+                incarnation,
+            } => {
+                let application = self
+                    .state
+                    .applications
+                    .get(&node)
+                    .context("Application registration unavailable")?;
+                ensure!(
+                    application.token == token && application.incarnation == incarnation,
+                    "Stale application registration"
+                );
+                self.state.lookup(&application.workflow, caller)?;
+                self.state.applications.remove(&node);
+                self.state.revision += 1;
+                Ok(Value::Null)
+            }
+            Command::RegisterApplication { registration } => {
+                let workflow = self.state.lookup(&registration.workflow, caller)?;
+                ensure!(
+                    workflow.graph.node(&registration.node.0).is_some(),
+                    "Application node not found"
+                );
+                self.state
+                    .workspaces
+                    .require_active(&registration.workspace)?;
+                ensure!(
+                    self.state
+                        .workspaces
+                        .availability(&registration.workspace)
+                        .is_some_and(|a| a.incarnation == registration.incarnation),
+                    "Stale application session"
+                );
+                if let Some(previous) = self.state.applications.get(&registration.node) {
+                    ensure!(
+                        previous.incarnation != registration.incarnation
+                            || previous.token == registration.token,
+                        "Application is already attached with another registration token"
+                    );
+                }
+                self.state
+                    .applications
+                    .insert(registration.node.clone(), registration);
+                self.state.revision += 1;
+                Ok(Value::Null)
+            }
+            Command::ApplicationEvent {
+                node,
+                token,
+                incarnation,
+                pin,
+                delivery,
+                args,
+            } => {
+                let application = self
+                    .state
+                    .applications
+                    .get(&node)
+                    .context("Application registration unavailable")?;
+                ensure!(
+                    application.token == token && application.incarnation == incarnation,
+                    "Stale application event"
+                );
+                ensure!(
+                    self.state
+                        .workspaces
+                        .availability(&application.workspace)
+                        .is_some_and(|a| a.active && a.incarnation == incarnation),
+                    "Application session ended"
+                );
+                self.execute(
+                    Command::Emit {
+                        workflow: application.workflow.clone(),
+                        node,
+                        pin,
+                        delivery,
+                        args,
+                    },
+                    caller,
+                    _events,
+                )
+            }
+            Command::Info => Ok(json!({"protocol": crate::protocol::ORCHESTRATOR_VERSION})),
+            Command::ActivateSession {
+                workspace,
+                provider,
+                incarnation,
+            } => {
+                self.state
+                    .workspaces
+                    .activate(&workspace, &provider, incarnation)?;
+                self.state.revision += 1;
+                Ok(Value::Null)
+            }
+            Command::EndSession {
+                workspace,
+                incarnation,
+            } => {
+                let cleanup = self.state.end_session(&workspace, &incarnation)?;
+                for execution in cleanup {
+                    if execution.host != self.state.host_id {
+                        self.state
+                            .pending_remote
+                            .push_back(crate::transfer::RemoteCommand {
+                                host: execution.host,
+                                caller: None,
+                                command: Command::OriginInterrupt {
+                                    invocation: execution.id,
+                                    generation: execution.generation,
+                                },
+                            });
+                    } else {
+                        self.registry
+                            .provider(&execution.provider)?
+                            .interrupt(&execution.handle)?;
+                    }
+                }
+                Ok(Value::Null)
+            }
+            Command::Publish {
+                workflow,
+                node,
+                values,
+            } => {
+                let w = self.state.lookup(&workflow, caller)?;
+                let spec = w.graph.node(&node.0).context("Node not found")?;
+                for pin in crate::graph::pins(&w.graph, spec, true) {
+                    if let Some(value) = values.get(pin.property.as_ref().unwrap_or(&pin.name)) {
+                        crate::graph::check_value(&w.graph, value, &pin.ty)?;
+                    }
+                }
+                self.state
+                    .queue
+                    .published
+                    .entry(node)
+                    .or_default()
+                    .extend(values);
+                self.state.revision += 1;
+                Ok(Value::Null)
+            }
+            Command::Emit {
+                workflow,
+                node,
+                pin,
+                delivery,
+                args,
+            } => {
+                let w = self.state.lookup(&workflow, caller)?;
+                let spec = w.graph.node(&node.0).context("Node not found")?;
+                let output = crate::graph::pins(&w.graph, spec, true)
+                    .into_iter()
+                    .find(|p| p.name == pin && p.ty.is_signal())
+                    .context("Signal output not found")?;
+                crate::graph::check_value(&w.graph, &args, &output.ty)?;
+                let correlation = delivery.0.clone();
+                self.enqueue_frame(
+                    crate::scheduler::Frame {
+                        data: false,
+                        id: delivery.0,
+                        workflow,
+                        root: node,
+                        pin,
+                        args,
+                        correlation,
+                    },
+                    caller,
+                )?;
+                Ok(Value::Null)
+            }
+
             Command::OriginInterrupt {
                 invocation,
                 generation,
@@ -67,12 +239,12 @@ impl Orchestrator {
                     existing.host == execution.host && existing.generation == execution.generation,
                     "Invalid execution origin or generation"
                 );
-                self.state.complete(
-                    &execution.id,
-                    execution.generation,
-                    execution.result,
-                    execution.status,
-                )?;
+                self.complete_invocation(Completion {
+                    invocation: execution.id,
+                    generation: execution.generation,
+                    result: execution.result,
+                    status: execution.status,
+                })?;
                 Ok(Value::Null)
             }
 
@@ -82,7 +254,7 @@ impl Orchestrator {
                     "Unsupported protocol version"
                 );
                 Ok(
-                    json!({"protocol":2,"signal_protocol":1,"capabilities":["workflows","ownership","preserving_local_moves","typed_signals","invocations","reconnect_snapshot"]}),
+                    json!({"protocol":crate::protocol::ORCHESTRATOR_VERSION,"signal_protocol":1,"capabilities":["workflows","ownership","preserving_local_moves","typed_signals","invocations","reconnect_snapshot"]}),
                 )
             }
             Command::Snapshot | Command::Subscribe { .. } => {
@@ -92,7 +264,16 @@ impl Orchestrator {
                 snapshot.forwarding_targets.clear();
                 snapshot.pending_remote.clear();
                 snapshot.transfer_acks.clear();
-                snapshot.destroyed.clear();
+                snapshot.destroyed.retain(|id| {
+                    self.state.tombstones.get(id).is_some_and(|w| {
+                        w.visibility == Visibility::Public
+                            || caller == Some(id)
+                            || w.owner.as_ref() == caller && caller.is_some()
+                    })
+                });
+                snapshot
+                    .tombstones
+                    .retain(|id, _| snapshot.destroyed.contains(id));
                 snapshot
                     .workflows
                     .retain(|id, _| self.state.visible(id, caller));
@@ -100,6 +281,54 @@ impl Orchestrator {
                     .executions
                     .retain(|_, e| snapshot.workflows.contains_key(&e.workflow));
                 snapshot.deliveries.retain(|d| caller == Some(&d.target));
+                snapshot
+                    .sources
+                    .retain(|_, s| snapshot.workflows.contains_key(&s.workflow));
+                snapshot
+                    .applications
+                    .retain(|_, a| snapshot.workflows.contains_key(&a.workflow));
+                let nodes: std::collections::BTreeSet<_> = snapshot
+                    .workflows
+                    .values()
+                    .flat_map(|w| w.graph.nodes.iter().map(|n| n.id.clone()))
+                    .collect();
+                snapshot
+                    .queue
+                    .frames
+                    .retain(|f| snapshot.workflows.contains_key(&f.workflow));
+                snapshot
+                    .queue
+                    .invocations
+                    .retain(|_, c| snapshot.workflows.contains_key(&c.request.workflow));
+                snapshot
+                    .queue
+                    .completions
+                    .retain(|id, _| snapshot.executions.contains_key(id));
+                snapshot.queue.published.retain(|id, _| nodes.contains(id));
+                snapshot.queue.computed.retain(|id, _| nodes.contains(id));
+                snapshot
+                    .queue
+                    .source_state
+                    .retain(|id, _| nodes.contains(id));
+                snapshot
+                    .queue
+                    .resources
+                    .retain(|id, _| snapshot.executions.contains_key(id));
+                snapshot.queue.joins.retain(|key, _| {
+                    snapshot
+                        .workflows
+                        .keys()
+                        .any(|id| key.starts_with(&format!("{id}:")))
+                });
+                snapshot.queue.join_args.retain(|key, _| {
+                    snapshot
+                        .workflows
+                        .keys()
+                        .any(|id| key.starts_with(&format!("{id}:")))
+                });
+                snapshot.queue.joins_done.clear();
+                snapshot.queue.routed.clear();
+                snapshot.queue.accepted.clear();
                 snapshot
                     .transfers
                     .retain(|_, t| snapshot.workflows.contains_key(&t.workflow));
@@ -126,11 +355,15 @@ impl Orchestrator {
                 }
                 self.registry.prepare_graph(&mut workflow.graph);
                 workflow.graph.validate()?;
+                self.registry.validate_graph(&workflow.graph)?;
                 let id = workflow.id.clone();
                 self.state.create(workflow)?;
                 Ok(json!({"workflow":id}))
             }
             Command::Destroy { workflow } => {
+                if self.state.destroyed.contains(&workflow) {
+                    return Ok(json!({"cleanup_pending":[]}));
+                }
                 if let Some(bundle) = self
                     .state
                     .incoming
@@ -222,19 +455,51 @@ impl Orchestrator {
                 mut graph,
             } => {
                 self.state.lookup(&workflow, caller)?;
+                let previous = &self.state.workflows[&workflow].graph;
                 ensure!(
                     !self
                         .state
                         .executions
                         .values()
-                        .any(|e| e.workflow == workflow && e.active()),
-                    "Graph edits affecting running nodes require interruption first"
+                        .any(|e| e.workflow == workflow
+                            && e.active()
+                            && serde_json::to_value(previous.node(&e.node.0)).ok()
+                                != serde_json::to_value(graph.node(&e.node.0)).ok()),
+                    "Interrupt an invocation before changing its node definition"
                 );
                 self.registry.prepare_graph(&mut graph);
                 graph.validate()?;
+                self.registry.validate_graph(&graph)?;
                 self.state.validate_node_identity(&workflow, &graph)?;
+                self.state
+                    .queue
+                    .frames
+                    .retain(|f| f.workflow != workflow || graph.node(&f.root.0).is_some());
+                self.state
+                    .applications
+                    .retain(|node, a| a.workflow != workflow || graph.node(&node.0).is_some());
                 self.state.workflows.get_mut(&workflow).unwrap().graph = graph;
                 self.state.revision += 1;
+                Ok(Value::Null)
+            }
+            Command::Read {
+                workflow,
+                node,
+                evaluation,
+            } => {
+                let correlation = evaluation.0.clone();
+                self.enqueue_frame(
+                    crate::scheduler::Frame {
+                        data: true,
+                        id: evaluation.0,
+                        workflow,
+                        root: node,
+                        pin: String::new(),
+                        args: json!({}),
+                        correlation,
+                    },
+                    caller,
+                )?;
                 Ok(Value::Null)
             }
             Command::Run {
@@ -242,7 +507,21 @@ impl Orchestrator {
                 node,
                 invocation,
                 args,
-            } => self.run(workflow, node, invocation, args, None, caller, events),
+            } => {
+                self.enqueue_frame(
+                    crate::scheduler::Frame {
+                        data: false,
+                        id: invocation.0.clone(),
+                        workflow,
+                        root: node,
+                        pin: String::new(),
+                        args,
+                        correlation: invocation.0.clone(),
+                    },
+                    caller,
+                )?;
+                Ok(json!({"invocation":invocation}))
+            }
             Command::Resolve {
                 invocation,
                 accepted,
@@ -270,12 +549,51 @@ impl Orchestrator {
                 Ok(Value::Null)
             }
             Command::Interrupt { invocation } => {
+                if !self.state.executions.contains_key(&invocation)
+                    && let Some(index) = self
+                        .state
+                        .queue
+                        .frames
+                        .iter()
+                        .position(|f| f.id == invocation.0)
+                {
+                    let frame = self.state.queue.frames[index].clone();
+                    self.state.lookup(&frame.workflow, caller)?;
+                    self.state.queue.frames.remove(index);
+                    self.state
+                        .queue
+                        .accepted
+                        .insert(frame.id, frame.workflow.clone());
+                    self.state.executions.insert(
+                        invocation.clone(),
+                        Execution {
+                            id: invocation.clone(),
+                            workflow: frame.workflow,
+                            node: frame.root,
+                            generation: self.state.revision + 1,
+                            host: self.state.host_id.clone(),
+                            provider: "evaluation".into(),
+                            handle: invocation.0,
+                            status: ExecutionStatus::Interrupted,
+                            result: json!({}),
+                        },
+                    );
+                    self.state.revision += 1;
+                    return Ok(Value::Null);
+                }
+
                 let execution = self
                     .state
                     .executions
                     .get(&invocation)
                     .context("Invocation not found")?;
                 self.state.lookup(&execution.workflow, caller)?;
+                if execution.status == ExecutionStatus::Queued {
+                    self.state.executions.get_mut(&invocation).unwrap().status =
+                        ExecutionStatus::Interrupted;
+                    self.state.revision += 1;
+                    return Ok(Value::Null);
+                }
                 if execution.active() {
                     if execution.host == self.state.host_id {
                         self.registry
@@ -338,37 +656,94 @@ impl Orchestrator {
             }
         }
     }
-    /// Invoke work deferred by a provider-aware delivery frame, preserving resolved data
-    /// and property inputs without modifying the graph's saved local properties.
     pub fn invoke_activation(
         &mut self,
         workflow: WorkflowId,
         invocation: InvocationId,
         activation: crate::graph::Activation,
         caller: Option<&WorkflowId>,
-        events: EventSink,
+        _events: EventSink,
     ) -> Result<Value> {
-        self.run(
-            workflow,
-            activation.id.into(),
-            invocation,
-            activation.args,
-            Some(activation.inputs),
-            caller,
-            events,
-        )
+        self.state.lookup(&workflow, caller)?;
+        let correlation = invocation.0.clone();
+        self.reserve_activation(workflow, invocation, activation, correlation)
     }
-    #[allow(clippy::too_many_arguments)]
-    fn run(
+    pub(crate) fn reserve_activation(
         &mut self,
         workflow: WorkflowId,
-        node: NodeId,
         invocation: InvocationId,
-        args: Value,
-        inputs: Option<Value>,
-        caller: Option<&WorkflowId>,
-        events: EventSink,
+        mut activation: crate::graph::Activation,
+        correlation: String,
     ) -> Result<Value> {
+        if let Some(spec) = self
+            .state
+            .workflows
+            .get(&workflow)
+            .and_then(|w| w.graph.node(&activation.id))
+            && self
+                .registry
+                .definition(&spec.type_id)
+                .is_ok_and(|d| d.behavior == Behavior::Join)
+        {
+            let key = format!("{}:{}:{}", workflow, activation.id, correlation);
+            if self.state.queue.joins_done.contains(&key) {
+                return Ok(Value::Null);
+            }
+            let mut required: BTreeSet<_> =
+                crate::graph::pins(&self.state.workflows[&workflow].graph, spec, false)
+                    .into_iter()
+                    .filter(|p| p.ty.is_signal() && p.name != "failed")
+                    .map(|p| p.name)
+                    .collect();
+            required.remove("in");
+            ensure!(
+                !required.is_empty(),
+                "Join must declare its required inputs"
+            );
+            let pin = activation.pin.clone();
+            ensure!(
+                required.contains(&pin) || pin == "failed",
+                "Deliver join signals to a named input"
+            );
+            self.state
+                .queue
+                .joins
+                .entry(key.clone())
+                .or_default()
+                .insert(pin.clone());
+            self.state
+                .queue
+                .join_args
+                .entry(key.clone())
+                .or_default()
+                .insert(pin.clone(), activation.args.clone());
+            self.state.revision += 1;
+            if pin != "failed" && !required.is_subset(&self.state.queue.joins[&key]) {
+                return Ok(
+                    json!({"waiting_for":required.difference(&self.state.queue.joins[&key]).collect::<Vec<_>>()}),
+                );
+            }
+            self.state.queue.joins.remove(&key);
+            self.state.queue.joins_done.insert(key.clone());
+            let arrivals = self.state.queue.join_args.remove(&key).unwrap_or_default();
+            if let Some(args) = activation.args.as_object_mut() {
+                args.insert("arrivals".into(), serde_json::to_value(arrivals)?);
+            }
+        }
+        if self
+            .state
+            .executions
+            .values()
+            .filter(|e| e.status == ExecutionStatus::Queued)
+            .count()
+            >= self.signal_capacity
+        {
+            return Err(crate::scheduler::Backpressure.into());
+        }
+        let node: NodeId = activation.id.into();
+        let args = activation.args;
+        let inputs = Some(activation.inputs);
+        let caller = Some(&workflow);
         let w = self.state.lookup(&workflow, caller)?;
         if let Some(execution) = self.state.executions.get(&invocation) {
             ensure!(
@@ -409,7 +784,6 @@ impl Orchestrator {
             "Destination workspace is missing required capabilities"
         );
         crate::graph::signal_environment(&args)?;
-        let provider = self.registry.provider(&definition.owner)?;
         let generation = self.state.revision + 1;
         let mut properties = spec.flow.properties.clone();
         if let Some(inputs) = inputs {
@@ -436,6 +810,7 @@ impl Orchestrator {
             properties.insert("data_inputs".into(), inputs);
         }
         let request = Invocation {
+            input: activation.pin,
             id: invocation.clone(),
             workflow: workflow.clone(),
             node: node.clone(),
@@ -452,30 +827,18 @@ impl Orchestrator {
             host: workspace.host().into(),
             provider: definition.owner.clone(),
             handle: invocation.0.clone(),
-            status: ExecutionStatus::Running,
+            status: ExecutionStatus::Queued,
             result: Value::Null,
         };
-        let previous_revision = self.state.revision;
+        self.state.queue.invocations.insert(
+            invocation.clone(),
+            crate::scheduler::InvocationContext {
+                request,
+                correlation,
+            },
+        );
         self.state.executions.insert(invocation.clone(), execution);
         self.state.revision += 1;
-        if let Some(storage) = &self.storage
-            && let Err(error) = storage.save(&self.state)
-        {
-            self.state.executions.remove(&invocation);
-            self.state.revision = previous_revision;
-            return Err(error);
-        }
-        match provider.invoke_observed(request, events, self.output.clone()) {
-            Ok(handle) => self.state.executions.get_mut(&invocation).unwrap().handle = handle,
-            Err(error) => {
-                self.state.executions.get_mut(&invocation).unwrap().status =
-                    ExecutionStatus::Failed;
-                self.state.executions.get_mut(&invocation).unwrap().result =
-                    json!({"error":error.to_string()});
-                self.state.revision += 1;
-                return Err(error);
-            }
-        }
         Ok(serde_json::to_value(&self.state.executions[&invocation])?)
     }
 }
@@ -495,27 +858,6 @@ impl FlowNet {
                 "Connections must remain inside a workflow"
             );
         }
-        let mut validation = crate::model::State::empty(".".into());
-        validation.workspaces[0].id = "validation".into();
-        validation.selected_workspace = "validation".into();
-        validation.types = self.types.clone();
-        validation.casts = self.casts.clone();
-        validation.node_types = self.node_types.clone();
-        validation.connections = self.connections.clone();
-        for spec in &self.nodes {
-            let type_id = spec.type_id.strip_prefix("local.").unwrap_or(&spec.type_id);
-            let kind = if type_id == "constant" {
-                crate::model::NodeKind::Constant
-            } else {
-                crate::model::NodeKind::Shell
-            };
-            let mut node =
-                crate::model::Node::new("validation", kind, ".".into(), Default::default());
-            node.id = spec.id.0.clone();
-            node.flow = spec.flow.clone();
-            node.flow.node_type = type_id.into();
-            validation.nodes.push(node);
-        }
-        validation.validate()
+        crate::graph::validate(self)
     }
 }

@@ -10,7 +10,7 @@ pub(super) fn vox_expression(
     source: &str,
     bindings: &Record,
     types: &BTreeMap<String, Type>,
-    state: &State,
+    state: &FlowNet,
 ) -> Result<Value> {
     let mut text = "script flowwm.binding;\n".to_string();
     for (name, value) in bindings {
@@ -30,7 +30,7 @@ pub(super) fn vox_expression(
     runtime_json(&runtime, value)
 }
 
-fn literal(value: &Value, ty: Option<&Type>, state: &State) -> Result<String> {
+fn literal(value: &Value, ty: Option<&Type>, state: &FlowNet) -> Result<String> {
     if let Some(Type::Named { name }) = ty {
         let representation = &state
             .types

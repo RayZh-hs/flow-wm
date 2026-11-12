@@ -1,7 +1,4 @@
-use flow_core::{
-    domain::*, graph::*, migration::Envelope, model::*, orchestrator::Orchestrator,
-    protocol::Command, providers::*,
-};
+use flow_core::{domain::*, graph::*, orchestrator::Orchestrator, protocol::Command, providers::*};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -245,53 +242,6 @@ fn typed_delivery_is_bounded_private_checked_and_explicitly_acknowledged() {
     state.acknowledge(&delivery.id, &"b".into(), 8).unwrap();
     assert!(!state.broadcast(delivery, 1).unwrap());
 }
-#[test]
-fn migration_preserves_ids_recipes_barriers_ports_and_unassigned_graphs() {
-    let mut state = State::empty("/portable/project".into());
-    state.workspaces[0].id = "graph".into();
-    state.selected_workspace = "graph".into();
-    let mut source = Node::new(
-        "graph",
-        NodeKind::Shell,
-        "/portable/project".into(),
-        Position { x: 12., y: 24. },
-    );
-    source.id = "source".into();
-    let mut target = Node::new(
-        "graph",
-        NodeKind::Shell,
-        "/portable/project".into(),
-        Position { x: 42., y: 48. },
-    );
-    target.id = "target".into();
-    target.dependencies.push("source".into());
-    target.run_when = RunWhen::Failure;
-    state.nodes.extend([source, target]);
-    state.recipes.push(
-        state
-            .recipe("Recipe".into(), &["source".into(), "target".into()])
-            .unwrap(),
-    );
-    let original = serde_json::to_value(&state).unwrap();
-    let (envelope, presentation) = Envelope::from_v1(state).unwrap();
-    assert!(
-        envelope.runtime.workflows[&"graph".into()]
-            .workspace
-            .is_none()
-    );
-    assert_eq!(presentation.nodes[&"target".into()]["position"]["x"], 42.);
-    assert_eq!(
-        serde_json::to_value(&envelope.compatibility).unwrap(),
-        original
-    );
-    assert_eq!(
-        envelope.compatibility.recipes[0].nodes[1].dependencies,
-        vec!["source"]
-    );
-    let mut future = envelope;
-    future.version = 99;
-    assert!(future.into_compatibility().is_err());
-}
 #[derive(Default)]
 struct Fake {
     invocations: Mutex<Vec<Invocation>>,
@@ -324,6 +274,7 @@ fn public_provider_api_runs_without_desktop_and_mount_is_transactional() {
         capabilities: Default::default(),
         window: None,
         renderer: None,
+        properties: Default::default(),
     };
     let mut bad = definition.clone();
     bad.id = "someone-else.work".into();
@@ -365,6 +316,27 @@ fn public_provider_api_runs_without_desktop_and_mount_is_transactional() {
     .unwrap();
     core.execute(command, None, Arc::new(|_| panic!("Duplicate invocation")))
         .unwrap();
+    let (frame, _, _) = core.next_frame().unwrap();
+    core.accept_frame(
+        &frame.id,
+        Evaluation {
+            activations: vec![Activation {
+                pin: String::new(),
+                id: "node".into(),
+                args: json!({}),
+                inputs: json!({}),
+            }],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let sink = events.clone();
+    core.dispatch_ready(
+        8,
+        false,
+        Arc::new(move |event| sink.lock().unwrap().push(event)),
+    )
+    .unwrap();
     assert_eq!(provider.invocations.lock().unwrap().len(), 1);
     assert!(
         core.registry
@@ -388,13 +360,31 @@ fn public_provider_api_runs_without_desktop_and_mount_is_transactional() {
         1
     );
 }
+struct Invoked;
+impl ScriptEvaluator for Invoked {
+    fn behavior(&self, node: &NodeSpec) -> Option<Behavior> {
+        (node.type_id == "local.shell").then_some(Behavior::Invoked)
+    }
+    fn evaluate(
+        &self,
+        _: &NodeSpec,
+        _: &Record,
+        _: &serde_json::Value,
+        _: &AtomicBool,
+    ) -> anyhow::Result<serde_json::Value> {
+        unreachable!()
+    }
+}
 #[test]
 fn vox_constant_and_typed_signal_evaluate_headlessly_with_lazy_data() {
-    let mut state = State::empty(".".into());
-    let ws = state.selected_workspace.clone();
-    let mut constant = Node::new(&ws, NodeKind::Constant, ".".into(), Default::default());
+    let mut state = FlowNet::default();
+    let mut constant = NodeSpec {
+        id: "constant".into(),
+        type_id: "local.constant".into(),
+        flow: Default::default(),
+    };
     constant.flow.properties.insert("value".into(), json!(42));
-    let root = constant.id.clone();
+    let root = constant.id.0.clone();
     state.nodes.push(constant);
     assert_eq!(
         evaluate(state.clone(), &root, None, Arc::new(AtomicBool::new(false)))
@@ -402,9 +392,13 @@ fn vox_constant_and_typed_signal_evaluate_headlessly_with_lazy_data() {
             .answer["value"],
         42
     );
-    let mut shell = Node::new(&ws, NodeKind::Shell, ".".into(), Default::default());
+    let mut shell = NodeSpec {
+        id: "shell".into(),
+        type_id: "local.shell".into(),
+        flow: Default::default(),
+    };
     shell.flow.inputs.push(Pin::new("value", Type::Int));
-    let target = shell.id.clone();
+    let target = shell.id.0.clone();
     state.nodes.push(shell);
     connect(
         &mut state,
@@ -420,11 +414,12 @@ fn vox_constant_and_typed_signal_evaluate_headlessly_with_lazy_data() {
         },
     )
     .unwrap();
-    let result = evaluate(
+    let result = evaluate_with(
         state,
         &target,
         Some(("", json!({"code":7}))),
         Arc::new(AtomicBool::new(false)),
+        Arc::new(Invoked),
     )
     .unwrap();
     assert_eq!(result.activations[0].inputs["value"], 42);

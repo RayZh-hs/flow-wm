@@ -102,7 +102,7 @@ pub struct CastDefinition {
     pub source: String,
 }
 
-pub fn validate_type(state: &State, ty: &Type, depth: usize) -> Result<()> {
+pub fn validate_type(state: &FlowNet, ty: &Type, depth: usize) -> Result<()> {
     let signal = ty.is_signal();
     ensure!(depth < 32, "Recursive or deeply nested type");
     match ty {
@@ -139,7 +139,7 @@ pub fn validate_type(state: &State, ty: &Type, depth: usize) -> Result<()> {
     Ok(())
 }
 
-pub fn validate_registry(state: &State) -> Result<()> {
+pub fn validate_registry(state: &FlowNet) -> Result<()> {
     let mut names = HashSet::new();
     for ty in &state.types {
         ensure!(
@@ -213,7 +213,7 @@ pub fn validate_registry(state: &State) -> Result<()> {
     Ok(())
 }
 
-pub fn check_value(state: &State, value: &Value, ty: &Type) -> Result<()> {
+pub fn check_value(state: &FlowNet, value: &Value, ty: &Type) -> Result<()> {
     let valid = match ty {
         Type::Any => true,
         Type::Bool => value.is_boolean(),
@@ -266,7 +266,7 @@ pub fn check_value(state: &State, value: &Value, ty: &Type) -> Result<()> {
     Ok(())
 }
 
-fn structural(state: &State, from: &Type, to: &Type, depth: usize) -> bool {
+fn structural(state: &FlowNet, from: &Type, to: &Type, depth: usize) -> bool {
     if depth > 32 {
         return false;
     }
@@ -291,12 +291,12 @@ fn structural(state: &State, from: &Type, to: &Type, depth: usize) -> bool {
     }
 }
 
-pub fn can_cast(state: &State, from: &Type, to: &Type) -> bool {
+pub fn can_cast(state: &FlowNet, from: &Type, to: &Type) -> bool {
     structural(state, from, to, 0) || cast_path(state, from, to).is_some()
 }
 
 pub(super) fn cast_path<'a>(
-    state: &'a State,
+    state: &'a FlowNet,
     from: &Type,
     to: &Type,
 ) -> Option<Vec<&'a CastDefinition>> {
@@ -318,7 +318,7 @@ pub(super) fn cast_path<'a>(
     None
 }
 
-pub(super) fn cast_value(state: &State, value: Value, from: &Type, to: &Type) -> Result<Value> {
+pub(super) fn cast_value(state: &FlowNet, value: Value, from: &Type, to: &Type) -> Result<Value> {
     if !structural(state, from, to, 0) {
         let path = cast_path(state, from, to).context("No registered cast")?;
         let mut value = value;
