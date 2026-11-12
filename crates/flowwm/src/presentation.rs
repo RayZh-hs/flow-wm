@@ -10,6 +10,7 @@ use std::{
     io::Write,
     os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PresentationDocument {
@@ -64,6 +65,7 @@ impl PresentationDocument {
 pub struct Writer {
     directory: PathBuf,
     _lock: File,
+    last_saved: Mutex<Option<Vec<u8>>>,
 }
 impl Writer {
     pub fn new(directory: PathBuf) -> Result<Self> {
@@ -83,6 +85,7 @@ impl Writer {
         Ok(Self {
             directory,
             _lock: lock,
+            last_saved: Mutex::new(None),
         })
     }
     pub fn directory(&self) -> &Path {
@@ -91,13 +94,21 @@ impl Writer {
     pub fn load(&self, state: &mut State) -> Result<()> {
         let path = self.directory.join("presentation.json");
         if path.exists() {
-            let document: PresentationDocument = serde_json::from_slice(&std::fs::read(path)?)?;
+            let bytes = std::fs::read(path)?;
+            let document: PresentationDocument = serde_json::from_slice(&bytes)?;
             document.apply(state)?;
+            *self.last_saved.lock().unwrap() = Some(serde_json::to_vec_pretty(&document)?);
         }
         Ok(())
     }
     pub fn save(&self, state: &State) -> Result<()> {
-        let document = PresentationDocument::capture(state);
+        let bytes = serde_json::to_vec_pretty(&PresentationDocument::capture(state))?;
+        let mut last_saved = self.last_saved.lock().unwrap();
+        // Native titles and runtime activity do not change presentation. In
+        // particular, terminal title animations must never trigger an fsync.
+        if last_saved.as_ref() == Some(&bytes) {
+            return Ok(());
+        }
         let temporary = self.directory.join("presentation.json.tmp");
         let mut file = OpenOptions::new()
             .create(true)
@@ -105,10 +116,11 @@ impl Writer {
             .write(true)
             .mode(0o600)
             .open(&temporary)?;
-        file.write_all(&serde_json::to_vec_pretty(&document)?)?;
+        file.write_all(&bytes)?;
         file.sync_all()?;
         std::fs::rename(temporary, self.directory.join("presentation.json"))?;
         File::open(&self.directory)?.sync_all()?;
+        *last_saved = Some(bytes);
         Ok(())
     }
 }

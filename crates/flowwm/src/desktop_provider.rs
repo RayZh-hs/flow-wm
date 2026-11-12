@@ -1,4 +1,6 @@
 //! Native window operations are separate from owned execution interruption.
+mod persistence;
+
 use anyhow::{Result, ensure};
 use flow_core::providers::{ApplicationOperations, ApplicationProvider};
 pub struct DesktopApplications;
@@ -43,7 +45,7 @@ use flow_host::client::Client;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{File, OpenOptions},
+    fs::OpenOptions,
     io::{BufRead, BufReader, Write},
     os::{
         fd::AsRawFd,
@@ -52,7 +54,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, Condvar, Mutex, atomic::AtomicBool, mpsc},
 };
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bindings {
     pub session: String,
     pub selected: String,
@@ -64,7 +66,7 @@ pub struct Bindings {
     #[serde(default)]
     pub disowned: BTreeSet<u64>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Binding {
     pub window: u64,
     pub pid: Option<i32>,
@@ -90,6 +92,23 @@ pub fn bindings_at(path: &std::path::Path) -> Result<Bindings> {
     )?)?)
 }
 impl Bindings {
+    fn same_attachments(&self, other: &Self) -> bool {
+        self.session == other.session
+            && self.selected == other.selected
+            && self.rows == other.rows
+            && self.disowned == other.disowned
+            && self.applications.len() == other.applications.len()
+            && self.applications.iter().all(|(id, binding)| {
+                other.applications.get(id).is_some_and(|other| {
+                    binding.window == other.window
+                        && binding.pid == other.pid
+                        && binding.workflow == other.workflow
+                        && binding.token == other.token
+                        && binding.column == other.column
+                })
+            })
+    }
+
     fn start_session(&mut self, session: &str) {
         if self.session != session {
             // Compositor IDs are only meaningful within their original session.
@@ -169,21 +188,6 @@ enum Event {
     },
     Exit(u64, std::result::Result<u8, String>),
 }
-fn save_bindings(directory: &std::path::Path, bindings: &Bindings) -> Result<()> {
-    let temporary = directory.join("desktop.json.tmp");
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .mode(0o600)
-        .open(&temporary)?;
-    file.write_all(&serde_json::to_vec_pretty(bindings)?)?;
-    file.sync_all()?;
-    std::fs::rename(temporary, directory.join("desktop.json"))?;
-    File::open(directory)?.sync_all()?;
-    Ok(())
-}
-
 pub fn run() -> Result<()> {
     let host = Client::new(flow_host::ipc::host_socket());
     let directory: PathBuf =
@@ -207,6 +211,14 @@ pub fn run() -> Result<()> {
     // Do this before serving GTK: its first snapshot must not contain handles
     // restored from a previous login while the initial desktop events arrive.
     bindings.start_session(&std::env::var("NIRI_SOCKET").unwrap_or_default());
+    let writer = persistence::Writer::new(
+        directory.clone(),
+        std::time::Duration::from_millis(u64::from(
+            crate::config::flow()
+                .desktop_save_interval_ms
+                .unwrap_or(250),
+        )),
+    )?;
     let shared = Arc::new((Mutex::new((0u64, bindings.clone())), Condvar::new()));
     let (tx, rx) = mpsc::channel();
     let mutations = tx.clone();
@@ -405,7 +417,7 @@ pub fn run() -> Result<()> {
                         .row = Some(row.clone());
                     bindings.rows.insert(workflow.clone(), row);
                     bindings.selected = workflow;
-                    save_bindings(&directory, &bindings)?;
+                    writer.save(&bindings)?;
                     Ok(())
                 })()
                 .map_err(|e| e.to_string());
@@ -448,7 +460,7 @@ pub fn run() -> Result<()> {
                         node.window_id = None;
                         node.desktop_window = false;
                     }
-                    save_bindings(&directory, &bindings)?;
+                    writer.save(&bindings)?;
                     Ok(())
                 })()
                 .map_err(|e| e.to_string());
@@ -669,8 +681,16 @@ pub fn run() -> Result<()> {
                 }
             }
         }
-        if serde_json::to_value(&shared.0.lock().unwrap().1)? != serde_json::to_value(&bindings)? {
-            save_bindings(&directory, &bindings)?;
+        let previous = shared.0.lock().unwrap().1.clone();
+        if previous != bindings {
+            // Attachment identity is durable before publication. Frequently
+            // changing titles/selectors are published immediately and saved in
+            // the background, with only one pending snapshot.
+            if !previous.same_attachments(&bindings) {
+                writer.save(&bindings)?;
+            } else {
+                writer.update(&bindings)?;
+            }
             let mut current = shared.0.lock().unwrap();
             current.0 += 1;
             current.1 = bindings.clone();
@@ -683,6 +703,71 @@ pub fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_title_metadata_may_be_saved_in_the_background() {
+        let mut bindings = Bindings {
+            session: "login".into(),
+            selected: "workflow".into(),
+            ..Default::default()
+        };
+        bindings.applications.insert(
+            "editor".into(),
+            Binding {
+                window: 85,
+                pid: Some(100),
+                workflow: "workflow".into(),
+                token: "attachment".into(),
+                column: Some("column".into()),
+                title: "Editor".into(),
+            },
+        );
+        bindings
+            .selectors
+            .insert("editor".into(), "editor::Editor".into());
+        let mut titles = bindings.clone();
+        titles.applications.get_mut("editor").unwrap().title = "Busy".into();
+        titles
+            .selectors
+            .insert("editor".into(), "editor::Busy".into());
+        assert!(bindings.same_attachments(&titles));
+        for field in [
+            "window", "pid", "workflow", "token", "column", "removed", "session", "selected",
+            "disowned", "row",
+        ] {
+            let mut changed = bindings.clone();
+            let application = changed.applications.get_mut("editor").unwrap();
+            match field {
+                "window" => application.window += 1,
+                "pid" => application.pid = Some(101),
+                "workflow" => application.workflow = "other".into(),
+                "token" => application.token = "replacement".into(),
+                "column" => application.column = None,
+                "removed" => {
+                    changed.applications.clear();
+                }
+                "session" => changed.session = "new-login".into(),
+                "selected" => changed.selected = "other".into(),
+                "disowned" => {
+                    changed.disowned.insert(85);
+                }
+                "row" => {
+                    changed.rows.insert(
+                        "workflow".into(),
+                        crate::model::Row {
+                            session: "login".into(),
+                            id: 1,
+                            index: 1,
+                            output: None,
+                            name: None,
+                        },
+                    );
+                }
+                _ => unreachable!(),
+            }
+            assert!(!bindings.same_attachments(&changed), "{field}");
+        }
+    }
 
     #[test]
     fn a_new_login_drops_live_handles_but_keeps_reconnection_hints() {

@@ -191,18 +191,11 @@ pub fn activate_workspace(logical_id: &str, create: bool) -> Result<()> {
     }
     Ok(())
 }
-pub fn listen(
-    stop: Arc<AtomicBool>,
-    engine: Option<crate::client::DesktopClient>,
-) -> Arc<Mutex<Desktop>> {
-    listen_observed(
-        stop,
-        Arc::new(move |desktop| {
-            if let Some(engine) = &engine {
-                engine.dispatch(crate::client::Action::SyncDesktop { desktop });
-            }
-        }),
-    )
+pub fn listen(stop: Arc<AtomicBool>) -> Arc<Mutex<Desktop>> {
+    // The desktop provider already publishes reconciled bindings to the shell.
+    // Keep native geometry here without dispatching a second action (and
+    // presentation save) for every compositor event.
+    listen_observed(stop, Arc::new(|_| {}))
 }
 pub fn listen_observed(
     stop: Arc<AtomicBool>,

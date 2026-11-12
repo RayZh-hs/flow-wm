@@ -66,6 +66,19 @@ preferences and selection. The desktop provider owns `desktop.json` under
 columns. Host activity does not write either document. Presentation saves contain
 no native window handles. No save round-trips through an old desktop State.
 
+Presentation saves skip unchanged documents, including native title animations
+and runtime-only updates. GTK receives reconciled bindings from the desktop
+provider; its native event listener does not dispatch a second save per event.
+The desktop provider publishes title and reconnection-selector metadata immediately
+and saves the latest snapshot on a background worker, at most once every 250 ms
+by default. Set `flow { desktop-save-interval-ms 500; }` in `config.kdl` to change
+this interval; zero disables the rate limit. Only one pending snapshot is retained
+while disk I/O is in progress. Attachment, session, row and explicit bind/detach
+changes bypass the interval and are durable before publication or acknowledgement.
+An orderly writer shutdown flushes pending metadata; an abrupt exit may lose
+metadata updates since the last save. Background write failures are logged, and
+synchronous saves report errors to the caller.
+
 The host rejects `state.json`, `runtime-v2.json`, unsupported runtime formats and
 old request/manifest versions with an error. Their input files remain untouched.
 There is no automatic conversion or importer in the live runtime. The separate

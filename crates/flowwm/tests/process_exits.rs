@@ -110,6 +110,78 @@ fn application_node() -> (State, String) {
 }
 
 #[test]
+fn animated_titles_keep_ui_commands_live_when_metadata_storage_fails() {
+    use flowwm::client::UiCommand;
+    use std::time::Duration;
+
+    let pid = std::process::id() as i32;
+    let compositor = Compositor::new(pid);
+    let (state, id) = application_node();
+    let (desktop, events) = support::fixture_with_niri(state, Some(&compositor.socket));
+    support::wait(|| desktop.bindings().applications.contains_key(&id));
+    desktop
+        .request(Action::SyncDesktop {
+            desktop: Default::default(),
+        })
+        .unwrap();
+    let data = desktop.data_directory().unwrap();
+    let token = desktop.bindings().applications[&id].token.clone();
+
+    // Fail any attempted write, without stopping the production provider or its
+    // subscription. Title updates must remain live; UI commands need no save.
+    for document in ["desktop", "presentation"] {
+        std::fs::create_dir(data.join(format!("{document}.json.tmp"))).unwrap();
+    }
+    for i in 0..100 {
+        compositor.publish(
+            json!({"WindowOpenedOrChanged":{"window":window(pid, 1, &format!("spinner-{i}"))}}),
+        );
+    }
+    support::wait(|| {
+        desktop
+            .snapshot()
+            .state
+            .node(&id)
+            .is_some_and(|n| n.title == "spinner-99")
+    });
+    for _ in 0..100 {
+        desktop
+            .request(Action::SyncDesktop {
+                desktop: Default::default(),
+            })
+            .unwrap();
+    }
+    desktop
+        .request(Action::Ui {
+            command: UiCommand::Launcher,
+        })
+        .unwrap();
+    assert!(matches!(
+        events.recv_timeout(Duration::from_secs(5)).unwrap(),
+        UiCommand::Launcher
+    ));
+    assert_eq!(desktop.bindings().applications[&id].token, token);
+
+    for document in ["desktop", "presentation"] {
+        std::fs::remove_dir(data.join(format!("{document}.json.tmp"))).unwrap();
+    }
+    compositor.publish(json!({"WindowOpenedOrChanged":{"window":window(pid, 1, "Latest title")}}));
+    support::wait(|| {
+        std::fs::read(data.join("desktop.json"))
+            .ok()
+            .and_then(|bytes| {
+                serde_json::from_slice::<flowwm::desktop_provider::Bindings>(&bytes).ok()
+            })
+            .is_some_and(|bindings| {
+                bindings
+                    .applications
+                    .get(&id)
+                    .is_some_and(|b| b.title == "Latest title" && b.token == token)
+            })
+    });
+}
+
+#[test]
 fn deleting_an_application_in_nodes_closes_only_its_window_and_removes_both_views() {
     let pid = std::process::id() as i32;
     let compositor = Compositor::new(pid);

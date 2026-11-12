@@ -46,7 +46,7 @@ pub fn run(
                 settings.set_property_from_value("gtk-interface-color-scheme", &value);
             } else { settings.set_gtk_application_prefer_dark_theme(true); }
         }
-        let stop = Arc::new(AtomicBool::new(false)); let desktop = niri::listen(stop.clone(), options.integrated.then(|| engine.clone()));
+        let stop = Arc::new(AtomicBool::new(false)); let desktop = niri::listen(stop.clone());
         let shell = Shell::build(app, engine.clone(), macros.clone(), options, desktop);
         shell.view.borrow_mut().native_nodes = shell.native_nodes;
         gtk::prelude::WidgetExt::realize(&shell.window());

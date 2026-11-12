@@ -1011,6 +1011,7 @@ mod tests {
             flow: Flow {
                 terminal: None,
                 notification_command: None,
+                desktop_save_interval_ms: None,
                 motion_ms: None,
                 removal_ms: None,
                 inertia_decay: None,
