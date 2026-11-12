@@ -71,6 +71,11 @@ class OfflineImport(unittest.TestCase):
         self.assertEqual(report['process_handles_imported'],0)
         self.assertFalse((root/'imported-effect').exists())
 
+    def test_saved_and_manifest_schemas_compare_using_contract_defaults(self):
+        definition={"id":"sample.value","name":"Value","inputs":[],"outputs":[],"source":"{}"}
+        self.assertEqual(import_legacy.canonical_schema(definition),import_legacy.canonical_schema({**definition,"properties":{},"window":None,"behavior":"lazy"}))
+        self.assertNotEqual(import_legacy.canonical_schema(definition),import_legacy.canonical_schema({**definition,"source":"different"}))
+
     def test_multiple_success_parents_become_an_explicit_join(self):
         data=document()
         data['nodes']=[node('a','shell'),node('b','shell'),node('c','shell'),node('last','shell',['a','b','c'])]

@@ -138,6 +138,13 @@ def wait_for(predicate, process, timeout=15):
     raise RuntimeError(f"Timed out waiting for validation: {last}")
 
 
+def canonical_schema(definition):
+    result=deepcopy(definition)
+    for key,value in {"behavior":"lazy","properties":{},"inputs":[],"outputs":[],"source":"","window":None}.items():
+        result.setdefault(key,value)
+    return result
+
+
 def import_state(source, output, host, manifests=()):
     source, output, host = Path(source), Path(output), Path(host).resolve()
     if output.exists():
@@ -162,9 +169,10 @@ def import_state(source, output, host, manifests=()):
             for definition in manifest.get(key, []):
                 id_key = "id" if key == "nodes" else "name" if key == "types" else None
                 existing = next((d for d in native[destination] if id_key and d[id_key] == definition[id_key]), None)
-                if existing is not None and existing != definition:
+                equal = canonical_schema(existing)==canonical_schema(definition) if key=="nodes" and existing is not None else existing==definition
+                if existing is not None and not equal:
                     raise ConversionError(f"Conflicting extension definition: {definition.get(id_key)}")
-                if definition not in native[destination]:
+                if existing is None and definition not in native[destination]:
                     native[destination].append(deepcopy(definition))
     recipes, recipe_graphs = [], []
     for old in document.get("recipes", []):
