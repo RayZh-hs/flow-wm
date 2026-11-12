@@ -1,236 +1,232 @@
 # Runtime and extension interfaces
 
-Flow is maintained in this monorepo under the [Flow organization](https://github.com/flow-wm).
-The independently maintained compositor and shell remain pinned subtrees; their
-currently published source URLs are recorded in `components.json`.
+FlowWM has one independent runtime. `flow-core` is the headless executable;
+`flowwm-desktop` observes the compositor and applications; `flowwm-shell` is the
+GTK client. Restarting GTK leaves the other two processes and their work running.
+All three are required for desktop startup. There is no embedded runtime.
 
-## Package boundaries
+## Ownership and package boundaries
 
-- `flow-core` owns typed workflow/workspace/invocation IDs, immutable workspace
-  definitions, session incarnations, ownership, typed delivery, transfer records,
-  provider contracts, protocol types, and the existing Vox graph evaluator.
-  It has no GTK, niri, Wayland, systemd, socket, or process dependency.
-  `scheduler::evaluate` runs provider-aware delivery frames through the existing
-  Vox traversal. `Orchestrator::invoke_activation` accepts the resolved data and
-  property inputs without changing the graph's saved local properties. Lazy
-  providers implement `read`; invoked work implements `invoke`.
-- `flow-builtins` supplies Linux execution, Python bindings, evaluator workers,
-  limits, and registered shell, constant, agent, metric-sample, application-launch,
-  human-task and decision providers. Owned process supervision is shared by desktop
-  and protocol invocations; agent commands come from `agent.json`.
-- `flow-host` builds the `flow-core` executable. It owns storage, local/SSH
-  transports, provider supervision, and the compatibility engine. The legacy
-  completion barriers, review, repeating metrics, application observation, catalog,
-  and desktop reconciliation remain in `engine/compatibility.rs` to retain their
-  existing behavior. Execution implementations use registered builtin providers;
-  the adapter retains all-parent/failure barriers and stoppable metric scheduling.
-- `flowwm` builds the existing CLI and GTK shell. Its public module paths forward
-  to the extracted implementations. GTK can use either the embedded development
-  engine or a snapshot/command client connected to the independent host.
+| Package | Owns |
+| --- | --- |
+| `flow-core` | Portable FlowNet definitions, typed pins/casts, workflow instances, workspace/session invariants, scheduling and durable queues, invocation identity, ownership, typed delivery, transfers, protocols, provider contracts and the Vox evaluator. |
+| `flow-builtins` | Registered computation, execution and source implementations, Linux process groups, bounded output, agent commands, Python bindings and isolated evaluator workers. |
+| `flow-host` | Composition of core and providers, runtime storage, local/SSH transports, provider supervision and peer reconciliation. |
+| `flowwm` | CLI and GTK clients, the independent desktop provider, niri/DMS integration, native bindings and local presentation. |
+| `sdk/python` | Clients of Orchestrator Protocol 3 and Signal Protocol 1. |
 
-The portable domain model is separate from the old `model::State`, which remains
-as a lossless compatibility document. Its historical `Workspace` and `Node.workspace`
-fields identify workflow rows; they do not create host/session environments.
-The compatibility snapshot still carries native bindings and presentation for
-existing clients. Removing these projection fields from the compatibility wire
-format is separate from the portable domain model.
+Core has no GTK, niri, Wayland, systemd, Unix process or transport dependency. Its
+CI tests Linux, macOS and Windows independently. Vox is vendored at revision
+`1d028fac2a6d30e642208a3e5bbc6db43019e0a4`; no sibling checkout is required.
 
-Vox is vendored at revision `1d028fac2a6d30e642208a3e5bbc6db43019e0a4` with its licenses.
-There is no dependency on a sibling checkout. The evaluator receives its worker
-executable from the composition root. Core tests run with `cargo test -p flow-core
---locked`; CI checks Linux, Windows, and macOS independently of the WM.
+A FlowNet contains definitions, not execution results or desktop geometry. The
+host never executes a WM view model. GTK projects native snapshots into a local
+view and keeps selection, camera, positions and layout locally. Native geometry
+and Wayland frame traffic remain between GTK and niri.
 
-## Running the host and desktop
+## Explicit startup
+
+Build the workspace before running integration tests or clients:
 
 ```sh
 cargo build --workspace --locked
-# Separate terminal, or supervise this process with your service manager:
+# Supervise each long-running process independently, with systemd, runit, s6,
+# or separate terminals. Start the compositor with config/compositor.kdl first.
 target/debug/flow-core --data-dir /path/to/workflow-data
-# Closing/restarting this GTK process leaves the host and its work running:
-target/debug/flowwm start --dms --background --host-socket "$XDG_RUNTIME_DIR/flow-core.sock"
+# In the compositor environment, with NIRI_SOCKET and WAYLAND_DISPLAY set:
+target/debug/flowwm-desktop
+target/debug/flowwm start --dms --background
 ```
 
-The installer includes `flowwm-core.service` and makes `flowwm.service` depend on
-it. The runtime has its own lifetime; replacing GTK/DMS does not restart it.
-`flowwm start` without `--host-socket` retains the embedded development mode.
-Restarting an embedded engine or the host itself ends its owned processes; the
-host/client separation preserves executions across a **WM** restart.
-A compositor connection is observed independently after the desktop provider
-attaches, so compositor teardown remains observable if GTK exits first.
+The default sockets are `$XDG_RUNTIME_DIR/flow-core.sock`, `flowwm-desktop.sock`
+and `flowwm.sock`. `FLOWWM_HOST_SOCKET` and `FLOWWM_DESKTOP_SOCKET` select private
+endpoints. `flowwm start --host-socket PATH` selects a host explicitly. If supplied,
+its `--data-dir` must match the host; it does not start or choose another runtime.
+Without a compositor, the independent provider and `flowwm start --windowed` can
+be used for a standalone editor.
 
-The installation keeps its original snapshot and rollback mechanism. Old bundles
-without `flow-core` continue using embedded mode. An explicit rollback to such a
-bundle stops the independent host before the legacy runtime claims its data lock;
-that compatibility transition interrupts host-owned work. A running runtime stays pinned
-to its launch snapshot across shell replacement. Upgrading that runtime itself
-is a separate service restart and interrupts its owned executions.
+Installed systemd units start `flowwm-core.service`, `flowwm-desktop.service` and
+`flowwm.service` in that order. GTK and DMS replacement preserves a compatible
+running host and desktop provider. Runtime upgrades require a coordinated restart
+of the host and its clients. Host shutdown interrupts owned jobs with configured
+escalation; unknown outcomes after a crash are not automatically retried.
 
-## Persistence
+## Native persistence and recovery
 
-The same `state.lock` protects migration and the host writer. On first load:
+The current live document is `runtime.json`, format **3**, under the host data
+directory (by default `$XDG_DATA_HOME/flowwm`). It stores workflow definitions and
+instances, stable workspace definitions and availability, invocations, resolved
+queued invocation context, delivery frames, the completion inbox, sources and
+source state, application registrations, transfer/cleanup journals and replay
+ledgers. `runtime.lock` protects its sole writer; saves fsync and atomically rename.
 
-1. Read and validate the old `state.json` without modifying it.
-2. Preserve IDs, recipes, typed connections, explicit legacy window outputs,
-   watcher enablement, completion dependencies, and row geometry.
-3. Write `runtime-v2.json` and `presentation-v2.json` with fsync and atomic rename.
+GTK owns `presentation.json` under `presentation.lock`: layout, recipes, row view
+preferences and selection. The desktop provider owns `desktop.json` under
+`desktop.lock`: session-scoped native bindings, application tokens, rows and native
+columns. Host activity does not write either document. Presentation saves contain
+no native window handles. No save round-trips through an old desktop State.
 
-Desktop-bound graphs are assigned to predefined `local:desktop`; unbound graphs
-remain unassigned until a user chooses an available workspace. Unknown newer
-versions are rejected. Later saves use the versioned files and preserve the old
-file for an older installed snapshot. In independent-host mode the host writes
-runtime state and GTK holds a separate presentation-writer lock and atomically
-writes `presentation-v2.json`. The client learns the data directory from the host,
-so a custom host data path is respected. Runtime-only activity leaves this file
-untouched; host restart restores the desktop's saved presentation. Embedded
-compatibility mode coordinates both writes in one process.
+The host rejects `state.json`, `runtime-v2.json`, unsupported runtime formats and
+old request/manifest versions with an error. Their input files remain untouched.
+There is no automatic conversion or importer in the live runtime. Preserve old
+data separately; reconstruct unsupported dependency barriers, reviews and watchers
+using explicit current nodes before exporting a current graph. This cutover does
+not fabricate continuity for processes from an earlier runtime.
 
-## Workspaces and ownership
+Invocations are checkpointed as queued with stable ID, generation, arguments,
+resolved inputs and correlation. Core checkpoints the running record **before**
+a provider starts side effects. Retrying an invocation ID does not run it again.
+Queued work resumes after restart. Running/waiting work whose origin restarted is
+marked `unavailable` with an unknown-outcome explanation; retry requires a fresh
+invocation ID. Persisted completions are routed before treating a running record
+as unknown. Queue backpressure retains the completion inbox for later routing.
+Late generation-mismatched completions cannot replace a current outcome.
 
-`flowwm workflows` opens the workflow manager. Workspace definitions are supplied
-by providers; there is no workspace create/delete operation in protocol v2.
-The local registry includes `desktop`, `user`, and `systemd` definitions, with
-availability announced separately. A definition alone does not imply that its
-session is active. A stale session token cannot end a replacement session.
-The user environment is supplied by the local session provider. The systemd
-environment activates when the runtime is launched with a valid service invocation
-token; `systemd_workspace: false` disables it. Desktop availability follows the
-compositor connection and is independent of either GTK or the service invocation.
+## Registered behavior and evaluation
 
-Create a public workflow, an owned private child, or reference an existing public
-workflow. Private children are omitted from public catalogs. Destroying a parent
-cascades across workspace assignments; removing a reference leaves its target
-alive. Make Public retains the child's identity, assignment, graph, and executions
-and changes the parent's region to a reference.
+Providers mount transactionally under an owner namespace. Saved schemas keep a
+missing implementation inspectable. Unmount requires active invocations to be
+resolved and releases source subscriptions before removing implementations.
+Adding a provider does not require editing scheduler dispatch.
 
-Owned regions use `&host:session` headers; reference regions use `host:session`.
-Double-click a region to open its workflow. A native window on another row
-remains attached to its original workflow; it is omitted from the current row's
-preview scene, and Open switches to the application's actual row without moving
-the connected branch. Moving a workflow between local
-workspaces changes its assignment while keeping execution handles at their
-origin. Applications still depend on their original compositor connection.
+- **Lazy computation** implements `read`; script bindings receive a FlowNet,
+  published-value context and explicit limits/executable configuration.
+- **Invoked work** implements `invoke`, completion and cancellation. Shell and
+  agents use supervised process groups, bounded/drained output, configured
+  concurrency, timeouts and canonical-directory resource claims.
+- **Decisions and human tasks** enter `waiting`, then resolve through explicit
+  accepted/rejected output pins. Shell/agent work has no hidden review flag.
+- **Join** collects its named signal inputs per correlation. It emits once after
+  all required arrivals. Its `failed` input terminates that correlation on the
+  failure branch; later success arrivals cannot reopen it. Default inputs are
+  `left`, `right` and `failed`; additional named inputs can be declared explicitly.
+- **Sources** install with the workflow/provider/session lifecycle. Metrics,
+  timers, threshold watchers and Receive have no ordinary Run/Interrupt controls.
+  Metric Sample is a separate invoked operation. Configuration changes replace
+  the subscription generation. Teardown releases owned polling processes.
+  Threshold/rearm/history state belongs to the source and travels during handoff.
+- **Alerts** publish semantic attention in an invocation result. The desktop
+  presents notifications and urgency; reading data emits no notification. The UI
+  `flow { notification-command ...; }` setting selects the command prefix; an
+  empty command disables popups.
+- **Broadcast/Receive** use the same typed delivery/addressing rules as the public
+  Signal Protocol. Receive acknowledges only after durable frame acceptance.
 
-Desktop runtime actions follow a moved workflow's authoritative host, including
-graph edits, decisions and interruption. Creating directly in a remote workspace
-uses the same recoverable handoff as Move. Legacy barrier/review/metric metadata
-travels in the reserved `flowwm.compatibility.v1` node property; desktop handles
-and positions are excluded. This keeps old pipelines usable after a handoff.
-Background forwarding and peer refresh run outside the runtime actor, with
-configurable retry interval, timeout and batch size. They stop refreshing remote
-execution state once the tracked invocations reach a terminal status.
+Each delivered signal gets fresh lazy evaluation. Fanout shares computation
+within a delivery; persisted computed values are inspection data and are not the
+next delivery's cache. A data Read neither invokes jobs nor emits signals.
+Published invoked/application/source values are available through the explicit
+context. Python and Vox evaluation remain in a cancellable worker process. Owned
+Linux jobs receive SIGINT before configured SIGTERM/SIGKILL escalation.
 
-Desktop reconciliation preserves connected workflow branches when a native
-window changes rows. Unconnected automatically observed application windows can
-follow their row. `desktop_branches_follow_rows` enables the old branch-following
-policy when explicitly desired.
+## Workflows, workspaces and visibility
 
-## Protocols and SDK
+A workflow is an instance of a portable FlowNet. A workspace is a public predefined
+`host:session` environment. Users create workflows, not workspaces. Local definitions
+include `desktop`, `user` and `systemd`; availability and incarnation are separate.
+The systemd environment activates only with a valid service invocation token and
+when enabled. Ending an old incarnation cannot end its replacement.
 
-The wire types live in `flow_core::protocol`; provider interfaces live in
-`flow_core::providers`. Requests carry `protocol`, `id`, optional
-`expected_revision` and `caller`, and a tagged `command`. Replies carry identity,
-revision, result, and structured error information inside the existing local
-transport's `ok` envelope. UI operations stay on the compatibility WM command API.
+Private workflows have one owning workflow. Ownership is acyclic and destruction
+cascades across assignments and hosts. Public references do not own their targets.
+Make Public preserves identity, graph, assignment and executions and changes the
+parent's owned region to a reference. Private workflows, queues, published values
+and results are filtered from unauthorized snapshots and catalogs.
+
+Desktop rows present workflows; `&host:session` region headers indicate ownership,
+while `host:session` indicates a reference. A native window moved to another row
+keeps its original workflow. Open focuses its actual window/row. Local reassignment,
+authority transfer and relocation of a running process are separate operations.
+Ending a compositor session cleans workflows by their **current** assignments;
+unrelated user/systemd workflows remain alive.
+
+## Application hooks and optional interfaces
+
+`flowwm-desktop` owns niri reconciliation, application attachment, pidfd observation
+and native open/close/disown operations. It continues observing after GTK exits.
+Registrations use the current session incarnation and an opaque token. Core sees
+semantic capabilities and typed events, not native window IDs or process handles.
+Stale tokens/incarnations and repeated delivery IDs cannot emit duplicate exits.
+Automatic `on_exit(exit_code: UInt8)` observation requires Linux 6.15+ pidfd exit
+information. Several windows may share a process: closing a window does not permit
+killing that process. Application interruption requires an explicit safe capability.
+
+SDK applications register schemas and operations, publish values and emit typed,
+session-scoped events through the public API. `agent-sessions` uses that path and
+the desktop provider's compact binding DTO. Manifest **3** is declarative; loading
+node/type/cast schemas never executes source.
+
+Nodes have no standalone window by default. Open edits parameters; application
+nodes open their real windows. An extension can declare a concise `window` contract
+with useful fields/actions/results; see [the example](../examples/extension-window.json).
+GTK uses natural sizing and the existing theme. Closing an interface preserves the
+node and work. Interrupt is separate from Close Window and Destroy Workflow.
+Renderer metadata retains size, hit-region, pin-anchor and fallback contracts.
+Custom shaders and remote native-preview streaming remain separate work. A Wayland
+application still depends on its originating compositor connection.
+
+## Current protocols
+
+Requests carry `protocol: 3`, stable `id`, optional `expected_revision` and `caller`,
+and a tagged `command`. Replies carry the same identity/version, revision, result
+or structured error. A revision conflict requires a new snapshot. Reconnect starts
+with an authorized snapshot; subscription frames carry increasing revisions.
 
 ```json
-{"protocol":2,"id":"inspect-1","command":{"command":"negotiate","versions":[2]}}
+{"protocol":3,"id":"inspect-1","command":{"command":"negotiate","versions":[3]}}
 ```
 
-Use `snapshot` after reconnect. `subscribe` sends authorized snapshots as revisions
-change; reads do not generate revisions or storage writes. Invocation IDs make
-run retries idempotent. Human tasks and gates wait until `resolve` supplies an
-accepted/rejected result. Generation checks reject late results. Execution placement
-is independent of workflow assignment. Source/application definitions cannot be
-invoked as ordinary jobs through the new execution API.
+`flowwm status` reads the host's native snapshot. `flowwm send` accepts current
+runtime envelopes and WM actions. WM services have a separate
+`{"wm_protocol":1,"command":{"action":"catalog"}}` envelope for catalog,
+launcher, view, performance and presentation/authoring actions. Old `op` requests
+and full-State status transport are rejected. WM authoring translates explicit
+graph operations into current runtime requests; it contains no scheduler.
 
-`broadcast`, `receive`, and `acknowledge` provide typed cross-workflow delivery.
-The separate SignalFrame envelope uses `signal_protocol: 1`; orchestrator commands
-can also delegate delivery to the same queue. Senders retain a delivery ID across retries. The destination visibility, signal
-type, payload, queue limit, and replay ledger are checked before acceptance.
-Receive peeks the oldest matching queued delivery; acknowledge after processing.
-Full queues and full replay ledgers return errors instead of dropping events.
-The ledger does not promise unlimited exactly-once external side effects.
+The independent Signal Protocol remains **1**. Delivery IDs survive retries;
+visibility, registered receiver channel/type, payload, queue and replay bounds are
+checked. Receive peeks and Acknowledge removes a delivery after durable acceptance.
+Full queues/ledgers return errors rather than silently dropping signals. These
+ledgers do not promise unlimited exactly-once external side effects. Python and
+Rust clients validate response identity and supported versions.
 
-The Python client is in `sdk/python/flow_sdk.py`; the Rust API is the portable
-crate's public contracts. `agent-sessions` uses the Python client's compatibility
-application-hook API for exposed pins and completion events. Manifests are still
-discovered declaratively; loading a schema does not execute node source.
+## KDL settings and remote operation
 
-## Optional node windows
-
-Nodes have no standalone interface by default. Open edits a node's parameters;
-application nodes open their real windows. A provider can explicitly declare a
-`window` in its node definition, as shown in `examples/extension-window.json`.
-The contract supplies a title, optional description, labeled property fields,
-actions, and an optional result property. Empty contracts are rejected.
-
-The GTK renderer uses the existing theme, a bounded width, natural content height,
-and a floating-window rule. Results appear when available. There are no automatic
-Output/Activity tabs, directory/prompt dump, or generic Run Branch controls.
-Closing the interface keeps the node and execution. Its Interrupt action uses a
-separate node-interruption command and retains the window; application providers
-can decline interruption when a process may be shared. Use `flowwm interrupt NODE_ID` to request this explicitly. The legacy Stop/Win+Q
-command retains its window-close behavior. Application IDs include the
-node ID, so attachment does not depend on matching titles.
-
-The bundled niri configuration includes the floating rule. An existing hand-edited
-profile can add or customize it:
+Headless settings live in `~/.config/flow-wm/runtime.kdl`; compositor/UI settings
+remain in `config.kdl`. Both use niri-style KDL. Runtime includes resolve relative
+to their containing file and reject cycles. See [the complete defaults](../config/runtime.kdl).
+`FLOWWM_CONFIG_DIR` or the normal XDG config directory selects the configuration.
 
 ```kdl
-window-rule {
-    match app-id="^dev\\.flowwm\\.interface\\.v1\\."
-    open-floating true
+host-id "workstation"
+max-concurrent 8
+serialize-working-directories true
+interrupt-grace-ms 1000
+source-interval-secs 30
+include "hosts.kdl"
+host "builder" {
+    transport "ssh"
+    destination "my-build-host"
+    command "flow-core" "--stdio"
 }
 ```
 
-Renderer metadata also defines minimum size, semantic hit regions, pin anchors,
-and a fallback label. GPU shader implementation and remote native-window streaming
-remain separate features; neither is required by core execution.
+Each peer requires a unique stable host ID, a running current host and reciprocal
+configuration for completion/interruption forwarding. Unix sockets support isolated
+local peers. SSH uses existing user authentication and a bounded stdio relay.
+Unknown/mixed protocol peers fail explicitly; no remote account or resource is
+created automatically.
 
-## Runtime configuration and remote hosts
+Handoff journals prepare, destination stage, authority commit and acknowledgement.
+A staged destination cannot execute. The source checkpoints its ownership change
+before destination activation. Bundles contain queued frames, resolved invocations,
+completion inbox, correlation/join state, published values and source lifecycle
+state. Existing invocations keep IDs, generations, handles and originating providers;
+queued/future invocations use the destination's available capabilities.
 
-Optional runtime settings live in `~/.config/flow-wm/runtime.json`, beside the
-existing niri-style `config.kdl` and `extensions/` directory:
-
-```json
-{
-  "host_id": "workstation",
-  "max_concurrent": 8,
-  "execution_timeout_secs": 3600,
-  "metric_timeout_secs": 20,
-  "evaluator_timeout_secs": 60,
-  "interrupt_grace_ms": 1000,
-  "terminate_grace_ms": 1000,
-  "signal_queue_capacity": 4096,
-  "replay_capacity": 65536,
-  "serialize_working_directories": true,
-  "systemd_workspace": true,
-  "remote_retry_secs": 2,
-  "remote_timeout_secs": 10,
-  "remote_batch_size": 4,
-  "desktop_branches_follow_rows": false,
-  "hosts": {
-    "builder": {
-      "transport": "ssh",
-      "destination": "my-build-host",
-      "command": ["flow-core", "--stdio"]
-    }
-  }
-}
-```
-
-Each remote must have its own stable `host_id`, a running host, matching protocol,
-and reciprocal configuration when it must forward results or interruption to an
-execution's origin. SSH uses the user's existing authentication and a stdio relay
-to the remote runtime socket. The Unix transport supports isolated local hosts
-and tests. No remote accounts, repositories, or resources are created automatically.
-
-Handoff journals preparation and destination staging before committing authority.
-A staged destination cannot execute the workflow. The source checkpoints its
-ownership change before activating the destination; retries preserve invocation
-and delivery IDs. Existing registered executions retain their original host and
-provider. Their results and interrupts are forwarded, with persistent pending
-cleanup during disconnect. Tests cover a real running shell process across two
-hosts, reload between handoff phases, duplicate commit, and destruction before a
-late commit. Native windows and legacy execution adapters still require their
-originating desktop/provider; remote native previews are not provided.
+Late origin completions and interruption are forwarded by stable ID/generation.
+Destroying an owner during disconnect persists remote cleanup and tombstones;
+reconciliation retries after reconnect without reporting synchronous remote teardown.
+Network work stays outside the local command actor; stale peer revisions cannot
+replace newer state. Peer health distinguishes `disconnected` transport, `unavailable`
+configuration/capability and `failed` requests, separately from invocation outcomes.

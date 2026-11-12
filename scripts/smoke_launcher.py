@@ -109,7 +109,9 @@ def run():
             children.append(compositor)
             niri_socket = wait(lambda: next(runtime.glob("niri.*.sock"), None), compositor)
             environment.update(NIRI_SOCKET=str(niri_socket), WAYLAND_DISPLAY=niri_socket.name.split(".")[1])
-            flowwm = subprocess.Popen([str(ROOT / "target/debug/flowwm"), "--data-dir", str(runtime / "workflow"), "start", "--dms", "--background"], env=environment, stdout=log, stderr=log)
+            from runtime import start as start_runtime
+            start_runtime(ROOT / "target/debug/flowwm", runtime, environment, children, log)
+            flowwm = subprocess.Popen([str(ROOT / "target/debug/flowwm"), "--data-dir", str(runtime / "data"), "start", "--dms", "--background"], env=environment, stdout=log, stderr=log)
             children.append(flowwm)
             wait(lambda: (runtime / "flowwm.sock").exists(), flowwm)
             dux = subprocess.Popen(["qs", "-p", str(shell)], env=environment, stdout=log, stderr=log)
@@ -137,8 +139,8 @@ def run():
             for connected in (True, False):
                 call("style", str(connected).lower())
                 for view in ("windows", "nodes"):
-                    request(runtime / "flowwm.sock", {"op": "ui", "command": {"action": view}})
-                    wait(lambda: request(runtime / "flowwm.sock", {"op": "catalog"})["presentation"]["graph_visible"] == (view == "nodes"), compositor)
+                    request(runtime / "flowwm.sock", {"action": "ui", "command": {"action": view}})
+                    wait(lambda: request(runtime / "flowwm.sock", {"action": "catalog"})["presentation"]["graph_visible"] == (view == "nodes"), compositor)
                     for attempt in range(2):
                         for shortcut, prefix in (("super+space", "@ + " if view == "nodes" else ""), ("super+shift+space", "@ "), ("alt+space", "")):
                             started = time.monotonic()

@@ -14,7 +14,7 @@ FlowWM is under active development. Review commands in workflow nodes before run
 
 ## Install
 
-The complete desktop requires Linux, a working Wayland graphics stack, a systemd user session, Python 3.11+, Rust 1.92+ with Cargo, Go as specified in [DMS's go.mod](../components/dms/core/go.mod), and Quickshell. Native build dependencies include GTK 4.14+, gtk4-layer-shell, pkg-config, Cairo/Pango, Wayland, libxkbcommon, libinput, libdisplay-info, libgbm, libseat, systemd/libudev, and PipeWire. The compositor's [build definition](../components/niri/flake.nix) lists its native dependencies. Dux's [manual installation guide](https://duxlabs.dev/docs/dms/installation) covers its runtime packages. Install at least one terminal such as Foot, Alacritty, or Kitty.
+The complete desktop requires Linux, a working Wayland graphics stack, a session supervisor (the installer supplies systemd user units), Python 3.11+, Rust 1.92+ with Cargo, Go as specified in [DMS's go.mod](../components/dms/core/go.mod), and Quickshell. Native build dependencies include GTK 4.14+, gtk4-layer-shell, pkg-config, Cairo/Pango, Wayland, libxkbcommon, libinput, libdisplay-info, libgbm, libseat, systemd/libudev, and PipeWire. The compositor's [build definition](../components/niri/flake.nix) lists its native dependencies. Dux's [manual installation guide](https://duxlabs.dev/docs/dms/installation) covers its runtime packages. Install at least one terminal such as Foot, Alacritty, or Kitty.
 
 From a checkout of this repository:
 
@@ -46,7 +46,7 @@ python3 scripts/install.py --rollback --replace  # also reload its services now
 flowwm-session describe                          # inspect selected paths and binary checksums
 ```
 
-`--replace` keeps the current compositor and application windows running. Compositor changes take effect at the next login. Reloading the graph service stops its owned workflow subprocesses. If a service reload fails, the installer attempts to restore the preceding services. Development builds and nested tests never change the installed snapshot.
+`--replace` keeps the current compositor and application windows running. Compositor changes take effect at the next login. Reloading GTK/Dux preserves the independent host, desktop provider and workflow subprocesses. Restarting the host itself interrupts its owned jobs. If a service reload fails, the installer attempts to restore the preceding services. Development builds and nested tests never change the installed snapshot.
 
 Bindings that require a newer compositor are activated at the next login, after the previous compositor has stopped. Installing a snapshot keeps existing search bindings compatible with the running desktop. The login launcher validates the upgraded bindings with the selected snapshot's compositor before saving them; a validation failure leaves the configuration unchanged.
 
@@ -162,7 +162,7 @@ Node settings show controls for the node's actual job. Scripts have source edito
 
 Data connections evaluate lazily. Signals activate recipients and carry named arguments. One event shares upstream data computations, while the next event evaluates them afresh. Data cycles are rejected; signal loops have bounded evaluation time and steps. [Nodes and signals](nodes-and-signals.md) documents typing, casts, extension schemas, and the control API.
 
-Running a node, branch, or workspace is explicit. Independent branches can run concurrently. Writable shell/agent work in the same canonical directory is serialized. Shell steps receive upstream results in `FLOWWM_INPUTS`, typed data in `FLOWWM_DATA_INPUTS`, and signal arguments in `FLOWWM_ARG_*`. Stop terminates owned subprocess groups. Human review and failure branches remain available for recovery workflows.
+Running a node, branch, or workspace is explicit. Independent branches can run concurrently. Writable shell/agent work in the same canonical directory is serialized. Shell steps receive typed data in `FLOWWM_DATA_INPUTS` and signal arguments in `FLOWWM_ARG_*`. Sequence steps through explicit pins; use a Join for correlated all-parent completion. Interrupt signals owned subprocess groups with configured escalation. Human tasks and decisions explicitly wait for resolution; failure pins can connect recovery steps. Metrics, timers, watchers and Receive are lifecycle-managed sources with no ordinary Run/Stop controls.
 
 ## Terminal session extension
 
@@ -183,11 +183,14 @@ The extension observer discovers already running or explicitly addressed executa
 | `~/.config/flow-wm/.shell/` | Private XDG compatibility paths used only by Dux |
 | `~/.config/flow-wm/extensions/` | Declarative node/type/cast manifests |
 | `~/.config/flow-wm/agent.json` | Optional graph-assistant command |
-| `~/.local/share/flowwm/state.json` | Persistent graphs and recipes |
+| `~/.local/share/flowwm/runtime.json` | Native runtime document (format 3) |
+| `~/.local/share/flowwm/presentation.json`, `desktop.json` | WM layout/recipes and independent desktop bindings |
+| `~/.config/flow-wm/runtime.kdl` | Headless limits, sources, cancellation and peer settings |
 | `~/.local/share/flowwm/installed/` | Versioned runtime snapshots |
 | `~/.local/state/flow-wm/`, `~/.cache/flow-wm/` | Private Dux state and caches |
 | `~/.local/state/flow-wm/dms/wallpaper.png` | Bundled wallpaper copied on first installation |
-| `$XDG_RUNTIME_DIR/flowwm.sock` | Local control socket |
+| `$XDG_RUNTIME_DIR/flowwm.sock` | Current WM service socket |
+| `$XDG_RUNTIME_DIR/flow-core.sock`, `flowwm-desktop.sock` | Independent runtime and desktop-provider sockets |
 
 XDG directory overrides are respected. `FLOWWM_CONFIG_DIR` selects an explicit FlowWM configuration directory. Edit `config.kdl` directly: niri validates and reloads compositor settings and global bindings. Restart the graph service for graph bindings and motion changes. Reinstalling preserves this file; no binding generation step is needed.
 
@@ -216,13 +219,15 @@ Graph keys use niri's key names and modifiers. `action="none"` disables a graph 
 
 Running nodes use a green backdrop tint, including the headers and footers of live window cards. `running-color` sets the tint color, and `running-opacity` controls its strength from `0.0` (disabled) to `1.0` (solid), defaulting to `0.17`. Window previews and selection outlines retain their own colors. The former `running-width` setting is still accepted for compatibility: zero disables the tint when `running-opacity` is omitted; other widths use the default tint strength.
 
+`flow { notification-command "notify-send"; }` selects the notification command prefix. An empty `notification-command;` disables popups while retaining semantic attention.
+
 The default wallpaper is attached to niri's output backdrop, so it stays fixed while workspace rows scroll. This is configured with `place-within-backdrop` rules for Quickshell and the Dux blur wallpaper, together with a transparent layout background.
 
 Place personal startup hooks, output rules, window rules, and an `environment { ... }` block in `config.kdl`. Environment entries accept strings or `null` to unset a variable. The session uses niri's parser to supply the same values to the compositor, graph service, Dux, and their children. Environment changes reach services when restarted and startup hooks at the next login. Ordinary applications keep the user's normal XDG directories.
 
 The installer migrates the former `keybindings.json`, generated `keybindings.kdl`, `local.kdl`, and `environment.json` into `config.kdl`, preserving custom keys and startup settings. Originals are archived under `~/.local/state/flow-wm/config-backups/before-flat-layout/`. Dux's generated KDL files move alongside its settings in `dms/`. Unused application profiles left by the old private XDG home are archived there too; cleanup waits until no process uses that home.
 
-Graphs from previous versions remain in the existing data directory. Older private desktop preferences under `~/.local/state/flowwm/desktop/` are left in place; review and copy desired settings into the new profile. Ordinary niri configuration is not imported. Back up `state.json` and your configuration before experimenting with older binaries.
+Old `state.json` and `runtime-v2.json` files remain untouched and are rejected by the current host. There is no automatic live migration. Older private desktop preferences under `~/.local/state/flowwm/desktop/` are left in place; review and copy desired settings into the new profile. Ordinary niri configuration is not imported. Preserve those files and configuration separately. Current-architecture backups can be restored explicitly with `--rollback --restore-data` while all persistence owners are stopped.
 
 ## Develop and verify
 
@@ -247,8 +252,11 @@ The test suite uses local commands and fake notification events; it does not inv
 A standalone development window is also available:
 
 ```sh
-cargo build --locked
-./target/debug/flowwm --data-dir /tmp/flowwm-dev --socket /tmp/flowwm-dev.sock start --windowed --example
+cargo build --workspace --locked
+./target/debug/flow-core --data-dir /tmp/flowwm-dev
+# In separate terminals with the same runtime environment:
+./target/debug/flowwm-desktop
+./target/debug/flowwm start --windowed
 ```
 
 Standalone mode supplies native fallback creation/search dialogs. Integrated Dux connection search and compositor-owned live previews require the complete FlowWM desktop.
@@ -273,3 +281,5 @@ flowwm performance
 The graph and catalog are exposed over a user-only Unix socket. Catalog updates are event-driven and omit node output and activity logs. `--socket` and `--data-dir` isolate development instances. State is written atomically. Interrupted workflow processes restart as stopped nodes; application IDs remain bound only within the same compositor session.
 
 FlowWM is GPL-3.0-or-later. The vendored compositor and Dux sources retain their licenses and attribution. Component revisions and source-update commands are recorded in [components.json](../components.json).
+
+For explicit startup with another Linux supervisor, native persistence, current protocols and unsupported-document handling, see [Runtime interfaces](runtime.md).

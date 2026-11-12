@@ -9,6 +9,8 @@ import time
 
 
 def request(path, payload):
+    if isinstance(payload, dict) and "action" in payload:
+        payload = {"wm_protocol":1,"command":payload}
     with socket.socket(socket.AF_UNIX) as channel:
         channel.settimeout(3)
         channel.connect(str(path))
@@ -41,7 +43,7 @@ def run(root, runtime, process, application, environment):
     niri_socket = wait(lambda: next(runtime.glob("niri.*.sock"), None), process)
     support = request(niri_socket, "NodeRowSupport")
     assert support == {"NodeRowSupport": {"version": 1}}
-    catalog = lambda: request(flow_socket, {"op": "catalog"})
+    catalog = lambda: request(flow_socket, {"action": "catalog"})
     def ready():
         value = catalog()
         return value if len(value["workspaces"]) >= 2 else None
@@ -52,7 +54,7 @@ def run(root, runtime, process, application, environment):
     first, second = groups[:2]
 
     def ui(action, **arguments):
-        request(flow_socket, {"op": "ui", "command": {"action": action, **arguments}})
+        request(flow_socket, {"action": "ui", "command": {"action": action, **arguments}})
 
     def activate(group):
         request(niri_socket, {"Action": {"FocusWorkspace": {"reference": {"Id": group["row"]["id"]}}}})
@@ -88,7 +90,7 @@ def run(root, runtime, process, application, environment):
     selected = create("Native row one")
     ui("select", id=selected)
     ui("fit")
-    wait(lambda: request(flow_socket, {"op": "performance"}).get("transition_open", {}).get("count", 0) > 0, process)
+    wait(lambda: request(flow_socket, {"action": "performance"}).get("transition_open", {}).get("count", 0) > 0, process)
     time.sleep(0.4)
     directory = root / "artifacts/native-workspace"
     directory.mkdir(parents=True, exist_ok=True)
@@ -125,7 +127,7 @@ def run(root, runtime, process, application, environment):
     try:
         wait(lambda: any(w["id"] == live_window["id"] and w["is_focused"] for w in request(niri_socket, "Windows")["Windows"]), process)
     except TimeoutError:
-        print(json.dumps({"windows":request(niri_socket,"Windows"),"catalog":catalog(),"state":request(flow_socket,{"op":"status"}),"performance":request(flow_socket,{"op":"performance"})},indent=2),flush=True)
+        print(json.dumps({"windows":request(niri_socket,"Windows"),"catalog":catalog(),"state":request(flow_socket,{"action":"view"}),"performance":request(flow_socket,{"action":"performance"})},indent=2),flush=True)
         raise
     assert len(rows()) == 2, "expanding a client must preserve its native Nodes row"
     ui("toggle")
@@ -147,7 +149,7 @@ def run(root, runtime, process, application, environment):
     try:
         wait(lambda: any(w["title"] == "Native window row" and w["workspace_id"] == second["row"]["id"] for w in request(niri_socket, "Windows")["Windows"]) and rows() == [first["row"]["id"]], process)
     except TimeoutError:
-        print(json.dumps({"rows": rows(), "windows": request(niri_socket, "Windows"), "catalog": catalog(), "performance": request(flow_socket, {"op": "performance"})}, indent=2), flush=True)
+        print(json.dumps({"rows": rows(), "windows": request(niri_socket, "Windows"), "catalog": catalog(), "performance": request(flow_socket, {"action": "performance"})}, indent=2), flush=True)
         compositor_capture("failed-mixed-row.png")
         raise
     request(niri_socket, {"Action": {"OpenOverview": {}}})
@@ -158,21 +160,21 @@ def run(root, runtime, process, application, environment):
     activate(first)
     constant = create("Constant 42", "constant")
     display = create("Displayed input", "display")
-    state = request(flow_socket, {"op": "status"})
+    state = request(flow_socket, {"action": "view"})
     constant_node = next(n for n in state["nodes"] if n["id"] == constant)
     constant_node["flow"]["properties"] = {"value": 42}
     constant_node["position"] = {"x": 100, "y": 500}
-    request(flow_socket, {"op": "update", "node": constant_node})
-    request(flow_socket, {"op": "move", "id": display, "position": {"x": 600, "y": 500}})
-    request(flow_socket, {"op": "connect_pins", "connection": {"source": {"node": constant, "pin": "value"}, "target": {"node": display, "pin": "value"}}})
-    request(flow_socket, {"op": "evaluate", "id": display})
-    wait(lambda: any(n["id"] == display and n["flow"]["values"].get("value") == 42 for n in request(flow_socket, {"op": "status"})["nodes"]), process)
+    request(flow_socket, {"action": "update", "node": constant_node})
+    request(flow_socket, {"action": "move", "id": display, "position": {"x": 600, "y": 500}})
+    request(flow_socket, {"action": "connect_pins", "connection": {"source": {"node": constant, "pin": "value"}, "target": {"node": display, "pin": "value"}}})
+    request(flow_socket, {"action": "evaluate", "id": display})
+    wait(lambda: any(n["id"] == display and n["flow"]["values"].get("value") == 42 for n in request(flow_socket, {"action": "view"})["nodes"]), process)
     ui("select", id=display)
     ui("fit")
     capture_still(directory / "typed-data-canvas.png")
     compositor_capture("typed-data-graph.png")
     ui("arrange")
-    wait(lambda: next(w for w in request(flow_socket, {"op": "status"})["workspaces"] if w["id"] == first["id"])["graph_arranged"], process)
+    wait(lambda: next(w for w in request(flow_socket, {"action": "view"})["workflows"] if w["id"] == first["id"])["graph_arranged"], process)
     capture_still(directory / "arranged-graph.png")
     ui("edit", id=constant)
     time.sleep(0.2)

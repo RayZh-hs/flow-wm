@@ -8,8 +8,8 @@ installations remain independent.
 ```text
 crates/flow-core/    portable contracts, ownership, types and Vox evaluator
 crates/flow-builtins/ platform providers and evaluator workers
-crates/flow-host/    independent runtime, transports, storage, compatibility engine
-crates/flowwm/       CLI, GTK canvas, compatibility exports, application tests
+crates/flow-host/    independent host composition, transports, native runtime storage
+crates/flowwm/       CLI, GTK canvas, independent desktop provider, presentation
 components/niri/    RayZh-hs/niri, based on feature/tab-animations
 components/dms/     RayZh-hs/DankMaterialShell, based on master, including OCR
 config/             bindings and isolated nested-session configuration
@@ -29,8 +29,8 @@ DMS's shared QML library remains a pinned submodule, registered in the root
 
 Flow's runtime and provider contracts now live in `crates/flow-core`,
 `crates/flow-builtins`, and `crates/flow-host`. The latter builds the independent
-`flow-core` executable. See [runtime architecture, migration, and extension
-interfaces](runtime.md) for the current boundaries and compatibility adapter.
+`flow-core` executable. See [runtime architecture and extension
+interfaces](runtime.md) for the current native contracts.
 Vox is vendored at the validated fixed-width integer revision; no sibling checkout
 is required.
 
@@ -50,7 +50,7 @@ python3 scripts/dev.py nested --smoke
 
 `test` runs FlowWM's tests and strict Clippy, the native node-row and existing
 layer-shell compositor tests, the IPC crate tests, and DMS's FlowWM catalog tests.
-`cargo test --locked` at the root runs just the application tests. Session isolation
+`cargo build --workspace --locked` followed by `cargo test --workspace --locked` runs the core/provider/host/WM tests. Build first: WM integration fixtures launch the workspace host and desktop-provider binaries. Session isolation
 regressions run with `python3 -m unittest discover -s scripts -p 'test_install.py'`;
 DMS service routing is covered by `go test ./cmd/dms` from `components/dms/core`. For a complete
 compositor suite, use:
@@ -132,10 +132,10 @@ the snapshot, and attempts to restore
 the previous services if replacement fails. It requires an active installed FlowWM
 session and checks that the same compositor is still running before reloading.
 The compositor and application windows keep running; compositor updates require
-another login. Installed GTK restarts leave the independent `flowwm-core.service` and its executions running. Restarting the runtime itself, or an embedded development engine, stops its owned subprocesses. Existing
+another login. Installed GTK restarts leave the independent `flowwm-core.service` and its executions running. Restarting the host itself interrupts its owned subprocesses. The independent desktop provider continues observing the compositor while GTK is closed. Existing
 application processes retain their inherited environment.
 
-FlowWM uses `flowwm-compositor.service`, `flowwm-session.target`, `flowwm.service`,
+FlowWM uses `flowwm-core.service`, `flowwm-desktop.service`, `flowwm-compositor.service`, `flowwm-session.target`, `flowwm.service`,
 and `flowwm-dms.service`, plus the optional `flowwm-agent-sessions.service`
 extension. `flowwm-shutdown.target` ends the graphical session without requiring
 upstream niri units. Niri keeps `niri.service` and its original `dms.service` when
@@ -199,7 +199,8 @@ subtree exports preserve niri's and DMS's original repository structure.
 ## View performance and input checks
 
 ```sh
-python3 scripts/benchmark_views.py --windows 100 --samples 5 --verify
+python3 scripts/benchmark_views.py --windows 100 --samples 5 --output artifacts/view-benchmark/timing.json
+python3 scripts/benchmark_views.py --windows 6 --samples 2 --verify --output artifacts/view-benchmark/verification.json
 ```
 
 This starts a private Xvfb/niri desktop with static GTK application windows,
@@ -220,15 +221,15 @@ and is applied on its next commit, keeping preview buffers, borders, and input
 regions aligned without a synchronous per-frame IPC call. Payloads use the
 `NodeRowScene` schema and split at 16 windows to stay below Wayland's message
 buffer limit. Duplicate IDs and scenes exceeding 4,096 windows are rejected.
-The original `SetNodeRow` IPC remains supported for older clients/compositors.
+The explicit `SetNodeRow` compositor IPC is also available; runtime protocol versions are independent of this native geometry contract.
 
 
 `python3 scripts/smoke_desktop.py` starts a private Xvfb/niri session using the
 installer's real default profile. It checks Win+Space in both views, Alt+Space,
 and captures a wallpaper during workspace animation to verify that it stays
 fixed. It also follows Tab from an application node through connected Display
-creation, its parameter dialog, and Escape, at 2x output scale. Pass a saved
-`state.json` path to replay an existing graph in the private test session.
+creation, its parameter dialog, and Escape, at 2x output scale. Pass a current native format-3
+`runtime.json` path to replay an existing graph in the private test session.
 A local Dux IPC recorder keeps this check independent of the active shell.
 
 `python3 scripts/smoke_launcher.py` checks real Dux search fields and the FlowWM bridge in a private Xvfb/niri desktop with its own D-Bus session and XDG directories. It sends each search shortcut and typing, Backspace, and Shift with no delay, then checks the exact query and focus in connected and Spotlight layouts, including reopening while closing. Results and logs go to `artifacts/launcher-input/`. This requires Quickshell in addition to the desktop smoke dependencies. The catalog subscription carries launcher events directly; Dux acknowledges `KeyboardFocusReady` through its existing compositor socket only when the initialized field has active keyboard focus. The handoff has one bounded timer per opening and no idle polling.
@@ -286,7 +287,7 @@ use niri's existing visibility bookkeeping, including hidden-surface throttling.
 
 FlowWM retains one mapped canvas for every Nodes row. Row switches restore the
 active camera and selection. Per-row graph snapshots omit agent logs and output
-and are cached by engine revision. The normal niri/DMS event stream is unchanged;
+and are cached by WM view revision. The normal niri/DMS event stream is unchanged;
 these additions are request/response extensions, so DMS's existing catalog and
 bar geometry bridge need no additional timers or frame traffic.
 
@@ -297,3 +298,33 @@ priority over an underlying fullscreen window, invalid/duplicate roles, unmappin
 trailing empty rows, and output removal. `nested --smoke` adds the real GTK client;
 when `grim` is installed it also saves full compositor captures of live previews
 and overview.
+
+## Native runtime cutover
+
+All development, nested and smoke startup uses three independent processes:
+`flow-core`, `flowwm-desktop`, then GTK. Missing binaries cause startup failure.
+See [explicit startup without systemd](runtime.md#explicit-startup). Runtime format
+3, Orchestrator Protocol 3, Signal Protocol 1 and manifest 3 are the supported live
+contracts. Old state/envelopes and manifests are rejected without rewriting files.
+No import tool is linked into load/save.
+
+`runtime.kdl` configures scheduling, queues, timeouts, sources, interruption and
+peers. `config.kdl` owns UI and compositor policy. Installer shortcuts are upgraded
+once with backups; the running WM does not decode old requests.
+
+Installation records native document backups in each supported bundle's
+`data-backup/`. `--rollback --restore-data` explicitly restores that matching backup
+only while the runtime, desktop provider and GTK writer locks are free; replaced
+data is preserved under `before-rollback-*`. A compatible `--rollback --replace`
+keeps the running host and its current native data. A protocol/runtime change
+requires stopping and upgrading the host and all clients together. Pre-refactor
+bundles cannot be selected as runtime fallbacks.
+
+Additional checks:
+
+```sh
+python3 -m unittest discover -s sdk/python
+env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a python3 scripts/smoke_rendering.py
+python3 -m unittest discover -s extensions/agent-sessions
+python3 -m unittest discover -s scripts -p test_install.py
+```

@@ -61,20 +61,22 @@ def run(args):
             children.append(compositor)
             niri = wait(lambda: next(runtime.glob("niri.*.sock"), None), compositor)
             env.update(NIRI_SOCKET=str(niri), WAYLAND_DISPLAY=niri.name.split(".")[1], GDK_BACKEND="wayland")
+            from runtime import start as start_runtime
+            start_runtime(args.flowwm.resolve(), runtime, env, children, log)
             children.append(subprocess.Popen([str(args.flowwm.resolve()), "--data-dir", str(runtime / "data"), "start", "--dms", "--background"], env=env, stdout=log, stderr=log))
             flow = runtime / "flowwm.sock"
-            wait(lambda: request(flow, {"op": "catalog"}), compositor)
+            wait(lambda: request(flow, {"action": "catalog"}), compositor)
             def ui(action, **kw):
-                return request(flow, {"op": "ui", "command": {"action": action, **kw}})
+                return request(flow, {"action": "ui", "command": {"action": action, **kw}})
             def perf():
-                return request(flow, {"op": "performance"})
+                return request(flow, {"action": "performance"})
             def rows():
                 return request(niri, "NodeRows")["NodeRows"]
             def count(action):
                 return perf().get(action, {}).get("count", 0)
             children.append(subprocess.Popen([sys.executable, __file__, "--clients", str(args.windows)], env=env, stdout=log, stderr=log))
             wait(lambda: len(request(niri, "Windows")["Windows"]) == args.windows, compositor)
-            wait(lambda: len(request(flow, {"op": "catalog"})["nodes"]) >= args.windows, compositor)
+            wait(lambda: len(request(flow, {"action": "catalog"})["nodes"]) >= args.windows, compositor)
             time.sleep(0.4)
             # Warm both render paths and retained card metadata.
             ui("nodes")
@@ -83,7 +85,7 @@ def run(args):
             time.sleep(0.4)
             ui("windows")
             wait(lambda: not rows(), compositor)
-            request(flow, {"op": "performance", "reset": True})
+            request(flow, {"action": "performance", "reset": True})
             for _ in range(args.samples):
                 completed = count("transition_open")
                 ui("nodes")
@@ -97,7 +99,7 @@ def run(args):
                 ui("nodes")
                 wait(lambda: rows(), compositor)
                 time.sleep(0.4)
-                catalog = request(flow, {"op": "catalog"})
+                catalog = request(flow, {"action": "catalog"})
                 target = next(n for n in catalog["nodes"] if n.get("window_id"))
                 ui("select", id=target["id"])
                 def capture(name):
@@ -114,7 +116,7 @@ def run(args):
                 time.sleep(0.4)
                 chrome_before = capture_chrome("chrome-before-peek.png")
                 before = capture("nodes-before-peek.png")
-                positions = {n["id"]: n["position"] for n in request(flow, {"op": "status"})["nodes"]}
+                positions = {n["id"]: n["position"] for n in request(flow, {"action": "view"})["nodes"]}
                 for _ in range(3):
                     completed = count("transition_open")
                     ui("open", id=target["id"])
@@ -125,7 +127,7 @@ def run(args):
                     ui("toggle")
                     wait(lambda: count("transition_open") > completed, compositor)
                 after = capture("nodes-after-peek.png")
-                assert positions == {n["id"]: n["position"] for n in request(flow, {"op": "status"})["nodes"]}, "peek changed saved positions"
+                assert positions == {n["id"]: n["position"] for n in request(flow, {"action": "view"})["nodes"]}, "peek changed saved positions"
                 from PIL import Image, ImageChops
                 # Client titlebars can react to focus; compare the graph chrome
                 # separately so real application redraws cannot obscure drift.
@@ -160,7 +162,7 @@ def run(args):
                 time.sleep(0.05)
                 ui("zoom_in")
                 time.sleep(0.4)
-                assert all(n.get("column_mode") == "node" for n in request(flow, {"op": "catalog"})["nodes"] if n.get("window_id")), "camera input did not leave peek"
+                assert all(n.get("column_mode") == "node" for n in request(flow, {"action": "catalog"})["nodes"] if n.get("window_id")), "camera input did not leave peek"
                 ui("open", id=target["id"])
                 time.sleep(0.06)
                 ui("toggle")
@@ -178,9 +180,9 @@ def run(args):
                 subprocess.run(["xdotool", "click", "--repeat", "3", "5"], env=env, check=True)
                 time.sleep(0.4)
                 subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+p"], env=env, check=True)
-                wait(lambda: next(w for w in request(flow, {"op": "status"})["workspaces"] if w["id"] == catalog["selected_workspace"])["graph_arranged"], compositor)
+                wait(lambda: next(w for w in request(flow, {"action": "view"})["workflows"] if w["id"] == catalog["selected_workspace"])["graph_arranged"], compositor)
                 time.sleep(0.4)
-                arranged = {n["id"]: n["position"] for n in request(flow, {"op": "status"})["nodes"]}
+                arranged = {n["id"]: n["position"] for n in request(flow, {"action": "view"})["nodes"]}
                 row_sizes = [sum(p["y"] == y for p in arranged.values()) for y in {p["y"] for p in arranged.values()}]
                 result["arrangement"] = {"rows": len(row_sizes), "max_columns": max(row_sizes)}
                 if args.windows >= 6:
@@ -191,7 +193,7 @@ def run(args):
                     assert len({p["y"] for p in arranged.values()}) > 1, "Ctrl+P left numerous windows on one line"
                 subprocess.run(["xdotool", "key", "--clearmodifiers", "ctrl+p"], env=env, check=True)
                 time.sleep(0.4)
-                assert arranged == {n["id"]: n["position"] for n in request(flow, {"op": "status"})["nodes"]}, "repeated arrangement changed the layout"
+                assert arranged == {n["id"]: n["position"] for n in request(flow, {"action": "view"})["nodes"]}, "repeated arrangement changed the layout"
                 capture("arranged-windows.png")
                 arranged_chrome = capture_chrome("chrome-arranged.png")
                 for _ in range(8):
@@ -213,17 +215,17 @@ def run(args):
                     others = {w["id"] for w in request(niri, "Windows")["Windows"]} - {target["window_id"]}
                     subprocess.run(["xdotool", "key", "--clearmodifiers", "super+q"], env=env, check=True)
                     wait(lambda: not any(w["id"] == target["window_id"] for w in request(niri, "Windows")["Windows"]), compositor)
-                    wait(lambda: not any(n["id"] == target["id"] for n in request(flow, {"op": "status"})["nodes"]), compositor)
+                    wait(lambda: not any(n["id"] == target["id"] for n in request(flow, {"action": "view"})["nodes"]), compositor)
                     # The other windows share the same application process. It
                     # must remain alive without retaining the closed node.
                     time.sleep(0.2)
-                    assert not any(n["id"] == target["id"] for n in request(flow, {"op": "status"})["nodes"])
+                    assert not any(n["id"] == target["id"] for n in request(flow, {"action": "view"})["nodes"])
                     assert others == {w["id"] for w in request(niri, "Windows")["Windows"]}, "closing one window affected other windows of the application"
 
                 ui("select", id=target["id"])
                 close_with_key(target)
                 result["verified"].extend(["Ctrl+P wraps large layers and is idempotent", "Win+Q removes the selected Nodes window while its shared process remains alive"])
-                remaining = [n for n in request(flow, {"op": "catalog"})["nodes"] if n.get("window_id")]
+                remaining = [n for n in request(flow, {"action": "catalog"})["nodes"] if n.get("window_id")]
                 if remaining:
                     target = remaining[0]
                     ui("select", id=target["id"])
@@ -232,7 +234,7 @@ def run(args):
                     wait(lambda: any(w["id"] == target["window_id"] and w["is_focused"] for w in request(niri, "Windows")["Windows"]), compositor)
                     close_with_key(target)
                     result["verified"].append("Win+Q removes the focused Windows node")
-                remaining = [n for n in request(flow, {"op": "catalog"})["nodes"] if n.get("window_id")]
+                remaining = [n for n in request(flow, {"action": "catalog"})["nodes"] if n.get("window_id")]
                 if remaining:
                     ui("nodes")
                     time.sleep(0.4)
@@ -242,7 +244,7 @@ def run(args):
                     close_with_key(target)
                     result["verified"].append("Win+Q removes a focused peek window")
                 for view in ("nodes", "windows"):
-                    remaining = [n for n in request(flow, {"op": "catalog"})["nodes"] if n.get("window_id")]
+                    remaining = [n for n in request(flow, {"action": "catalog"})["nodes"] if n.get("window_id")]
                     if not remaining:
                         break
                     target = remaining[0]
@@ -250,7 +252,7 @@ def run(args):
                     time.sleep(0.4)
                     request(niri, {"Action": {"CloseWindow": {"id": target["window_id"]}}})
                     wait(lambda: not any(w["id"] == target["window_id"] for w in request(niri, "Windows")["Windows"]), compositor)
-                    wait(lambda: not any(n["id"] == target["id"] for n in request(flow, {"op": "status"})["nodes"]), compositor)
+                    wait(lambda: not any(n["id"] == target["id"] for n in request(flow, {"action": "view"})["nodes"]), compositor)
                     result["verified"].append(f"external close removes an unconnected {view} window despite its shared process")
 
                 workspaces = sorted(request(niri, "Workspaces")["Workspaces"], key=lambda w: w["idx"])
@@ -260,7 +262,7 @@ def run(args):
                     request(niri, {"Action": {"FocusWorkspace": {"reference": {"Id": row}}}})
                     wait(lambda: any(w["id"] == row and w["is_focused"] for w in request(niri, "Workspaces")["Workspaces"]), compositor)
                     def selected():
-                        value = request(flow, {"op": "catalog"})
+                        value = request(flow, {"action": "catalog"})
                         return any(g["id"] == value["selected_workspace"] and g["row"] and g["row"]["id"] == row for g in value["workspaces"])
                     wait(selected, compositor)
 
@@ -277,7 +279,7 @@ def run(args):
                 other = open_probes(first)
                 probe = open_probes(second)
                 assert (other["app_id"], other["title"]) == (probe["app_id"], probe["title"])
-                target = wait(lambda: next((n for n in request(flow, {"op": "catalog"})["nodes"] if n.get("window_id") == probe["id"]), None), compositor)
+                target = wait(lambda: next((n for n in request(flow, {"action": "catalog"})["nodes"] if n.get("window_id") == probe["id"]), None), compositor)
                 ui("nodes")
                 wait(lambda: second in rows(), compositor)
                 ui("fit")

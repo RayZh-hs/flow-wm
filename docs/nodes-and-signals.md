@@ -77,8 +77,7 @@ Names must be ASCII identifiers. Names that collide after uppercasing, such as
 processes do not inherit arguments from unrelated signals.
 
 Shell and agent nodes receive their resolved data inputs as a JSON record in
-`FLOWWM_DATA_INPUTS`. The existing `FLOWWM_INPUTS` variable remains available for
-older workflow dependencies. Successful shell/agent handoffs emit `out`; failures
+`FLOWWM_DATA_INPUTS`. Successful shell/agent handoffs emit `out`; failures
 emit `failed`. Review nodes emit after approval or rejection. Signals delivered
 while a shell/agent node is busy wait in order.
 
@@ -182,14 +181,14 @@ cuts either kind of connection. Display cards show their last evaluated input.
 
 ## Extensions
 
-Version 2 manifests in `~/.config/flow-wm/extensions/` can register `types`,
-`casts`, `nodes`, and `macros`. Version 1 macro manifests continue to load.
+Version 3 manifests in `~/.config/flow-wm/extensions/` can register `types`,
+`casts`, `nodes`, and `macros`. Older manifest versions are rejected.
 Loading a definition does not execute its source. This example adds a nominal
 type, a cast, and a data node:
 
 ```json
 {
-  "version":2,
+  "version":3,
   "types":[{"name":"example.Count","representation":{"kind":"int"}}],
   "casts":[{
     "from":{"kind":"named","name":"example.Count"},
@@ -212,33 +211,38 @@ are saved with the graph. Recipes include pin connections, type definitions,
 casts, and node definitions; instantiation remaps endpoints and clears published
 results. A conflicting recipe definition is rejected.
 
-## Control API
+## Current WM authoring API
 
 Send these objects through `flowwm send '<JSON>'`:
 
 ```json
-{"op":"pins","id":"NODE"}
-{"op":"connect_pins","connection":{"source":{"node":"A","pin":"value"},"target":{"node":"B","pin":"amount"}}}
-{"op":"disconnect_pins","connection":{"source":{"node":"A","pin":"value"},"target":{"node":"B","pin":"amount"}}}
-{"op":"evaluate","id":"B"}
-{"op":"activate","id":"B","args":{"offset":2}}
-{"op":"emit","source":{"node":"A","pin":"out"},"args":{"offset":2}}
-{"op":"publish_properties","id":"DASHBOARD","properties":{"selection":"window-123"}}
+{"action":"pins","id":"NODE"}
+{"action":"connect_pins","connection":{"source":{"node":"A","pin":"value"},"target":{"node":"B","pin":"amount"}}}
+{"action":"disconnect_pins","connection":{"source":{"node":"A","pin":"value"},"target":{"node":"B","pin":"amount"}}}
+{"action":"evaluate","id":"B"}
+{"action":"activate","id":"B","args":{"offset":2}}
+{"action":"emit","source":{"node":"A","pin":"out"},"args":{"offset":2}}
+{"action":"publish_properties","id":"DASHBOARD","properties":{"selection":"window-123"}}
 ```
 
-Evaluation and activation are asynchronous. Inspect `status` for published values,
-node status, and errors. `register_type`, `register_cast`, and `register_node`
+Evaluation and activation are asynchronous. Use `flowwm status` for the native host snapshot, or the current WM `view` service for display values. `register_type`, `register_cast`, and `register_node`
 accept a `definition` using the same schema as manifests. `activate` runs a node
 with an argument record; `emit` sends an output signal to its recipients. Running
 a primitive with a signal input activates it with an empty record; running a
 data-only primitive requests its data. Running a workspace starts signal roots
 and leaves passive producers to be requested by their consumers.
 
-Older saved `dependencies` retain their completion-gated behavior and existing
-success/failure policies. The named-pin API provides the signal/data model for
-new graphs. Both kinds of graph survive save/load and recipe operations.
+Sequencing uses typed signal edges. Join nodes wait for their explicitly named
+inputs within one correlation, emit once, and route a `failed` input terminally.
+Decisions and human tasks wait for explicit resolution and expose accepted/rejected
+pins. There are no implicit dependency barriers or global review flags.
 
-The generic `expose_output` operation adds or replaces a named output pin without
+Metrics, timers, threshold watchers and Receive are registered sources. They install
+with workflow/session/provider lifecycle, cannot be manually run/stopped, and release
+subscriptions and owned sample processes on teardown or configuration change.
+Metric Sample is a separate invoked node for a manual sample.
+
+The SDK `expose_output` operation (current ReplaceGraph) adds or replaces a named output pin without
 editing a running node's source. Connected types are validated before committing
 the change. The bundled [terminal session extension](../extensions/agent-sessions/README.md)
 uses this operation for `on_session_finish`; all agent-specific detection and
@@ -256,8 +260,8 @@ never sends a notification. The desktop needs `notify-send` (libnotify).
 To raise an alert for an existing node or window from a script:
 
 ```sh
-flowwm send '{"op":"alert","id":"NODE_ID","message":"Ready for review","critical":false}'
-flowwm send '{"op":"clear_alert","id":"NODE_ID"}'
+flowwm send '{"action":"alert","id":"NODE_ID","message":"Ready for review","critical":false}'
+flowwm send '{"action":"clear_alert","id":"NODE_ID"}'
 ```
 
 DMS also marks workspaces when an unfocused window sends a notification with a

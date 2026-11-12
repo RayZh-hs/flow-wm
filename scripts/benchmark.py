@@ -26,14 +26,14 @@ def niri(value):
 
 
 def flow(value):
-    reply = request(os.environ["XDG_RUNTIME_DIR"] + "/flowwm.sock", value)
+    reply = request(os.environ["XDG_RUNTIME_DIR"] + "/flowwm.sock", {"wm_protocol":1,"command":value})
     if "error" in reply:
         raise RuntimeError(reply["error"])
     return reply["ok"]
 
 
 def ui(action, **arguments):
-    return flow({"op": "ui", "command": {"action": action, **arguments}})
+    return flow({"action": "ui", "command": {"action": action, **arguments}})
 
 
 def wait_for(predicate):
@@ -53,7 +53,7 @@ def graph_mapped():
 
 
 def count(name):
-    return flow({"op": "performance"}).get(name, {}).get("count", 0)
+    return flow({"action": "performance"}).get(name, {}).get("count", 0)
 
 
 def main():
@@ -66,7 +66,7 @@ def main():
         parser.error("--samples must be between 1 and 30")
     original = niri("FocusedWindow")["FocusedWindow"]
     original_row = next((w for w in niri("Workspaces")["Workspaces"] if w["is_focused"]), None)
-    initial = flow({"op": "catalog"})
+    initial = flow({"action": "catalog"})
     was_visible = initial["presentation"]["graph_visible"]
     target_nodes = False
     if args.window is not None:
@@ -83,12 +83,12 @@ def main():
         wait_for(lambda: not graph_mapped())
         if args.window is not None:
             niri({"Action": {"FocusWindow": {"id": args.window}}})
-        flow({"op": "performance", "reset": True})
+        flow({"action": "performance", "reset": True})
         for _ in range(args.samples):
             completed = count("transition_open")
             started = time.perf_counter()
             ui("nodes")
-            wait_for(lambda: flow({"op": "catalog"})["presentation"]["graph_visible"])
+            wait_for(lambda: flow({"action": "catalog"})["presentation"]["graph_visible"])
             prepared = (time.perf_counter() - started) * 1000
             wait_for(graph_mapped)
             mapped = (time.perf_counter() - started) * 1000
@@ -102,7 +102,7 @@ def main():
             started = time.perf_counter()
             subprocess.run(["flowwm", "catalog"], stdout=subprocess.DEVNULL, check=True)
             command.append((time.perf_counter() - started) * 1000)
-        report = {"samples": samples, "median_mapped_ms": statistics.median(s["mapped_ms"] for s in samples), "median_cli_catalog_ms": statistics.median(command), "stages": flow({"op": "performance"})}
+        report = {"samples": samples, "median_mapped_ms": statistics.median(s["mapped_ms"] for s in samples), "median_cli_catalog_ms": statistics.median(command), "stages": flow({"action": "performance"})}
         output = json.dumps(report, indent=2) + "\n"
         print(output, end="")
         if args.output:

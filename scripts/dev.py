@@ -47,10 +47,12 @@ def main():
                 else:
                     run(*cargo(name, "build", *(["--release"] if args.release else [])))
             elif name == "flowwm":
+                run(*cargo(name, "build"))
                 run(*cargo(name, "test"))
                 run(*cargo(name, "clippy", "--all-targets", "--", "-D", "warnings"))
                 run("python3", "-m", "unittest", "discover", "-s", "scripts", "-p", "test_install.py")
                 run("python3", "-m", "unittest", "discover", "-s", "extensions/agent-sessions")
+                run("python3", "-m", "unittest", "discover", "-s", "sdk/python")
             elif name == "niri":
                 run(*cargo(name, "test", "--lib", "node_rows"))
                 run(*cargo(name, "test", "--lib", "tests::layer_shell"))
@@ -77,6 +79,8 @@ def main():
         data = Path(temporary) / "data" if args.smoke else ROOT / "artifacts/nested/data"
         command = [str(compositor), "--config", str(ROOT / "config/nested.kdl")]
         shell = None
+        host = None
+        provider = None
         print("+ " + shlex.join(command), flush=True)
         process = subprocess.Popen(command, env=environment)
         try:
@@ -85,6 +89,12 @@ def main():
             child_environment = environment.copy()
             child_environment["NIRI_SOCKET"] = str(niri_socket)
             child_environment["WAYLAND_DISPLAY"] = niri_socket.name.split(".")[1]
+            from smoke_native import wait
+            host_socket = Path(temporary) / "flow-core.sock"
+            host = subprocess.Popen([str(app.with_name("flow-core")), "--socket", str(host_socket), "--data-dir", str(data)], env=child_environment)
+            wait(lambda: host_socket.exists(), host)
+            provider = subprocess.Popen([str(app.with_name("flowwm-desktop"))], env=child_environment)
+            wait(lambda: (Path(temporary) / "flowwm-desktop.sock").exists(), provider)
             shell = subprocess.Popen([str(app), "--data-dir", str(data), "start", "--dms", "--background"], env=child_environment)
             if args.smoke:
                 from smoke_native import run as smoke
@@ -99,7 +109,7 @@ def main():
                 with socket.socket(socket.AF_UNIX) as channel:
                     channel.settimeout(2)
                     channel.connect(str(Path(temporary) / "flowwm.sock"))
-                    channel.sendall((json.dumps({"op": "ui", "command": {"action": "quit"}}) + "\n").encode())
+                    channel.sendall((json.dumps({"wm_protocol":1,"command":{"action": "ui", "command": {"action": "quit"}}}) + "\n").encode())
             except OSError:
                 pass
             if shell is not None and shell.poll() is None:
@@ -108,6 +118,10 @@ def main():
                 except subprocess.TimeoutExpired:
                     shell.terminate()
                     shell.wait(timeout=5)
+            for child in (provider, host):
+                if child is not None and child.poll() is None:
+                    child.terminate()
+                    child.wait(timeout=10)
             if process.poll() is None:
                 process.terminate()
                 process.wait(timeout=10)

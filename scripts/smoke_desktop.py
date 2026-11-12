@@ -87,13 +87,11 @@ def run(state_file=None):
         config.write_text(config.read_text().replace('namespace="dms:spotlight"', 'namespace="dms:spotlight" timeout-ms=0'))
         config.write_text('workspace "First"\nworkspace "Second"\noutput "winit" { scale 2; }\nanimations { slowdown 4.0; }\n' + config.read_text().replace('input {', 'input {\n    mod-key-nested "Super"', 1))
         if state_file:
-            state = json.loads(Path(state_file).read_text())
-            group = max(state["workspaces"], key=lambda w: sum(n["kind"] == "display" and n["workspace"] == w["id"] for n in state["nodes"]))
-            group["row"].update(name="First", output="winit", index=1)
-            group["view"] = "windows"
-            state["selected_workspace"] = group["id"]
+            document=json.loads(Path(state_file).read_text())
+            if document.get("version")!=3 or "runtime" not in document:
+                raise ValueError("Smoke fixtures require a current native runtime document")
             (runtime / "data").mkdir()
-            (runtime / "data/state.json").write_text(json.dumps(state))
+            (runtime / "data/runtime.json").write_text(json.dumps(document))
         try:
             xvfb = subprocess.Popen(["Xvfb", "-displayfd", "1", "-screen", "0", "3200x2000x24", "-nolisten", "tcp", "-ac"], stdout=subprocess.PIPE, stderr=log)
             children.append(xvfb)
@@ -104,9 +102,11 @@ def run(state_file=None):
             environment.update(NIRI_SOCKET=str(niri_socket), WAYLAND_DISPLAY=niri_socket.name.split(".")[1])
             children.append(subprocess.Popen([sys.executable, __file__, "--wallpaper"], env=environment | {"LD_PRELOAD": ctypes.util.find_library("gtk4-layer-shell")}, stdout=log, stderr=log))
             wait(lambda: any(layer["namespace"] == "quickshell" for layer in request(niri_socket, "Layers")["Layers"]), compositor)
+            from runtime import start as start_runtime
+            start_runtime(ROOT / "target/debug/flowwm", runtime, environment, children, log)
             children.append(subprocess.Popen([str(ROOT / "target/debug/flowwm"), "--data-dir", str(runtime / "data"), "start", "--dms", "--background"], env=environment, stdout=log, stderr=log))
             flow_socket = runtime / "flowwm.sock"
-            catalog = lambda: request(flow_socket, {"op": "catalog"})
+            catalog = lambda: request(flow_socket, {"action": "catalog"})
             wait(lambda: len(catalog()["workspaces"]) >= 2, compositor)
             xwindow = subprocess.check_output(["xdotool", "search", "--name", "^niri$"], env=environment, text=True).splitlines()[0]
             subprocess.run(["xdotool", "windowfocus", "--sync", xwindow], env=environment, check=True)
@@ -156,16 +156,16 @@ def run(state_file=None):
             assert ImageChops.difference(before, during).getbbox() is None, "wallpaper must stay fixed during workspace scrolling"
             wait(lambda: catalog()["selected_workspace"] == second["id"], compositor)
             time.sleep(2)
-            seed = json.loads(subprocess.check_output([str(ROOT / "target/debug/flowwm"), "add", "human", "First toggle must show this node"], env=environment, text=True))["id"]
-            opened = request(flow_socket, {"op":"performance"}).get("transition_open", {}).get("count", 0)
+            seed = json.loads(subprocess.check_output([str(ROOT / "target/debug/flowwm"), "add", "shell", "First toggle must show this node", "--command", "sleep 60"], env=environment, text=True))["id"]
+            opened = request(flow_socket, {"action":"performance"}).get("transition_open", {}).get("count", 0)
             key("super+Tab")
-            wait(lambda: request(flow_socket, {"op":"performance"}).get("transition_open", {}).get("count", 0) > opened, compositor)
+            wait(lambda: request(flow_socket, {"action":"performance"}).get("transition_open", {}).get("count", 0) > opened, compositor)
             first_toggle = capture("first-toggle-existing-node.png")
             assert card_pixels(first_toggle) > 5000, "the first toggle must fit the graph before rendering existing nodes"
-            request(flow_socket, {"op":"ui", "command":{"action":"select", "id":seed}})
+            request(flow_socket, {"action":"ui", "command":{"action":"select", "id":seed}})
             idle = settled_capture("idle-node.png")
             key("super+Return")
-            status = lambda: next(n['status'] for n in request(flow_socket, {"op":"status"})['nodes'] if n['id'] == seed)
+            status = lambda: next(n['status'] for n in request(flow_socket, {"action":"view"})['nodes'] if n['id'] == seed)
             wait(lambda: status() == 'running', compositor)
             running = settled_capture("running-node.png")
             green = sum(g > ig + 5 and g-r > ig-ir + 3 and g-b > ig-ib + 3
@@ -173,11 +173,11 @@ def run(state_file=None):
             assert green > 80, "running nodes must show the configured green tint"
             key("super+q")
             wait(lambda: status() == 'stopped', compositor)
-            request(flow_socket, {"op":"delete", "id":seed})
+            request(flow_socket, {"action":"delete", "id":seed})
             deleting = capture("node-deleting.png")
             deleted = settled_capture("node-deleted.png")
             assert ImageChops.difference(deleting, deleted).getbbox() is not None, "deleted cards must animate before disappearing"
-            assert all(n['id'] != seed for n in request(flow_socket, {"op":"status"})['nodes'])
+            assert all(n['id'] != seed for n in request(flow_socket, {"action":"view"})['nodes'])
             search("super+space", ["openQuery", "@ + "])
             assert catalog()["presentation"]["graph_visible"], "creation search must keep Nodes view"
             search("alt+space", ["toggle"])
@@ -188,27 +188,27 @@ def run(state_file=None):
             wait(lambda: catalog()["selected_workspace"] == first["id"], compositor)
             children.append(subprocess.Popen([sys.executable, __file__, "--application"], env=environment, stdout=log, stderr=log))
             source = wait(lambda: next((n["id"] for n in catalog()["nodes"] if n["title"] == "Application connection source"), None), compositor)
-            opened = request(flow_socket, {"op":"performance"}).get("transition_open", {}).get("count", 0)
+            opened = request(flow_socket, {"action":"performance"}).get("transition_open", {}).get("count", 0)
             key("super+Tab")
-            wait(lambda: request(flow_socket, {"op":"performance"}).get("transition_open", {}).get("count", 0) > opened, compositor)
+            wait(lambda: request(flow_socket, {"action":"performance"}).get("transition_open", {}).get("count", 0) > opened, compositor)
             new_row = capture("first-toggle-new-row.png")
             assert card_pixels(new_row) > 5000, "a newly allocated row must fit on its first toggle even after another row was shown"
-            request(flow_socket, {"op": "ui", "command": {"action": "select", "id": source}})
-            request(flow_socket, {"op": "ui", "command": {"action": "fit"}})
+            request(flow_socket, {"action": "ui", "command": {"action": "select", "id": source}})
+            request(flow_socket, {"action": "ui", "command": {"action": "fit"}})
             wait(lambda: catalog()["presentation"]["graph_visible"] and not any(w["is_focused"] for w in request(niri_socket, "Windows")["Windows"]), compositor)
             key("Tab")
             wait(lambda: catalog()["presentation"].get("lookup_node") == source, compositor)
             # Windows now expose only the typed on_exit signal by default. Add
             # an explicit data pin for this data-to-Display creation workflow.
-            window_node = next(n for n in request(flow_socket, {"op":"status"})['nodes'] if n['id'] == source)
+            window_node = next(n for n in request(flow_socket, {"action":"view"})['nodes'] if n['id'] == source)
             window_node['flow']['outputs'].append({'name':'output', 'ty':{'kind':'string'}})
-            request(flow_socket, {"op":"update", "node":window_node})
+            request(flow_socket, {"action":"update", "node":window_node})
             display = next(m for m in catalog()["macros"] if m["kind"] == "display")
-            request(flow_socket, {"op": "ui", "command": {"action": "create_connected", "id": display["id"], "source": {"node": source, "pin": "output"}, "input": "value"}})
-            wait(lambda: any(edge["source"]["node"] == source for edge in request(flow_socket, {"op": "status"})["connections"]), compositor)
+            request(flow_socket, {"action": "ui", "command": {"action": "create_connected", "id": display["id"], "source": {"node": source, "pin": "output"}, "input": "value"}})
+            wait(lambda: any(edge["source"]["node"] == source for edge in request(flow_socket, {"action": "view"})["connections"]), compositor)
             wait(lambda: any(layer["namespace"] == "flowwm-dialog" for layer in request(niri_socket, "Layers")["Layers"]), compositor)
             dialog = settled_capture("display-created.png")
-            state = request(flow_socket, {"op": "status"})
+            state = request(flow_socket, {"action": "view"})
             edge = next(e for e in state["connections"] if e["source"]["node"] == source)
             assert next(n for n in state["nodes"] if n["id"] == edge["target"]["node"])["kind"] == "display"
             key("Escape")
@@ -217,7 +217,7 @@ def run(state_file=None):
             assert sum(v > 30 for v in ImageChops.difference(dialog, dismissed).convert("L").tobytes()) > 1000, "the parameter dialog must render visibly and dismiss with Escape"
             assert any(w["title"] == "Application connection source" for w in request(niri_socket, "Windows")["Windows"])
             def ui(action, **values):
-                return request(flow_socket, {"op":"ui", "command":{"action":action, **values}})
+                return request(flow_socket, {"action":"ui", "command":{"action":action, **values}})
 
             def dialog_open():
                 return any(layer["namespace"] == "flowwm-dialog" for layer in request(niri_socket, "Layers")["Layers"])
@@ -259,7 +259,7 @@ def run(state_file=None):
             key("Return")
             wait(lambda: not dialog_open(), compositor)
             sink = next(n["id"] for n in catalog()["nodes"] if n["kind"] == "display" and n["workspace"] == second["id"])
-            request(flow_socket, {"op":"arrange", "positions":[(constant,{"x":100,"y":100}),(sink,{"x":500,"y":100})]})
+            request(flow_socket, {"action":"arrange", "positions":[(constant,{"x":100,"y":100}),(sink,{"x":500,"y":100})]})
             ui("bar_geometry", output="winit", insets=[0,0,0,0])
             time.sleep(0.5)
             ui("fit")
@@ -305,7 +305,7 @@ def run(state_file=None):
             wait(lambda: not dialog_open(), compositor)
             ui("create_application", id="org.test.Editor.desktop", name="Chosen application", app_id="test.editor")
             wait(dialog_open, compositor)
-            selected_app = next(n for n in request(flow_socket, {"op":"status"})["nodes"] if n["title"] == "Chosen application")
+            selected_app = next(n for n in request(flow_socket, {"action":"view"})["nodes"] if n["title"] == "Chosen application")
             assert selected_app["flow"]["properties"]["application"] == "org.test.Editor.desktop"
             assert selected_app["status"] == "idle", "choosing an application must not launch it"
             key("Return")

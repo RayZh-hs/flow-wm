@@ -79,21 +79,19 @@ def run():
                 children.append(subprocess.Popen([sys.executable, __file__, "--wallpaper"], env=background_environment, stdout=log, stderr=log))
                 wait(lambda: any(layer["layer"] == "Background" for layer in request(niri_socket, "Layers")["Layers"]), compositor)
                 shell_command = [str(ROOT / "target/debug/flowwm"), "--data-dir", str(runtime / "data"), "start", "--dms", "--background"]
-                if "--independent-host" in sys.argv:
-                    host_socket = runtime / "flow-core.sock"
-                    children.append(subprocess.Popen([str(ROOT / "target/debug/flow-core"), "--socket", str(host_socket), "--data-dir", str(runtime / "data")], env=environment, stdout=log, stderr=log))
-                    wait(lambda: request(host_socket, {"op":"status"}), compositor)
-                    shell_command.extend(["--host-socket",str(host_socket)])
+                from runtime import start as start_runtime
+                host_socket=start_runtime(ROOT / "target/debug/flowwm",runtime,environment,children,log)
+                shell_command.extend(["--host-socket",str(host_socket)])
                 children.append(subprocess.Popen(shell_command, env=environment, stdout=log, stderr=log))
                 flow_socket = runtime / "flowwm.sock"
-                catalog = lambda: request(flow_socket, {"op": "catalog"})
+                catalog = lambda: request(flow_socket, {"action": "catalog"})
                 wait(lambda: len(catalog()["workspaces"]) >= 2, compositor)
 
                 def ui(action, **args):
-                    request(flow_socket, {"op": "ui", "command": {"action": action, **args}})
+                    request(flow_socket, {"action": "ui", "command": {"action": action, **args}})
 
                 def state():
-                    return request(flow_socket, {"op": "status"})
+                    return request(flow_socket, {"action": "view"})
 
                 def node(identifier):
                     return next(n for n in state()["nodes"] if n["id"] == identifier)
@@ -123,7 +121,7 @@ def run():
                 children.append(subprocess.Popen([sys.executable, str(ROOT / "scripts/preview_fixture.py"), "Tall preview probe"], env=environment, stdout=log, stderr=log))
                 preview = wait(lambda: next((n["id"] for n in state()["nodes"] if n["title"] == "Tall preview probe" and n.get("window_id")), None), compositor)
                 ui("nodes")
-                request(flow_socket, {"op": "arrange", "positions": [(constant, {"x": 100, "y": 100}), (preview, {"x": 500, "y": 100})]})
+                request(flow_socket, {"action": "arrange", "positions": [(constant, {"x": 100, "y": 100}), (preview, {"x": 500, "y": 100})]})
                 ui("select", id=constant)
                 ui("fit")
                 time.sleep(0.5)
@@ -211,11 +209,11 @@ def run():
                 assert not any(w["title"] == "No default interface" for w in request(niri_socket, "Windows")["Windows"])
                 ui("dismiss")
                 definition = json.loads((ROOT / "examples/extension-window.json").read_text())["nodes"][0]
-                request(flow_socket, {"op":"register_node", "definition":definition})
+                request(flow_socket, {"action":"register_node", "definition":definition})
                 optional = create("vox", "Counter interface")
                 extension_node = node(optional)
                 extension_node.update(kind="extension", command=definition["source"], flow={"node_type":definition["id"],"properties":{"start":40}})
-                request(flow_socket,{"op":"update","node":extension_node})
+                request(flow_socket,{"action":"update","node":extension_node})
                 ui("open",id=optional)
                 interface_window = wait(lambda: next((w for w in request(niri_socket,"Windows")["Windows"] if (w.get("app_id") or "").startswith("dev.flowwm.interface.v1.")),None),compositor)
                 assert interface_window["is_floating"], "an extension interface should retain its compact preferred size"
@@ -232,9 +230,9 @@ def run():
                 request(niri_socket,{"Action":{"CloseWindow":{"id":interface_window["id"]}}})
                 wait(lambda: not any(w["id"]==interface_window["id"] for w in request(niri_socket,"Windows")["Windows"]),compositor)
                 assert node(optional), "closing an interface must keep its node"
-                parent=state()["selected_workspace"]
+                parent=state()["selected_workflow"]
                 def orchestrate(command,caller=None):
-                    reply=request(flow_socket,{"protocol":2,"id":"smoke-"+command["command"],"caller":caller,"command":command})
+                    reply=request(host_socket,{"protocol":3,"id":"smoke-"+command["command"],"caller":caller,"command":command})
                     assert reply["error"] is None, reply
                     return reply["result"]
                 child="smoke-private-child"
@@ -254,7 +252,7 @@ def run():
                 assert child in orchestrate({"command":"snapshot"})["workflows"], "removing a reference must keep its target alive"
                 orchestrate({"command":"destroy","workflow":child})
                 dependent=create("shell","Keep the connected workflow")
-                request(flow_socket,{"op":"connect","source":preview,"target":dependent})
+                request(flow_socket,{"action":"connect","source":preview,"target":dependent})
                 preview_window=node(preview)["window_id"]
                 request(niri_socket,{"Action":{"MoveWindowToWorkspace":{"window_id":preview_window,"reference":{"Id":second["row"]["id"]},"focus":False}}})
                 wait(lambda: any(w["id"]==preview_window and w["workspace_id"]==second["row"]["id"] for w in request(niri_socket,"Windows")["Windows"]),compositor)
