@@ -53,7 +53,16 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
                 "local.conditional" => NodeKind::Conditional,
                 "local.break_signal" => NodeKind::BreakSignal,
                 "local.merge_signal" => NodeKind::MergeSignal,
-                _ => NodeKind::Extension,
+                _ => {
+                    if workflow.graph.node_types.iter().any(|definition| {
+                        definition.id == spec.type_id
+                            && definition.behavior == flow_core::providers::Behavior::Application
+                    }) {
+                        NodeKind::Window
+                    } else {
+                        NodeKind::Extension
+                    }
+                }
             };
             let cwd = spec
                 .flow
@@ -127,7 +136,7 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
             if let Some(values) = runtime.queue.published.get(&spec.id) {
                 node.flow.values.extend(values.clone());
             }
-            if kind == NodeKind::Extension {
+            if kind == NodeKind::Extension || !spec.type_id.starts_with("local.") {
                 node.flow.node_type = spec.type_id.clone();
             }
             if let Some(command) = spec.flow.properties.get("command").and_then(|v| v.as_str()) {
@@ -226,6 +235,18 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
                 .result
                 .get("agent_session")
                 .and_then(serde_json::Value::as_str)
+                && node
+                    .flow
+                    .properties
+                    .get("harness")
+                    .and_then(serde_json::Value::as_str)
+                    .is_none_or(|harness| {
+                        execution
+                            .result
+                            .get("harness")
+                            .and_then(serde_json::Value::as_str)
+                            .is_none_or(|actual| actual == harness)
+                    })
             {
                 node.agent_session = Some(session.into());
             }

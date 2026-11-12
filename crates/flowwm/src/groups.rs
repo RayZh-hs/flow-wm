@@ -182,7 +182,11 @@ pub(crate) fn synchronize_with_processes(
                 window
                     .app_id
                     .as_deref()
-                    .and_then(|app| app.strip_prefix("dev.flowwm.interface.v1."))
+                    .and_then(|app| {
+                        app.strip_prefix("dev.flowwm.interface.v1.").or_else(|| {
+                            app.strip_prefix(flow_builtins::agent::terminal::APP_PREFIX)
+                        })
+                    })
                     .and_then(|id| state.nodes.iter().position(|n| n.id == id))
             })
             .or_else(|| {
@@ -281,7 +285,13 @@ pub(crate) fn synchronize_with_processes(
     let removed: HashSet<_> = state
         .nodes
         .iter()
-        .filter(|n| n.desktop_window && !retained.contains(&n.id) && !seen.contains(&n.id))
+        .filter(|n| {
+            n.desktop_window
+                && n.kind == NodeKind::Window
+                && n.spec().type_id == "local.window"
+                && !retained.contains(&n.id)
+                && !seen.contains(&n.id)
+        })
         .map(|n| n.id.clone())
         .collect();
     if !removed.is_empty() {

@@ -20,6 +20,50 @@ fn desktop() -> Desktop {
 }
 
 #[test]
+fn agent_terminal_attaches_to_its_builtin_node_and_closing_it_keeps_the_session() {
+    let mut state = State::empty("/tmp".into());
+    let mut desktop = desktop();
+    desktop.windows.clear();
+    groups::synchronize(&mut state, &desktop);
+    let mut node = Node::new(
+        &state.selected_workspace,
+        NodeKind::Extension,
+        "/tmp".into(),
+        Position::default(),
+    );
+    node.flow.node_type = flow_builtins::agent::TYPE_ID.into();
+    node.status = Status::Running;
+    let id = node.id.clone();
+    state.nodes.push(node);
+    let mut terminal = window(42, 10, "Agent session");
+    terminal.app_id = Some(format!(
+        "{}{id}",
+        flow_builtins::agent::terminal::APP_PREFIX
+    ));
+    desktop.windows.push(terminal);
+    groups::synchronize(&mut state, &desktop);
+    assert_eq!(
+        state.nodes.len(),
+        1,
+        "the terminal must reuse its session node"
+    );
+    assert_eq!(state.node(&id).unwrap().window_id, Some(42));
+    // Simulate the persisted desktop-provider attachment as well.
+    state.node_mut(&id).unwrap().desktop_window = true;
+    desktop.windows.clear();
+    groups::synchronize(&mut state, &desktop);
+    let node = state
+        .node(&id)
+        .expect("closing the view must preserve the invocation");
+    assert_eq!(node.status, Status::Running);
+    assert!(node.window_id.is_none());
+    assert!(
+        !node.closed_window(),
+        "a running session remains a full card"
+    );
+}
+
+#[test]
 fn active_niri_row_selects_its_group_and_empty_tail_does_not_create_groups() {
     let mut state = State::empty("/tmp".into());
     let original = state.selected_workspace.clone();

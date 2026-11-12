@@ -2647,6 +2647,12 @@ impl Shell {
             self.edit_value(id);
             return;
         }
+        if flow_builtins::agent::is_session(&node.spec().type_id) && node.window_id.is_none() {
+            if let Err(error) = self.engine.open_window(id) {
+                self.show_error(&format!("Open agent terminal: {error:#}"));
+            }
+            return;
+        }
         if node.kind == NodeKind::Window || node.window_id.is_some() {
             let desktop = self.desktop.lock().unwrap().clone();
             let row = state.workspace().row.as_ref();
@@ -3054,6 +3060,11 @@ impl Shell {
                         state.workspace().cwd.clone(),
                         position,
                     );
+                    node.kind = NodeKind::Extension;
+                    node.flow.node_type = flow_builtins::agent::TYPE_ID.into();
+                    node.flow
+                        .properties
+                        .insert("writable".into(), serde_json::json!(true));
                     node.title = text.chars().take(48).collect();
                     node.writable = true;
                     let id = node.id.clone();
@@ -3354,6 +3365,16 @@ impl Shell {
             self.show_error("Stop this node before changing its parameters.");
             return;
         }
+        if let Some(command) = self
+            .macros
+            .iter()
+            .find(|m| m.id == node.spec().type_id)
+            .and_then(|m| m.settings.clone())
+        {
+            let dialog = self.dialog("Extension settings", 560, 620);
+            super::extension_settings::open(dialog, self.engine.clone(), node, command);
+            return;
+        }
         let dialog = self.dialog("Node parameters", 560, -1);
         let root = column(14);
         root.add_css_class("dialog-body");
@@ -3390,16 +3411,17 @@ impl Shell {
             .vexpand(true)
             .child(&editor)
             .build();
-        let has_source = matches!(
-            node.kind,
-            NodeKind::Agent
-                | NodeKind::Shell
-                | NodeKind::Metric
-                | NodeKind::Gate
-                | NodeKind::Human
-                | NodeKind::Vox
-                | NodeKind::Python
-        );
+        let has_source = flow_builtins::agent::is_session(&node.spec().type_id)
+            || matches!(
+                node.kind,
+                NodeKind::Agent
+                    | NodeKind::Shell
+                    | NodeKind::Metric
+                    | NodeKind::Gate
+                    | NodeKind::Human
+                    | NodeKind::Vox
+                    | NodeKind::Python
+            );
         if has_source {
             field(
                 &root,
@@ -3421,9 +3443,10 @@ impl Shell {
             info.set_wrap(true);
             root.append(&info);
         }
-        let writable = gtk::CheckButton::with_label("Allow Codex to edit files in this directory");
+        let writable =
+            gtk::CheckButton::with_label("Allow the agent to edit files in this directory");
         writable.set_active(node.writable);
-        if node.kind == NodeKind::Agent {
+        if flow_builtins::agent::is_session(&node.spec().type_id) {
             root.append(&writable);
         }
         let interval = gtk::SpinButton::with_range(1.0, 86400.0, 1.0);
@@ -3502,7 +3525,7 @@ impl Shell {
             node.cwd = PathBuf::from(directory.text().as_str());
             let b = editor.buffer();
             node.command = b.text(&b.start_iter(), &b.end_iter(), true).to_string();
-            if node.kind == NodeKind::Agent {
+            if flow_builtins::agent::is_session(&node.spec().type_id) {
                 node.writable = writable.is_active();
                 node.flow
                     .properties

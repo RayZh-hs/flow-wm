@@ -334,6 +334,40 @@ pub fn run() -> Result<()> {
                                     anyhow::anyhow!("Application node is unavailable")
                                 })?;
                             let spec = workflow.graph.node(node).unwrap();
+                            if spec.type_id == flow_builtins::agent::TERMINAL_TYPE {
+                                let env =
+                                    crate::launch::node_environment(&host, &workflow.id, node)?;
+                                flow_builtins::agent::terminal::open_native(
+                                    Some(&crate::config::directory()),
+                                    spec,
+                                    &env,
+                                )?;
+                                return Ok(serde_json::Value::Null);
+                            }
+                            if flow_builtins::agent::is_session(&spec.type_id) {
+                                let env =
+                                    crate::launch::node_environment(&host, &workflow.id, node)?;
+                                let cwd = spec
+                                    .flow
+                                    .properties
+                                    .get("cwd")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or(".");
+                                let title = spec
+                                    .flow
+                                    .properties
+                                    .get("title")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("Agent session");
+                                flow_builtins::agent::terminal::open(
+                                    Some(&crate::config::directory()),
+                                    node,
+                                    title,
+                                    std::path::Path::new(cwd),
+                                    &env,
+                                )?;
+                                return Ok(serde_json::Value::Null);
+                            }
                             let application = spec
                                 .flow
                                 .properties
@@ -513,11 +547,11 @@ pub fn run() -> Result<()> {
                 // A closed automatically observed card has no definition to keep.
                 // Keep nodes with exit listeners until their process produces on_exit.
                 let mut closed = BTreeMap::<WorkflowId, BTreeSet<String>>::new();
-                for node in state
-                    .nodes
-                    .iter()
-                    .filter(|n| n.desktop_window && n.kind == crate::model::NodeKind::Window)
-                {
+                for node in state.nodes.iter().filter(|n| {
+                    n.desktop_window
+                        && n.kind == crate::model::NodeKind::Window
+                        && n.spec().type_id == "local.window"
+                }) {
                     if node
                         .window_id
                         .is_some_and(|id| !desktop.windows.iter().any(|w| w.id == id))

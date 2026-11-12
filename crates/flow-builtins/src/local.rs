@@ -555,6 +555,8 @@ pub fn registry_with_environment(limits: Limits, environment: Environment) -> Re
     })
     .collect();
     definitions.extend(crate::environment::definitions());
+    crate::agent::install(&mut registry, limits.clone(), environment.clone())?;
+    crate::external::install(&mut registry, limits.clone(), environment.clone())?;
     registry.mount(
         "local".into(),
         definitions,

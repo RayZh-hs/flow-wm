@@ -13,6 +13,8 @@ pub struct Macro {
     pub description: String,
     pub kind: NodeKind,
     pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<Vec<String>>,
 }
 #[derive(Serialize, Deserialize)]
 pub struct Manifest {
@@ -29,14 +31,32 @@ pub struct Manifest {
 pub fn builtins() -> Vec<Macro> {
     let mut macros = vec![
         Macro {
-            flow: Default::default(),
+            settings: None,
+            flow: crate::graph::Flow {
+                node_type: flow_builtins::agent::TERMINAL_TYPE.into(),
+                ..Default::default()
+            },
             id: "agent".into(),
             name: "Agent session".into(),
-            description: "A Codex session in this workspace".into(),
-            kind: NodeKind::Agent,
+            description: "A terminal agent session using a configured harness".into(),
+            kind: NodeKind::Window,
             command: "Inspect this project and suggest the next useful steps.".into(),
         },
         Macro {
+            settings: None,
+            flow: crate::graph::Flow {
+                node_type: flow_builtins::agent::TYPE_ID.into(),
+                ..Default::default()
+            },
+            id: "agent_workflow".into(),
+            name: "Agent workflow step".into(),
+            description: "Run a supervised agent turn with typed success and failure branches"
+                .into(),
+            kind: NodeKind::Extension,
+            command: "Inspect this project and suggest the next useful steps.".into(),
+        },
+        Macro {
+            settings: None,
             flow: Default::default(),
             id: "shell".into(),
             name: "Shell command".into(),
@@ -45,6 +65,7 @@ pub fn builtins() -> Vec<Macro> {
             command: "pwd && git status --short".into(),
         },
         Macro {
+            settings: None,
             flow: Default::default(),
             id: "metric".into(),
             name: "Metric".into(),
@@ -53,6 +74,7 @@ pub fn builtins() -> Vec<Macro> {
             command: "printf '0\\n'".into(),
         },
         Macro {
+            settings: None,
             flow: Default::default(),
             id: "gate".into(),
             name: "Human decision".into(),
@@ -61,6 +83,7 @@ pub fn builtins() -> Vec<Macro> {
             command: "Review the upstream results before continuing.".into(),
         },
         Macro {
+            settings: None,
             flow: Default::default(),
             id: "human".into(),
             name: "My work".into(),
@@ -69,6 +92,7 @@ pub fn builtins() -> Vec<Macro> {
             command: "What are you working on?".into(),
         },
         Macro {
+            settings: None,
             flow: Default::default(),
             id: "window".into(),
             name: "Application window".into(),
@@ -121,6 +145,7 @@ pub fn builtins() -> Vec<Macro> {
     ] {
         let node = crate::model::Node::new("", kind, ".".into(), Default::default());
         macros.push(Macro {
+            settings: None,
             id: id.into(),
             kind,
             name: kind.label().into(),
@@ -172,6 +197,7 @@ pub fn builtins() -> Vec<Macro> {
         ),
     ] {
         macros.push(Macro {
+            settings: None,
             id: format!("local.{id}"),
             name: name.into(),
             description: description.into(),
@@ -207,6 +233,7 @@ pub fn builtins() -> Vec<Macro> {
         flow.properties.insert("value".into(), value);
         flow.outputs.push(crate::graph::Pin::new("value", ty));
         macros.push(Macro {
+            settings: None,
             id: format!("constant_{}", name.to_lowercase()),
             name: format!("Constant: {name}"),
             description: format!("A {name} value, editable in the graph"),
@@ -254,6 +281,20 @@ pub fn load_bundle(directory: &Path) -> Result<Extensions> {
         macros: builtins(),
         ..Default::default()
     };
+    for provider in flow_builtins::external::load(directory)? {
+        bundle.macros.push(Macro {
+            id: provider.definition.id.clone(),
+            name: provider.name,
+            description: provider.description,
+            kind: NodeKind::Extension,
+            command: String::new(),
+            settings: provider.settings,
+            flow: crate::graph::Flow {
+                node_type: provider.definition.id,
+                ..Default::default()
+            },
+        });
+    }
     let macros = &mut bundle.macros;
     let mut ids: HashSet<_> = macros.iter().map(|m| m.id.clone()).collect();
     if !directory.exists() {
@@ -287,6 +328,7 @@ pub fn load_bundle(directory: &Path) -> Result<Extensions> {
                 node.id
             );
             macros.push(Macro {
+                settings: None,
                 id: node.id.clone(),
                 name: node.name.clone(),
                 description: "Extension node".into(),

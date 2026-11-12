@@ -145,6 +145,8 @@ def prepare_profile(config, state, cache, bundle, user_config, user_state, user_
     migrate(config, state, defaults, launcher, atomic_text)
     if not (config / "runtime.kdl").exists():
         atomic_text(config / "runtime.kdl", (ROOT / "config/runtime.kdl").read_text())
+    if not (config / "agent.kdl").exists():
+        atomic_text(config / "agent.kdl", (ROOT / "config/agent.kdl").read_text())
     extensions = config / "extensions"
     extensions.mkdir(exist_ok=True)
     for original in (ROOT / "config/extensions").glob("*.json"):

@@ -2237,7 +2237,7 @@ fn draw_node_with_border(c: &Context, n: &Node, p: &Position, selection: f64, th
             },
         );
         let prefix = match n.kind {
-            NodeKind::Agent => "codex · ",
+            NodeKind::Agent => "agent · ",
             NodeKind::Shell => "$ ",
             _ => "",
         };

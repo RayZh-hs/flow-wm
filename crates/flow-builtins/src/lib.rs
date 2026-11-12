@@ -57,6 +57,7 @@ pub fn evaluate_with_limits(
     )
 }
 pub mod agent;
+pub mod external;
 pub mod local;
 pub mod process;
 pub mod sessions;

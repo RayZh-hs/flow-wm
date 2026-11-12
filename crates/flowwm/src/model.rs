@@ -216,6 +216,10 @@ impl Node {
         self.window_id.is_none()
             && (self.desktop_window
                 || (self.kind == NodeKind::Window && self.window_match.is_some()))
+            && !matches!(
+                self.spec().type_id.as_str(),
+                flow_builtins::agent::TYPE_ID | "local.agent"
+            )
     }
 
     pub fn new(workspace: &str, kind: NodeKind, cwd: PathBuf, position: Position) -> Self {

@@ -626,6 +626,9 @@ impl DesktopClient {
             args,
         })
     }
+    pub fn open_window(&self, node: &str) -> Result<Value> {
+        self.application_operation(node, "open")
+    }
     fn application_operation(&self, node: &str, command: &str) -> Result<Value> {
         let bindings = self.inner.bindings.lock().unwrap().clone();
         let token = bindings.applications.get(node).map(|b| b.token.as_str());

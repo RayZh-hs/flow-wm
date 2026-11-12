@@ -707,6 +707,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "flow-core",
+ "knuffel",
  "libc",
  "serde",
  "serde_json",

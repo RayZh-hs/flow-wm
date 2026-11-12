@@ -72,6 +72,51 @@ impl Fields {
                 node.flow.editable_in_graph = editable.is_active();
                 Ok(())
             }));
+        } else if flow_builtins::agent::is_session(&node.spec().type_id) {
+            match flow_builtins::agent::harness::Harnesses::load(Some(&crate::config::directory()))
+            {
+                Ok(config) => {
+                    let ids = config.harnesses.keys().cloned().collect::<Vec<_>>();
+                    let choice = gtk::DropDown::from_strings(
+                        &ids.iter().map(String::as_str).collect::<Vec<_>>(),
+                    );
+                    let selected = node
+                        .flow
+                        .properties
+                        .get("harness")
+                        .and_then(Value::as_str)
+                        .unwrap_or(&config.default_harness);
+                    choice.set_selected(
+                        ids.iter()
+                            .position(|id| id == selected)
+                            .map(|i| i as u32)
+                            .unwrap_or(gtk::INVALID_LIST_POSITION),
+                    );
+                    field(&root, "Agent harness", &choice);
+                    setters.push(Rc::new(move |node| {
+                        let id = ids
+                            .get(choice.selected() as usize)
+                            .context("Select a registered agent harness")?;
+                        if node
+                            .flow
+                            .properties
+                            .get("harness")
+                            .and_then(Value::as_str)
+                            .is_some_and(|old| old != id)
+                        {
+                            node.flow.properties.remove("agent_session");
+                            node.agent_session = None;
+                        }
+                        node.flow.properties.insert("harness".into(), json!(id));
+                        Ok(())
+                    }));
+                }
+                Err(error) => {
+                    let hint = gtk::Label::new(Some(&format!("Agent configuration: {error:#}")));
+                    hint.set_wrap(true);
+                    root.append(&hint);
+                }
+            }
         } else {
             let description = match node.kind {
                 NodeKind::Alert => {

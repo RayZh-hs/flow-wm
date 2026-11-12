@@ -1,0 +1,29 @@
+// Agent sessions are a builtin extension. Commands are argv lists, never shell code.
+default-harness "codex"
+
+// Any terminal can be used; the class/app ID associates its live preview with the node.
+terminal "alacritty" "--class" "{app_id}" "--title" "{title}" "--working-directory" "{cwd}" "-e"
+
+harness "codex" {
+    adapter "codex"
+    command "codex"
+}
+harness "claude" {
+    adapter "claude"
+    command "claude"
+}
+
+// Custom wrappers can reuse an adapter. Register personal commands here.
+// harness "my-wrapper" {
+//     adapter "codex"
+//     command "my-wrapper"
+// }
+// A custom CLI reads its prompt from stdin. A jsonl adapter accepts
+// {"type":"session","id":"…"} and {"type":"message","text":"…"}.
+// harness "custom" {
+//     adapter "jsonl"
+//     command "my-agent"
+//     run "--json"
+//     resume "--json" "--resume" "{session}"
+//     interactive "--prompt" "{prompt}"
+// }
