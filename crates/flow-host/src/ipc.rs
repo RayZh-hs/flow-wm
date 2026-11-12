@@ -1,6 +1,6 @@
-use crate::engine::{Control, Engine};
-use crate::{catalog::Catalog, extensions::Macro};
+//! Current Orchestrator and Signal Protocol transports. No desktop commands.
 use anyhow::{Context, Result, bail, ensure};
+use flow_core::protocol::*;
 use serde_json::Value;
 use std::{
     fs,
@@ -13,7 +13,6 @@ use std::{
     thread,
     time::Duration,
 };
-
 pub fn default_socket() -> PathBuf {
     let uid = unsafe { libc::getuid() };
     std::env::var_os("XDG_RUNTIME_DIR")
@@ -37,180 +36,121 @@ pub fn bind(path: &Path) -> Result<UnixListener> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     Ok(listener)
 }
-pub fn serve(listener: UnixListener, engine: Engine, macros: Vec<Macro>) {
-    let macros = std::sync::Arc::new(macros);
+/// A subscription releases its waiting server thread as soon as its client closes.
+pub struct ConnectionGuard {
+    pub closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    stream: UnixStream,
+}
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+}
+pub fn disconnect_signal(
+    stream: &UnixStream,
+    wake: impl FnOnce() + Send + 'static,
+) -> Result<ConnectionGuard> {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    stream.set_read_timeout(None)?;
+    let mut reader = stream.try_clone()?;
+    let guard = ConnectionGuard {
+        closed: Arc::new(AtomicBool::new(false)),
+        stream: stream.try_clone()?,
+    };
+    let closed = guard.closed.clone();
     thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(stream) = stream else {
-                break;
-            };
-            let engine = engine.clone();
-            let macros = macros.clone();
-            thread::spawn(move || serve_client(stream, engine, &macros));
+        let _ = reader.read(&mut [0u8; 1]);
+        closed.store(true, Ordering::Release);
+        wake();
+    });
+    Ok(guard)
+}
+pub fn serve(listener: UnixListener, host: crate::runtime::Host) {
+    thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let host = host.clone();
+            thread::spawn(move || {
+                let mut stream = stream;
+                let result = (|| -> Result<Value> {
+                    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+                    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+                    let mut bytes = Vec::new();
+                    BufReader::new(stream.try_clone()?)
+                        .take(1024 * 1024 + 1)
+                        .read_until(b'\n', &mut bytes)?;
+                    ensure!(
+                        bytes.len() <= 1024 * 1024 && bytes.last() == Some(&b'\n'),
+                        "Request too large or incomplete"
+                    );
+                    let value: Value = serde_json::from_slice(&bytes)?;
+                    if value.get("signal_protocol").is_some() {
+                        let signal: SignalFrame = serde_json::from_value(value)?;
+                        ensure!(
+                            signal.signal_protocol == SIGNAL_VERSION,
+                            "Unsupported signal protocol"
+                        );
+                        let reply = host.request(Request {
+                            protocol: ORCHESTRATOR_VERSION,
+                            id: signal.id.clone(),
+                            expected_revision: None,
+                            caller: Some(signal.delivery.source.clone()),
+                            command: Command::Broadcast {
+                                delivery: signal.delivery,
+                            },
+                        })?;
+                        return Ok(serde_json::to_value(SignalReply {
+                            signal_protocol: SIGNAL_VERSION,
+                            id: signal.id,
+                            revision: reply.revision,
+                            accepted: reply
+                                .result
+                                .as_ref()
+                                .and_then(|v| v["accepted"].as_bool())
+                                .unwrap_or(false),
+                            error: reply.error,
+                        })?);
+                    }
+                    let request: Request = serde_json::from_value(value)
+                        .context("Expected a current Orchestrator Protocol request")?;
+                    ensure!(
+                        request.protocol == ORCHESTRATOR_VERSION,
+                        "Unsupported orchestrator protocol {}; expected {}",
+                        request.protocol,
+                        ORCHESTRATOR_VERSION
+                    );
+                    if let Command::Subscribe { after } = &request.command {
+                        let notifier = host.clone();
+                        let connection =
+                            disconnect_signal(&stream, move || notifier.wake_subscribers())?;
+                        let mut revision = *after;
+                        while !connection.closed.load(std::sync::atomic::Ordering::Acquire) {
+                            if let Some(after) = revision
+                                && host.wait_connected(after, &connection.closed).is_none()
+                            {
+                                break;
+                            }
+                            let mut snapshot = request.clone();
+                            snapshot.command = Command::Snapshot;
+                            snapshot.expected_revision = None;
+                            let reply = host.request(snapshot)?;
+                            revision = Some(reply.revision);
+                            writeln!(stream, "{}", serde_json::to_string(&reply)?)?;
+                        }
+                        return Ok(Value::Null);
+                    }
+                    Ok(serde_json::to_value(host.request(request)?)?)
+                })();
+                let envelope = match result {
+                    Ok(value) => serde_json::json!({"ok":value}),
+                    Err(e) => serde_json::json!({"error":format!("{e:#}")}),
+                };
+                let _ = writeln!(stream, "{envelope}");
+            });
         }
     });
-}
-fn serve_client(mut stream: UnixStream, engine: Engine, macros: &[Macro]) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-    let result = (|| -> Result<Value> {
-        let mut bytes = vec![];
-        std::io::Read::take(BufReader::new(stream.try_clone()?), 1024 * 1024)
-            .read_until(b'\n', &mut bytes)?;
-        ensure!(
-            bytes.last() == Some(&b'\n'),
-            "Request is too large or incomplete"
-        );
-        let value: Value = serde_json::from_slice(&bytes)?;
-        if value.get("signal_protocol").is_some() {
-            let frame: flow_core::protocol::SignalFrame = serde_json::from_value(value)?;
-            ensure!(
-                frame.signal_protocol == flow_core::protocol::SIGNAL_VERSION,
-                "Unsupported signal protocol"
-            );
-            let reply: flow_core::protocol::Reply =
-                serde_json::from_value(engine.request(Control::Orchestrate {
-                    request: Box::new(flow_core::protocol::Request {
-                        protocol: 2,
-                        id: frame.id.clone(),
-                        expected_revision: None,
-                        caller: Some(frame.delivery.source.clone()),
-                        command: flow_core::protocol::Command::Broadcast {
-                            delivery: frame.delivery,
-                        },
-                    }),
-                })?)?;
-            return Ok(serde_json::to_value(flow_core::protocol::SignalReply {
-                signal_protocol: 1,
-                id: frame.id,
-                revision: reply.revision,
-                accepted: reply
-                    .result
-                    .as_ref()
-                    .and_then(|v| v["accepted"].as_bool())
-                    .unwrap_or(false),
-                error: reply.error,
-            })?);
-        }
-        if value["op"] == "data_directory" {
-            return Ok(serde_json::to_value(engine.data_directory()?)?);
-        }
-        if value["op"] == "snapshot" {
-            return Ok(serde_json::to_value(engine.snapshot())?);
-        }
-        if value["op"] == "attach" {
-            ensure!(value["protocol"] == 2, "Unsupported client protocol");
-            let commands = engine.connect_frontend();
-            let disconnected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let closed = disconnected.clone();
-            let wake = engine.clone();
-            let mut peer = stream.try_clone()?;
-            peer.set_read_timeout(None)?;
-            thread::spawn(move || {
-                let mut byte = [0];
-                let _ = std::io::Read::read(&mut peer, &mut byte);
-                closed.store(true, std::sync::atomic::Ordering::Release);
-                wake.wake_ui();
-            });
-            let mut generation = 0;
-            let mut previous = None;
-            while let Some(next) = engine.wait_for_change(generation) {
-                generation = next;
-                if disconnected.load(std::sync::atomic::Ordering::Acquire) {
-                    break;
-                }
-                let snapshot = engine.snapshot();
-                let changed = previous != Some(snapshot.revision);
-                previous = Some(snapshot.revision);
-                let frame = ClientFrame {
-                    snapshot: changed.then_some(snapshot),
-                    commands: commands.try_iter().collect(),
-                };
-                if frame.snapshot.is_some() || !frame.commands.is_empty() {
-                    writeln!(stream, "{}", serde_json::to_string(&frame)?)?;
-                }
-            }
-            return Ok(Value::Null);
-        }
-        if value["op"] == "presentation" {
-            engine.set_presentation(serde_json::from_value(value["value"].clone())?);
-            return Ok(Value::Null);
-        }
-        if value.get("protocol").is_some() {
-            let request: flow_core::protocol::Request = serde_json::from_value(value)?;
-            if matches!(
-                request.command,
-                flow_core::protocol::Command::Subscribe { .. }
-            ) {
-                let mut generation = 0;
-                let mut previous = None;
-                while let Some(next) = engine.wait_for_change(generation) {
-                    generation = next;
-                    let mut snapshot_request = request.clone();
-                    snapshot_request.command = flow_core::protocol::Command::Snapshot;
-                    snapshot_request.expected_revision = None;
-                    let reply = engine.request(Control::Orchestrate {
-                        request: Box::new(snapshot_request),
-                    })?;
-                    let encoded = serde_json::to_string(&reply)?;
-                    if previous.as_ref() != Some(&encoded) {
-                        writeln!(stream, "{encoded}")?;
-                        previous = Some(encoded);
-                    }
-                }
-                return Ok(Value::Null);
-            }
-            return engine.request(Control::Orchestrate {
-                request: Box::new(request),
-            });
-        }
-        if value["op"] == "performance" {
-            if value["reset"] == true {
-                engine.performance.reset();
-            }
-            return Ok(serde_json::to_value(engine.performance.snapshot())?);
-        }
-        if value["op"] == "subscribe" {
-            let launcher = (value["launcher"] == true).then(|| engine.connect_launcher());
-            let mut generation = 0;
-            let mut previous = String::new();
-            while let Some(next) = engine.wait_for_change(generation) {
-                generation = next;
-                let catalog = serde_json::to_string(&Catalog::new(
-                    &engine.snapshot(),
-                    engine.presentation(),
-                    macros,
-                ))?;
-                if catalog != previous {
-                    writeln!(stream, "{catalog}")?;
-                    previous = catalog;
-                }
-                if let Some(launcher) = &launcher {
-                    for query in launcher.try_iter() {
-                        writeln!(
-                            stream,
-                            "{}",
-                            serde_json::json!({"launcher": {"query": query}})
-                        )?;
-                    }
-                }
-            }
-            return Ok(Value::Null);
-        }
-        if value["op"] == "catalog" {
-            return Ok(serde_json::to_value(Catalog::new(
-                &engine.snapshot(),
-                engine.presentation(),
-                macros,
-            ))?);
-        }
-        engine.request(serde_json::from_value::<Control>(value)?)
-    })();
-    let reply = match result {
-        Ok(value) => serde_json::json!({"ok":value}),
-        Err(e) => serde_json::json!({"error":format!("{e:#}")}),
-    };
-    let _ = writeln!(stream, "{reply}");
 }
 pub fn send(path: &Path, command: &impl serde::Serialize) -> Result<Value> {
     send_timeout(path, command, Duration::from_secs(6))
@@ -248,10 +188,4 @@ pub fn host_socket() -> PathBuf {
     std::env::var_os("FLOWWM_HOST_SOCKET")
         .map(PathBuf::from)
         .unwrap_or_else(|| default_socket().with_file_name("flow-core.sock"))
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct ClientFrame {
-    pub snapshot: Option<crate::engine::Snapshot>,
-    pub commands: Vec<crate::engine::UiCommand>,
 }

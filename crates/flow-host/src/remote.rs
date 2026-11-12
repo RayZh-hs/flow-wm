@@ -27,28 +27,49 @@ fn default_command() -> Vec<String> {
     vec!["flow-core".into(), "--stdio".into()]
 }
 pub fn configured() -> Result<BTreeMap<String, Remote>> {
-    let path = crate::config::directory().join("runtime.json");
-    if !path.exists() {
-        return Ok(BTreeMap::new());
-    }
-    let value: Value = serde_json::from_slice(&std::fs::read(path)?)?;
-    Ok(serde_json::from_value(
-        value
-            .get("hosts")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({})),
-    )?)
+    Ok(crate::config::load()?.hosts)
 }
+#[derive(Debug)]
+pub struct PeerFailure {
+    pub status: flow_core::domain::PeerStatus,
+    pub detail: String,
+}
+impl std::fmt::Display for PeerFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+impl std::error::Error for PeerFailure {}
 impl Remote {
     pub fn request(&self, request: &flow_core::protocol::Request) -> Result<Value> {
-        let reply = self.exchange(request)?;
+        use flow_core::domain::PeerStatus;
+        let reply = self.exchange(request).map_err(|e| PeerFailure {
+            status: if e.chain().any(|cause| cause.is::<std::io::Error>())
+                || e.to_string().contains("timed out")
+            {
+                PeerStatus::Disconnected
+            } else {
+                PeerStatus::Failed
+            },
+            detail: format!("{e:#}"),
+        })?;
+        if reply["protocol"] != flow_core::protocol::ORCHESTRATOR_VERSION
+            || reply["id"] != request.id
+        {
+            return Err(PeerFailure {
+                status: PeerStatus::Failed,
+                detail: "Unsupported or mismatched remote Orchestrator Protocol reply".into(),
+            }
+            .into());
+        }
         if !reply["error"].is_null() {
-            anyhow::bail!("Remote host: {}", reply["error"]["message"]);
+            return Err(PeerFailure {
+                status: PeerStatus::Failed,
+                detail: format!("Remote host: {}", reply["error"]["message"]),
+            }
+            .into());
         }
         Ok(reply["result"].clone())
-    }
-    pub fn control(&self, control: &crate::engine::Control) -> Result<Value> {
-        self.exchange(control)
     }
     fn exchange(&self, request: &impl Serialize) -> Result<Value> {
         let reply = match self {
@@ -150,7 +171,7 @@ pub fn call(
     let remotes = configured()?;
     let remote = remotes.get(host).context("Remote host is not configured")?;
     remote.request(&flow_core::protocol::Request {
-        protocol: 2,
+        protocol: flow_core::protocol::ORCHESTRATOR_VERSION,
         id: request_id,
         expected_revision: None,
         caller: None,
