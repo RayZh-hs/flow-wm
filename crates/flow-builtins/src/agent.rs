@@ -4,7 +4,7 @@ use crate::{
     process::Process,
 };
 use anyhow::{Context, Result, ensure};
-use flow_core::{model::Node, providers::Invocation};
+use flow_core::providers::Invocation;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{path::Path, process::Command, time::Duration};
@@ -30,8 +30,8 @@ impl Config {
         );
         Ok(config)
     }
-    pub fn process(&self, node: &Node) -> Command {
-        let mut command = self.command(node.agent_session.as_deref(), true, node.writable);
+    pub fn process(&self, session: Option<&str>, writable: bool) -> Command {
+        let mut command = self.command(session, true, writable);
         command.arg("-");
         command
     }
@@ -80,7 +80,11 @@ pub(crate) fn process(
 ) -> Result<Process> {
     let properties = &invocation.properties;
     let prompt = text(properties, "command").context("Agent requires a prompt")?;
-    let context = text(properties, "graph_context");
+    let context = invocation
+        .args
+        .get("graph_context")
+        .and_then(Value::as_str)
+        .or_else(|| text(properties, "graph_context"));
     let conversational = context.is_some()
         || properties.get("conversational").and_then(Value::as_bool) == Some(true);
     let writable = properties
@@ -88,7 +92,15 @@ pub(crate) fn process(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let config = Config::from_directory(environment.config_directory.as_deref())?;
-    let mut command = config.command(text(properties, "agent_session"), conversational, writable);
+    let session = invocation
+        .args
+        .get("agent_session")
+        .and_then(Value::as_str)
+        .or_else(|| text(properties, "agent_session"));
+    let mut command = config.command(session, conversational, writable);
+    if let Some(socket) = invocation.args.get("wm_socket").and_then(Value::as_str) {
+        command.env("FLOWWM_SOCKET", socket);
+    }
     if !conversational {
         let schema_path = environment
             .data_directory
@@ -106,8 +118,8 @@ pub(crate) fn process(
     let mut input = if let Some(context) = context {
         format!("{context}\n\nUser request:\n{prompt}")
     } else if let Some(inputs) = properties
-        .get("inputs")
-        .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
+        .get("data_inputs")
+        .filter(|v| v.as_object().is_some_and(|a| !a.is_empty()))
     {
         format!(
             "{prompt}\n\nWorkflow inputs:\n{}",

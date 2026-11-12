@@ -51,18 +51,15 @@ impl Supervisor {
             .canonicalize()
             .context("Working directory no longer exists")?;
         let mut runs = self.runs.lock().unwrap();
-        ensure!(
-            runs.len() < limits.max_concurrent,
-            "Execution concurrency limit reached"
-        );
-        ensure!(!runs.contains_key(&handle), "Invocation is already running");
-        ensure!(
-            !limits.serialize_working_directories
-                || !runs
+        if runs.len() >= limits.max_concurrent
+            || limits.serialize_working_directories
+                && runs
                     .values()
-                    .any(|r| { r.directory == directory && (r.writer || process.writer) }),
-            "Working directory is in use by another execution"
-        );
+                    .any(|r| r.directory == directory && (r.writer || process.writer))
+        {
+            return Err(ProviderBusy.into());
+        }
+        ensure!(!runs.contains_key(&handle), "Invocation is already running");
         process
             .command
             .current_dir(&directory)
@@ -194,6 +191,9 @@ impl Supervisor {
             });
         });
         Ok(handle)
+    }
+    pub fn running(&self, handle: &str) -> bool {
+        self.runs.lock().unwrap().contains_key(handle)
     }
     pub fn interrupt(&self, handle: &str) -> Result<()> {
         if let Some(run) = self.runs.lock().unwrap().get(handle) {

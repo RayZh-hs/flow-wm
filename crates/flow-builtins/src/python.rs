@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail, ensure};
-use flow_core::{graph::*, model::Node};
+use flow_core::{domain::NodeSpec, graph::*};
 use serde_json::{Value, json};
 use std::{
     io::{Read, Write},
@@ -9,7 +9,13 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-pub fn python(node: &Node, bindings: &Record, args: &Value, cancel: &AtomicBool) -> Result<Value> {
+pub fn python(
+    node: &NodeSpec,
+    bindings: &Record,
+    args: &Value,
+    cancel: &AtomicBool,
+    limits: &crate::local::Limits,
+) -> Result<Value> {
     const BRIDGE: &str = "import json, os, sys\nb = json.load(sys.stdin)\nscope = dict(b['bindings'])\nscope['outputs'] = {}\nexec(compile(b['source'], '<FlowWM Python>', 'exec'), scope)\nwith os.fdopen(3, 'w') as result:\n json.dump(scope['outputs'], result, allow_nan=False)\n";
     // Keep program stdout separate from the result channel, and bound both pipes.
     let (result_read, result_write) = std::os::unix::net::UnixStream::pair()?;
@@ -17,9 +23,15 @@ pub fn python(node: &Node, bindings: &Record, args: &Value, cancel: &AtomicBool)
     let mut command = Command::new("python3");
     command
         .args(["-c", BRIDGE])
-        .current_dir(&node.cwd)
+        .current_dir(
+            node.flow
+                .properties
+                .get("cwd")
+                .and_then(Value::as_str)
+                .unwrap_or("."),
+        )
         .envs(signal_environment(args)?)
-        .env("FLOWWM_NODE_ID", &node.id)
+        .env("FLOWWM_NODE_ID", &node.id.0)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -44,7 +56,9 @@ pub fn python(node: &Node, bindings: &Record, args: &Value, cancel: &AtomicBool)
     }
     let mut child = command.spawn().context("Start Python binding")?;
     drop(result_write);
-    let payload = serde_json::to_vec(&json!({"bindings": bindings, "source": node.command}))?;
+    let payload = serde_json::to_vec(
+        &json!({"bindings": bindings, "source": node.flow.properties.get("command").and_then(Value::as_str).unwrap_or("")}),
+    )?;
     let mut stdin = child.stdin.take().unwrap();
     let input = thread::spawn(move || stdin.write_all(&payload));
     let mut stderr = child.stderr.take().unwrap();
@@ -60,7 +74,9 @@ pub fn python(node: &Node, bindings: &Record, args: &Value, cancel: &AtomicBool)
     });
     let start = Instant::now();
     let status = loop {
-        if cancel.load(Ordering::Relaxed) || start.elapsed() > Duration::from_secs(60) {
+        if cancel.load(Ordering::Relaxed)
+            || start.elapsed() > Duration::from_secs(limits.evaluator_timeout_secs)
+        {
             if own_group {
                 unsafe {
                     libc::kill(-(child.id() as i32), libc::SIGKILL);

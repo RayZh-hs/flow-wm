@@ -9,6 +9,7 @@ use std::{
 
 fn invocation(id: &str, kind: &str, directory: &std::path::Path, command: &str) -> Invocation {
     Invocation {
+        input: String::new(),
         id: id.into(),
         workflow: "workflow".into(),
         node: id.into(),
@@ -97,7 +98,7 @@ fn registered_metric_reports_a_typed_sample_and_does_not_accept_invalid_output()
         let (tx, rx) = mpsc::channel();
         provider
             .invoke(
-                invocation(id, "metric", dir.path(), command),
+                invocation(id, "metric_sample", dir.path(), command),
                 Arc::new(move |e| {
                     tx.send(e).unwrap();
                 }),
@@ -122,17 +123,27 @@ fn decisions_wait_for_resolution_and_interruption_releases_the_registration() {
     let handle = provider
         .invoke(invocation("decision", "gate", dir.path(), ""), sink.clone())
         .unwrap();
-    assert!(rx.try_recv().is_err());
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(1)).unwrap().status,
+        ExecutionStatus::Waiting
+    );
     provider
         .resolve(&handle, true, json!({"output":"Approved"}))
         .unwrap();
-    let completion = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    let mut completion = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    if completion.status == ExecutionStatus::Waiting {
+        completion = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    }
     assert_eq!(completion.status, ExecutionStatus::Complete);
     assert_eq!(completion.result["output"], "Approved");
     assert!(provider.resolve(&handle, true, json!({})).is_err());
     provider
         .invoke(invocation("decision", "human", dir.path(), ""), sink)
         .unwrap();
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(1)).unwrap().status,
+        ExecutionStatus::Waiting
+    );
     provider.interrupt(&handle).unwrap();
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(1)).unwrap().status,

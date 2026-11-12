@@ -1,7 +1,7 @@
 //! Run evaluations in an owned process group so Stop also interrupts Vox loops.
-use crate::evaluate;
+use crate::evaluate_with_limits;
 use anyhow::{Context, Result, ensure};
-use flow_core::{graph::*, model::State};
+use flow_core::{domain::FlowNet, graph::*};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -22,7 +22,9 @@ use std::{
 
 #[derive(Serialize, Deserialize)]
 struct Request {
-    state: State,
+    limits: crate::local::Limits,
+    graph: FlowNet,
+    context: EvaluationContext,
     root: String,
     signal: Option<(String, Value)>,
 }
@@ -38,14 +40,16 @@ pub fn run_worker() -> Result<()> {
         "Graph snapshot is too large"
     );
     let request: Request = serde_json::from_slice(&bytes)?;
-    let result = evaluate(
-        request.state,
+    let result = evaluate_with_limits(
+        request.graph,
+        request.context,
         &request.root,
         request
             .signal
             .as_ref()
             .map(|(p, a)| (p.as_str(), a.clone())),
         Arc::new(AtomicBool::new(false)),
+        request.limits,
     )
     .map_err(|e| format!("{e:#}"));
     let output = unsafe { File::from_raw_fd(3) };
@@ -56,18 +60,16 @@ pub fn run_worker() -> Result<()> {
 pub fn evaluate_isolated(
     executable: &std::path::Path,
     limits: &crate::local::Limits,
-    mut state: State,
+    graph: FlowNet,
+    context: EvaluationContext,
     root: &str,
     signal: Option<(String, Value)>,
     cancel: Arc<AtomicBool>,
 ) -> Result<Evaluation> {
-    for node in &mut state.nodes {
-        node.logs.clear();
-        node.chat.clear();
-    }
-    state.recipes.clear();
     let bytes = serde_json::to_vec(&Request {
-        state,
+        limits: limits.clone(),
+        graph,
+        context,
         root: root.into(),
         signal,
     })?;

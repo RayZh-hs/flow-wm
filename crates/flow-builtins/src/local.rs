@@ -14,7 +14,7 @@ use std::{
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Limits {
-    pub desktop_branches_follow_rows: bool,
+    pub source_interval_secs: u64,
     pub systemd_workspace: bool,
     pub serialize_working_directories: bool,
     pub max_concurrent: usize,
@@ -32,7 +32,7 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            desktop_branches_follow_rows: false,
+            source_interval_secs: 30,
             systemd_workspace: true,
             serialize_working_directories: true,
             max_concurrent: 8,
@@ -52,7 +52,8 @@ impl Default for Limits {
 impl Limits {
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.max_concurrent > 0
+            self.source_interval_secs > 0
+                && self.max_concurrent > 0
                 && self.execution_timeout_secs > 0
                 && self.metric_timeout_secs > 0
                 && self.evaluator_timeout_secs > 0
@@ -76,13 +77,15 @@ pub struct Environment {
     pub data_directory: Option<PathBuf>,
     pub control_socket: Option<PathBuf>,
     pub cli: Option<PathBuf>,
+    pub messaging: Option<Arc<dyn Messaging>>,
 }
 type Factory = fn(&Invocation, &Environment, &Limits) -> Result<Process>;
 pub struct Local {
     limits: Limits,
     environment: Environment,
-    processes: Supervisor,
+    processes: Arc<Supervisor>,
     factories: BTreeMap<String, Factory>,
+    sources: crate::sources::Sources,
     decisions: Mutex<BTreeMap<String, (Invocation, EventSink)>>,
 }
 impl Local {
@@ -91,15 +94,15 @@ impl Local {
     }
     pub fn with_environment(limits: Limits, environment: Environment) -> Self {
         Self {
+            sources: Default::default(),
             decisions: Mutex::new(BTreeMap::new()),
             limits,
             environment,
-            processes: Supervisor::default(),
+            processes: Arc::new(Supervisor::default()),
             factories: BTreeMap::from([
                 ("local.shell".into(), shell as Factory),
-                ("local.metric".into(), metric as Factory),
+                ("local.metric_sample".into(), metric as Factory),
                 ("local.agent".into(), crate::agent::process as Factory),
-                ("local.application".into(), application as Factory),
             ]),
         }
     }
@@ -110,6 +113,84 @@ impl Default for Local {
     }
 }
 impl ExecutionProvider for Local {
+    fn validate(&self, type_id: &str, properties: &Record) -> Result<()> {
+        if matches!(
+            type_id,
+            "local.metric" | "local.timer" | "local.watcher" | "local.receive"
+        ) {
+            ensure!(
+                properties
+                    .get("interval_secs")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|v| v > 0),
+                "Source interval must be a positive integer"
+            );
+        }
+        if matches!(type_id, "local.receive" | "local.broadcast") {
+            let ty: flow_core::graph::Type = serde_json::from_value(
+                properties
+                    .get("signal_type")
+                    .cloned()
+                    .context("Messaging needs a signal type")?,
+            )?;
+            ensure!(ty.is_signal(), "Messaging requires a signal type");
+        }
+        Ok(())
+    }
+
+    fn subscription(&self, source: &SourceRegistration) -> Result<Option<SignalSubscription>> {
+        if source.type_id != "local.receive" {
+            return Ok(None);
+        }
+        let channel = text(&source.properties, "channel")
+            .context("Receive needs a channel")?
+            .to_owned();
+        let ty = serde_json::from_value(
+            source
+                .properties
+                .get("signal_type")
+                .cloned()
+                .unwrap_or_else(|| json!({"kind":"signal","args":{},"open":true})),
+        )?;
+        Ok(Some(SignalSubscription { channel, ty }))
+    }
+
+    fn resources(&self, invocation: &Invocation) -> Result<Vec<ResourceClaim>> {
+        if matches!(
+            invocation.type_id.as_str(),
+            "local.shell" | "local.agent" | "local.metric_sample"
+        ) {
+            let directory = directory(invocation)
+                .canonicalize()
+                .context("Working directory no longer exists")?;
+            let exclusive = invocation.type_id == "local.shell"
+                || invocation
+                    .properties
+                    .get("writable")
+                    .and_then(Value::as_bool)
+                    == Some(true);
+            Ok(vec![ResourceClaim {
+                key: directory.to_string_lossy().into_owned(),
+                exclusive,
+            }])
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    fn subscribe(&self, source: SourceRegistration, events: SourceSink) -> Result<String> {
+        self.sources.subscribe(
+            source,
+            events,
+            self.processes.clone(),
+            self.limits.clone(),
+            self.environment.clone(),
+        )
+    }
+    fn unsubscribe(&self, handle: &str) -> Result<()> {
+        self.sources.unsubscribe(handle)
+    }
+
     fn read(&self, invocation: Invocation) -> Result<Value> {
         ensure!(
             invocation.type_id == "local.constant",
@@ -133,7 +214,78 @@ impl ExecutionProvider for Local {
                 !decisions.contains_key(&handle),
                 "Invocation is already awaiting a decision"
             );
+            events(Completion {
+                invocation: invocation.id.clone(),
+                generation: invocation.generation,
+                status: flow_core::domain::ExecutionStatus::Waiting,
+                result: json!({}),
+            });
             decisions.insert(handle.clone(), (invocation, events));
+            return Ok(handle);
+        }
+        if invocation.type_id == "local.broadcast" {
+            let messaging = self
+                .environment
+                .messaging
+                .clone()
+                .context("Messaging provider unavailable")?;
+            let handle = invocation.id.0.clone();
+            std::thread::spawn(move || {
+                let result = (|| -> Result<Value> {
+                    let target = text(&invocation.properties, "target")
+                        .context("Broadcast needs a target workflow")?;
+                    let channel = text(&invocation.properties, "channel")
+                        .context("Broadcast needs a channel")?;
+                    let ty = serde_json::from_value(
+                        invocation
+                            .properties
+                            .get("signal_type")
+                            .cloned()
+                            .unwrap_or_else(|| json!({"kind":"signal","args":{},"open":true})),
+                    )?;
+                    let accepted = messaging.broadcast(flow_core::domain::Delivery {
+                        id: invocation.id.0.clone().into(),
+                        source: invocation.workflow.clone(),
+                        target: target.into(),
+                        channel: channel.into(),
+                        ty,
+                        args: invocation.args.clone(),
+                        sequence: invocation.generation,
+                    })?;
+                    Ok(json!({"accepted":accepted,"out":invocation.args}))
+                })();
+                events(Completion {
+                    invocation: invocation.id,
+                    generation: invocation.generation,
+                    status: if result.is_ok() {
+                        flow_core::domain::ExecutionStatus::Complete
+                    } else {
+                        flow_core::domain::ExecutionStatus::Failed
+                    },
+                    result: result.unwrap_or_else(|e| json!({"error":e.to_string()})),
+                });
+            });
+            return Ok(handle);
+        }
+        if matches!(invocation.type_id.as_str(), "local.alert" | "local.join") {
+            let result = if invocation.type_id == "local.alert" {
+                json!({"attention":{"message":invocation.properties.get("message"),"critical":invocation.properties.get("critical")},"out":invocation.args})
+            } else if invocation.input == "failed" {
+                json!({"failed":invocation.args})
+            } else {
+                json!({"out":invocation.args})
+            };
+            let handle = invocation.id.0.clone();
+            events(Completion {
+                invocation: invocation.id,
+                generation: invocation.generation,
+                status: if invocation.type_id == "local.join" && invocation.input == "failed" {
+                    flow_core::domain::ExecutionStatus::Failed
+                } else {
+                    flow_core::domain::ExecutionStatus::Complete
+                },
+                result,
+            });
             return Ok(handle);
         }
         if invocation.type_id == "local.constant" {
@@ -151,16 +303,8 @@ impl ExecutionProvider for Local {
             .get(&invocation.type_id)
             .context("Unsupported local provider node")?;
         let mut process = factory(&invocation, &self.environment, &self.limits)?;
-        process.command.env(
-            "FLOWWM_INPUTS",
-            invocation
-                .properties
-                .get("inputs")
-                .unwrap_or(&json!([]))
-                .to_string(),
-        );
         if let Some(socket) = &self.environment.control_socket {
-            process.command.env("FLOWWM_SOCKET", socket);
+            process.command.env("FLOWWM_HOST_SOCKET", socket);
         }
         if let Some(cli) = &self.environment.cli {
             process.command.env("FLOWWM_CLI", cli);
@@ -191,6 +335,13 @@ impl ExecutionProvider for Local {
             .unwrap()
             .remove(handle)
             .context("Decision is no longer active")?;
+        let mut result = result;
+        if let Some(values) = result.as_object_mut() {
+            values.insert(
+                if accepted { "accepted" } else { "rejected" }.into(),
+                invocation.args.clone(),
+            );
+        }
         events(Completion {
             invocation: invocation.id,
             generation: invocation.generation,
@@ -226,7 +377,11 @@ fn shell(invocation: &Invocation, _: &Environment, limits: &Limits) -> Result<Pr
         decode: |stdout| Ok(json!({"stdout":stdout})),
     })
 }
-fn metric(invocation: &Invocation, environment: &Environment, limits: &Limits) -> Result<Process> {
+pub(crate) fn metric(
+    invocation: &Invocation,
+    environment: &Environment,
+    limits: &Limits,
+) -> Result<Process> {
     let mut process = shell(invocation, environment, limits)?;
     process.timeout = Duration::from_secs(limits.metric_timeout_secs);
     process.writer = false;
@@ -244,36 +399,6 @@ fn metric(invocation: &Invocation, environment: &Environment, limits: &Limits) -
     };
     Ok(process)
 }
-fn application(invocation: &Invocation, _: &Environment, limits: &Limits) -> Result<Process> {
-    let application = text(&invocation.properties, "application")
-        .context("Application identifier is required")?;
-    let mut command = Command::new("gtk-launch");
-    command.arg(application);
-    for key in [
-        "XDG_CONFIG_HOME",
-        "XDG_STATE_HOME",
-        "XDG_CACHE_HOME",
-        "QT_PLUGIN_PATH",
-        "NIXPKGS_QT6_QML_IMPORT_PATH",
-    ] {
-        if let Some(original) = std::env::var_os(format!("DMS_ORIG_{key}")) {
-            if original.is_empty() {
-                command.env_remove(key);
-            } else {
-                command.env(key, original);
-            }
-        }
-    }
-    Ok(Process {
-        command,
-        input: None,
-        stdout_stream: "stdout",
-        timeout: Duration::from_secs(limits.execution_timeout_secs),
-        directory: directory(invocation),
-        writer: false,
-        decode: |stdout| Ok(json!({"stdout":stdout})),
-    })
-}
 pub fn registry(limits: Limits) -> Result<Registry> {
     registry_with_environment(limits, Environment::default())
 }
@@ -282,22 +407,135 @@ pub fn registry_with_environment(limits: Limits, environment: Environment) -> Re
     let definitions = [
         ("shell", Behavior::Invoked, vec!["shell"]),
         ("constant", Behavior::Lazy, vec![]),
-        ("metric", Behavior::Invoked, vec!["shell"]),
+        ("metric_sample", Behavior::Invoked, vec!["shell"]),
+        ("metric", Behavior::Source, vec!["shell"]),
+        ("timer", Behavior::Source, vec![]),
+        ("watcher", Behavior::Source, vec!["shell"]),
+        ("broadcast", Behavior::Invoked, vec![]),
+        ("receive", Behavior::Source, vec![]),
+        ("alert", Behavior::Invoked, vec![]),
+        ("join", Behavior::Join, vec![]),
         ("agent", Behavior::Invoked, vec!["shell"]),
-        ("application", Behavior::Invoked, vec!["desktop"]),
+        ("window", Behavior::Application, vec!["application"]),
         ("human", Behavior::Invoked, vec![]),
         ("gate", Behavior::Invoked, vec![]),
     ]
     .into_iter()
-    .map(|(name, behavior, capabilities)| Definition {
-        id: format!("local.{name}"),
-        owner: "local".into(),
-        behavior,
-        inputs: vec![],
-        outputs: vec![],
-        capabilities: capabilities.into_iter().map(String::from).collect(),
-        window: None,
-        renderer: None,
+    .map(|(name, behavior, capabilities)| {
+        use flow_core::{domain::*, graph::*};
+        let graph = FlowNet::default();
+        let node = NodeSpec {
+            id: "schema".into(),
+            type_id: format!("local.{name}"),
+            flow: Default::default(),
+        };
+        let mut inputs = pins(&graph, &node, false);
+        let mut outputs = pins(&graph, &node, true);
+        if behavior == Behavior::Source {
+            inputs.clear();
+            outputs = vec![
+                Pin::new(
+                    if name == "metric" { "on_sample" } else { "out" },
+                    Type::Signal {
+                        args: if name == "timer" {
+                            BTreeMap::from([("tick".into(), Type::UInt)])
+                        } else {
+                            BTreeMap::from([("value".into(), Type::Float)])
+                        },
+                        open: true,
+                    },
+                ),
+                Pin::new("value", Type::Float),
+            ];
+        }
+        if name == "receive" {
+            outputs = vec![
+                Pin::new(
+                    "out",
+                    Type::Signal {
+                        args: BTreeMap::new(),
+                        open: true,
+                    },
+                ),
+                Pin::new("args", Type::record()),
+            ];
+        }
+        if matches!(name, "human" | "gate") {
+            outputs = vec![
+                Pin::new(
+                    "accepted",
+                    Type::Signal {
+                        args: BTreeMap::new(),
+                        open: true,
+                    },
+                ),
+                Pin::new(
+                    "rejected",
+                    Type::Signal {
+                        args: BTreeMap::new(),
+                        open: true,
+                    },
+                ),
+                Pin::new("output", Type::String),
+            ];
+        }
+        if name == "join" {
+            let event = Type::Signal {
+                args: BTreeMap::new(),
+                open: true,
+            };
+            inputs = vec![
+                Pin::new("left", event.clone()),
+                Pin::new("right", event.clone()),
+                Pin::new("failed", event),
+            ];
+        }
+        Definition {
+            id: format!("local.{name}"),
+            owner: "local".into(),
+            behavior,
+            inputs,
+            outputs,
+            capabilities: capabilities.into_iter().map(String::from).collect(),
+            window: None,
+            renderer: None,
+            properties: {
+                let mut properties = BTreeMap::new();
+                let mut property = |name: &str, ty: Type, value: Value| {
+                    properties.insert(
+                        name.into(),
+                        Property {
+                            ty,
+                            default: Some(value),
+                            output: false,
+                        },
+                    );
+                };
+                if matches!(name, "timer" | "metric" | "watcher" | "receive") {
+                    property(
+                        "interval_secs",
+                        Type::UInt,
+                        json!(limits.source_interval_secs),
+                    );
+                }
+                if matches!(name, "receive" | "broadcast") {
+                    property("channel", Type::String, json!("events"));
+                    property(
+                        "signal_type",
+                        Type::Any,
+                        json!({"kind":"signal","args":{},"open":true}),
+                    );
+                }
+                if name == "broadcast" {
+                    property("target", Type::String, json!(""));
+                }
+                if name == "watcher" {
+                    property("threshold", Type::Float, json!(0.));
+                    property("above", Type::Bool, json!(true));
+                }
+                properties
+            },
+        }
     })
     .collect();
     registry.mount(
