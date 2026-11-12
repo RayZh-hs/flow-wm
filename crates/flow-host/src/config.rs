@@ -18,12 +18,15 @@ pub fn directory() -> PathBuf {
 
 #[derive(Default)]
 pub struct Configuration {
+    pub row_settings: flow_builtins::row_settings::Extension,
     pub host_id: Option<String>,
     pub limits: Limits,
     pub hosts: BTreeMap<String, crate::remote::Remote>,
 }
 #[derive(knuffel::Decode)]
 struct Document {
+    #[knuffel(child)]
+    row_settings: Option<RowSettings>,
     #[knuffel(child, unwrap(argument))]
     host_id: Option<String>,
     #[knuffel(children(name = "include"))]
@@ -60,6 +63,20 @@ struct Document {
     remote_batch_size: Option<usize>,
 }
 #[derive(knuffel::Decode)]
+struct RowSettings {
+    #[knuffel(child, unwrap(argument))]
+    pwd: Option<String>,
+    #[knuffel(children(name = "terminal"))]
+    terminals: Vec<Terminal>,
+}
+#[derive(knuffel::Decode)]
+struct Terminal {
+    #[knuffel(argument)]
+    executable: String,
+    #[knuffel(arguments)]
+    directory_args: Vec<String>,
+}
+#[derive(knuffel::Decode)]
 struct Include {
     #[knuffel(argument)]
     path: String,
@@ -91,6 +108,17 @@ pub fn load_from(path: &Path) -> Result<Configuration> {
                 .map_err(|e| anyhow::anyhow!("Runtime configuration: {e:?}"))?;
         for include in document.includes {
             read(&path.parent().unwrap().join(include.path), active, output)?;
+        }
+        if let Some(settings) = document.row_settings {
+            if let Some(pwd) = settings.pwd {
+                output.row_settings.pwd = Some(pwd);
+            }
+            for terminal in settings.terminals {
+                output
+                    .row_settings
+                    .terminals
+                    .insert(terminal.executable, terminal.directory_args);
+            }
         }
         if let Some(host) = document.host_id {
             output.host_id = Some(host);

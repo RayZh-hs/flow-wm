@@ -125,6 +125,7 @@ fn headless_graph_uses_registered_computation_and_work_without_central_dispatch(
         ..Default::default()
     };
     let workflow = Workflow {
+        row_settings: Default::default(),
         id: "workflow".into(),
         name: "Headless graph".into(),
         workspace: Some("local:user".into()),

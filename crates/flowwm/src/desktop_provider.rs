@@ -314,25 +314,22 @@ pub fn run() -> Result<()> {
                             );
                             let host = Client::new(flow_host::ipc::host_socket());
                             let runtime = host.snapshot()?;
-                            let spec = runtime
+                            let workflow = runtime
                                 .workflows
                                 .values()
-                                .find_map(|w| w.graph.node(node))
+                                .find(|w| w.graph.node(node).is_some())
                                 .ok_or_else(|| {
                                     anyhow::anyhow!("Application node is unavailable")
                                 })?;
+                            let spec = workflow.graph.node(node).unwrap();
                             let application = spec
                                 .flow
                                 .properties
                                 .get("application")
                                 .and_then(|v| v.as_str())
                                 .ok_or_else(|| anyhow::anyhow!("Choose an application first"))?;
-                            let mut child = std::process::Command::new("gtk-launch")
-                                .arg(application)
-                                .spawn()?;
-                            std::thread::spawn(move || {
-                                let _ = child.wait();
-                            });
+                            let env = crate::launch::node_environment(&host, &workflow.id, node)?;
+                            crate::launch::application(application, &env)?;
                         }
                         return Ok(serde_json::Value::Null);
                     }
@@ -548,6 +545,7 @@ pub fn run() -> Result<()> {
                     if !runtime.workflows.contains_key(&row.id.clone().into()) {
                         host.command(Command::Create {
                             workflow: Workflow {
+                                row_settings: Default::default(),
                                 id: row.id.clone().into(),
                                 name: row.name.clone(),
                                 workspace: Some(workspace.clone()),

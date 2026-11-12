@@ -131,6 +131,26 @@ pub fn builtins() -> Vec<Macro> {
     }
     for (id, name, description) in [
         (
+            "set_env",
+            "Set Env",
+            "Set multiple variables; an unconnected Env inherits the row environment",
+        ),
+        (
+            "unset_env",
+            "Unset Env",
+            "Remove multiple variables from an environment",
+        ),
+        (
+            "empty_env",
+            "Empty Env",
+            "Start with a completely empty environment",
+        ),
+        (
+            "bake_args_into_env",
+            "Bake Args into Env",
+            "Map signal arguments to explicitly named environment variables",
+        ),
+        (
             "join",
             "Join signals",
             "Wait for each named input within one correlated delivery",

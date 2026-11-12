@@ -30,6 +30,35 @@ impl Orchestrator {
         _events: EventSink,
     ) -> Result<Value> {
         match command {
+            Command::RowEnvironment { workflow } => {
+                let row = self.state.lookup(&workflow, caller)?;
+                Ok(serde_json::to_value(
+                    self.registry.row_environment(&row.row_settings)?,
+                )?)
+            }
+            Command::RowSettings { workflow } => {
+                let row = self.state.lookup(&workflow, caller)?;
+                Ok(json!({"settings":row.row_settings,
+                    "effective":self.registry.effective_row_settings(&row.row_settings),
+                    "definitions":self.registry.row_settings}))
+            }
+            Command::SetRowSettings { workflow, settings } => {
+                let row = self.state.lookup(&workflow, caller)?;
+                ensure!(
+                    row.authority == self.state.host_id && row.transfer.is_none(),
+                    "Workflow is moving or belongs to another host"
+                );
+                crate::environment::validate_row_settings(
+                    &self.registry.effective_row_settings(&settings),
+                )?;
+                self.state
+                    .workflows
+                    .get_mut(&workflow)
+                    .unwrap()
+                    .row_settings = settings;
+                self.state.revision += 1;
+                Ok(Value::Null)
+            }
             Command::UnregisterApplication {
                 node,
                 token,
@@ -336,6 +365,7 @@ impl Orchestrator {
             }
             Command::Workspaces => Ok(serde_json::to_value(&self.state.workspaces)?),
             Command::Create { mut workflow } => {
+                self.registry.row_environment(&workflow.row_settings)?;
                 ensure!(
                     workflow.authority == self.state.host_id,
                     "Create workflows at their authoritative host"
@@ -783,7 +813,7 @@ impl Orchestrator {
                 .is_subset(&workspace_def.capabilities),
             "Destination workspace is missing required capabilities"
         );
-        crate::graph::signal_environment(&args)?;
+        crate::graph::validate_signal_args(&args)?;
         let generation = self.state.revision + 1;
         let mut properties = spec.flow.properties.clone();
         if let Some(inputs) = inputs {
@@ -809,7 +839,18 @@ impl Orchestrator {
             }
             properties.insert("data_inputs".into(), inputs);
         }
+        let environment = Some(match inputs_environment(&properties)? {
+            Some(env) => env,
+            None => self.registry.row_environment(&w.row_settings)?,
+        });
+        if let Some(inputs) = properties
+            .get_mut("data_inputs")
+            .and_then(Value::as_object_mut)
+        {
+            inputs.remove("env");
+        }
         let request = Invocation {
+            environment,
             input: activation.pin,
             id: invocation.clone(),
             workflow: workflow.clone(),
@@ -841,6 +882,16 @@ impl Orchestrator {
         self.state.revision += 1;
         Ok(serde_json::to_value(&self.state.executions[&invocation])?)
     }
+}
+fn inputs_environment(
+    properties: &crate::graph::Record,
+) -> Result<Option<crate::environment::Env>> {
+    let Some(value) = properties.get("data_inputs").and_then(|v| v.get("env")) else {
+        return Ok(None);
+    };
+    let env = serde_json::from_value(value.clone())?;
+    crate::environment::validate(&env)?;
+    Ok(Some(env))
 }
 impl FlowNet {
     pub fn validate(&self) -> Result<()> {

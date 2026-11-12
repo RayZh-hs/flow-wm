@@ -9,6 +9,7 @@ hotkey-overlay {
 }
 
 binds {
+    Mod+L repeat=false allow-inhibiting=false { spawn "flowwm" "row-settings"; }
     Mod+Tab repeat=false allow-inhibiting=false { spawn "flowwm" "toggle"; }
     Mod+Q repeat=false allow-inhibiting=false { spawn "flowwm" "send" r#"{"action":"ui","command":{"action":"stop_selected"}}"#; }
     Mod+Space repeat=false { spawn "flowwm" "new"; }

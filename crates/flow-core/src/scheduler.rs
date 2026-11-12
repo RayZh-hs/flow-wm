@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use std::sync::{Arc, atomic::AtomicBool};
 
 struct Bindings {
+    environment: crate::environment::Env,
     registry: Registry,
     workflow: WorkflowId,
     scripts: Arc<dyn ScriptEvaluator>,
@@ -41,6 +42,7 @@ impl ScriptEvaluator for Bindings {
                 bindings.get("inputs").cloned().unwrap_or(json!({})),
             );
             self.registry.provider(&definition.owner)?.read(Invocation {
+                environment: Some(self.environment.clone()),
                 input: String::new(),
                 id: format!("data:{}", node.id).into(),
                 workflow: self.workflow.clone(),
@@ -72,7 +74,6 @@ pub fn evaluate(
     registry: Registry,
     scripts: Arc<dyn ScriptEvaluator>,
 ) -> Result<Evaluation> {
-    context.apply(&mut state);
     // Registered native nodes carry schemas even when no Vox source is installed.
     for definition in registry.definitions() {
         if state.nodes.iter().any(|n| n.type_id == definition.id)
@@ -90,17 +91,18 @@ pub fn evaluate(
             });
         }
     }
-    evaluate_with(
-        state,
-        root,
-        signal,
-        cancel,
-        Arc::new(Bindings {
-            registry,
-            workflow: context.workflow,
-            scripts,
-        }),
-    )
+    context.apply(&mut state);
+    let bindings = Arc::new(Bindings {
+        environment: context.environment,
+        registry,
+        workflow: context.workflow,
+        scripts,
+    });
+    if let Some(input) = context.input {
+        evaluate_input_with(state, root, &input, cancel, bindings)
+    } else {
+        evaluate_with(state, root, signal, cancel, bindings)
+    }
 }
 
 use serde::{Deserialize, Serialize};
@@ -192,7 +194,7 @@ impl crate::orchestrator::Orchestrator {
                 || !behavior.is_some_and(|b| matches!(b, Behavior::Source | Behavior::Application)),
             "Sources and applications cannot be manually invoked"
         );
-        signal_environment(&frame.args)?;
+        validate_signal_args(&frame.args)?;
         if self.state.queue.accepted.contains_key(&frame.id)
             || self.state.queue.frames.iter().any(|f| f.id == frame.id)
         {
@@ -220,6 +222,8 @@ impl crate::orchestrator::Orchestrator {
                 frame.clone(),
                 workflow.graph.clone(),
                 EvaluationContext {
+                    input: None,
+                    environment: self.registry.row_environment(&workflow.row_settings).ok()?,
                     workflow: workflow.id.clone(),
                     published: self.state.queue.published.clone(),
                 },
@@ -327,6 +331,7 @@ impl crate::orchestrator::Orchestrator {
                     invocation.clone(),
                     InvocationContext {
                         request: Invocation {
+                            environment: None,
                             input: String::new(),
                             id: invocation.clone(),
                             workflow: frame.workflow.clone(),
@@ -762,6 +767,10 @@ impl crate::orchestrator::Orchestrator {
                 continue;
             }
             let mut source = SourceRegistration {
+                environment: Some(
+                    self.registry
+                        .row_environment(&self.state.workflows[&workflow].row_settings)?,
+                ),
                 subscription: None,
                 workflow,
                 node: id.clone(),

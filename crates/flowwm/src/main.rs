@@ -115,6 +115,15 @@ enum Cmd {
     Status,
     /// Manage workflows and their predefined workspace assignments.
     Workflows,
+    /// Edit the current row's settings and owning workspace.
+    RowSettings,
+    /// Open the configured terminal with this row's environment.
+    Terminal,
+    /// Launch an application command with this row's environment.
+    Launch {
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
     /// Add a node without starting it.
     Add {
         #[arg(value_enum)]
@@ -170,6 +179,21 @@ fn main() -> Result<()> {
         background: false,
     });
     let control = match command {
+        Cmd::Launch { command } => {
+            flowwm::launch::command(&command, &flowwm::launch::selected_environment(&socket)?)?;
+            return Ok(());
+        }
+        Cmd::Terminal => {
+            let command = flowwm::config::flow()
+                .terminal
+                .clone()
+                .unwrap_or_else(|| vec!["alacritty".into()]);
+            flowwm::launch::command(&command, &flowwm::launch::selected_environment(&socket)?)?;
+            return Ok(());
+        }
+        Cmd::RowSettings => Action::Ui {
+            command: UiCommand::RowSettings,
+        },
         Cmd::ConfigEnvironment => {
             let config = flowwm::config::load()?;
             let values: std::collections::BTreeMap<_, _> = config

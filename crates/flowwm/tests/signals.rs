@@ -34,6 +34,8 @@ fn run(state: State, root: &str, signal: Option<(&str, Value)>) -> Evaluation {
     flow_builtins::evaluate(
         state.graph(),
         EvaluationContext {
+            input: None,
+            environment: Default::default(),
             workflow: state.selected_workspace.clone().into(),
             published: state
                 .nodes
@@ -222,7 +224,7 @@ fn window_exit_delivers_unsigned_status_and_rejects_invalid_payloads() {
     let window = node(&mut state, NodeKind::Window);
     let sink = node(&mut state, NodeKind::Python);
     state.node_mut(&sink).unwrap().command =
-        "import os\noutputs = {'value': [args['exit_code'], os.environ['FLOWWM_ARG_EXIT_CODE']]}"
+        "import os\noutputs = {'value': [args['exit_code'], os.environ.get('FLOWWM_ARG_EXIT_CODE')]}"
             .into();
     wire(&mut state, &window, "on_exit", &sink, "in");
     for exit_code in [0u8, 1, 255] {
@@ -232,10 +234,7 @@ fn window_exit_delivers_unsigned_status_and_rejects_invalid_payloads() {
             Some(("on_exit", json!({"exit_code":exit_code}))),
         );
         assert!(result.errors.is_empty(), "{:?}", result.errors);
-        assert_eq!(
-            result.values[&sink]["value"],
-            json!([exit_code, exit_code.to_string()])
-        );
+        assert_eq!(result.values[&sink]["value"], json!([exit_code, null]));
     }
     for args in [
         json!({}),
@@ -323,7 +322,7 @@ fn break_merge_and_conditional_preserve_and_overwrite_arguments() {
         .insert("condition".into(), json!(true));
     let yes = node(&mut state, NodeKind::Python);
     state.node_mut(&yes).unwrap().command =
-        "import os\noutputs = {'value': [args, os.environ['FLOWWM_ARG_X']]}".into();
+        "import os\noutputs = {'value': [args, os.environ.get('FLOWWM_ARG_X')]}".into();
     let no = node(&mut state, NodeKind::Python);
     state.node_mut(&no).unwrap().command = "raise Exception('wrong branch')".into();
     wire(&mut state, &source, "out", &split, "in");
@@ -346,7 +345,7 @@ fn break_merge_and_conditional_preserve_and_overwrite_arguments() {
     assert_eq!(result.values[&split]["args"], json!({"x":1,"keep":"hello"}));
     assert_eq!(
         result.values[&yes]["value"],
-        json!([{"x":99,"keep":"hello"},"99"])
+        json!([{"x":99,"keep":"hello"},null])
     );
     assert!(!result.executed.contains(&no));
 }
@@ -390,14 +389,12 @@ fn rejects_mixed_connections_duplicate_data_inputs_and_data_cycles() {
 }
 
 #[test]
-fn environment_names_and_values_are_unambiguous() {
-    assert_eq!(
-        signal_environment(&json!({"path":"hello world", "nested":{"x":1}, "count":2})).unwrap()["FLOWWM_ARG_PATH"],
-        "hello world"
+fn signal_records_preserve_values_without_environment_encoding() {
+    assert!(
+        validate_signal_args(&json!({"x":1,"X":2,"text":"\u{0}","nested":{"value":7}})).is_ok()
     );
-    assert!(signal_environment(&json!({"x":1,"X":2})).is_err());
-    assert!(signal_environment(&json!({"bad-name":1})).is_err());
-    assert!(signal_environment(&json!({"x":"\u{0}"})).is_err());
+    assert!(validate_signal_args(&json!([1, 2])).is_err());
+    assert!(validate_signal_args(&json!({"bad-name":1})).is_err());
 }
 
 #[test]
@@ -616,7 +613,7 @@ fn engine_delivers_each_signal_with_its_own_arguments_and_lazy_data() {
     });
     assert_eq!(
         std::fs::read_to_string(path).unwrap(),
-        "1:{\"number\":123}\n2:{\"number\":123}\n"
+        ":{\"number\":123}\n:{\"number\":123}\n"
     );
     engine.shutdown();
 }

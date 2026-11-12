@@ -18,6 +18,7 @@ use std::{
 };
 #[derive(Clone)]
 pub struct Host {
+    worker: PathBuf,
     tx: mpsc::SyncSender<Message>,
     shared: Arc<Shared>,
     directory: PathBuf,
@@ -102,6 +103,7 @@ impl Host {
         let registry = flow_builtins::local::registry_with_environment(
             limits.clone(),
             flow_builtins::local::Environment {
+                row_settings: config::load()?.row_settings,
                 config_directory: Some(config::directory()),
                 data_directory: Some(store.directory().into()),
                 control_socket: Some(socket),
@@ -137,13 +139,14 @@ impl Host {
             network_busy: false,
             network_due: Instant::now(),
             peer_due: Instant::now(),
-            worker,
+            worker: worker.clone(),
             evaluation: None,
             tx: tx.clone(),
         };
         let changes = shared.clone();
         thread::spawn(move || actor.work(rx, changes));
         Ok(Self {
+            worker,
             tx,
             shared,
             directory: store.directory().into(),
@@ -187,13 +190,16 @@ impl Host {
                 id: request.id,
                 revision: self.snapshot().revision,
                 result: Some(
-                    json!({"protocol":ORCHESTRATOR_VERSION,"data_directory":self.directory,"config_directory":config::directory()}),
+                    json!({"protocol":ORCHESTRATOR_VERSION,"data_directory":self.directory,"config_directory":config::directory(),"worker":self.worker}),
                 ),
                 error: None,
             });
         }
         let state = self.snapshot();
         let target = match &request.command {
+            Command::RowEnvironment { workflow }
+            | Command::RowSettings { workflow }
+            | Command::SetRowSettings { workflow, .. } => Some(workflow),
             Command::Read { workflow, .. }
             | Command::Run { workflow, .. }
             | Command::ReplaceGraph { workflow, .. }
@@ -363,6 +369,8 @@ impl Supervisor {
                                 Command::Info
                                     | Command::Snapshot
                                     | Command::Workspaces
+                                    | Command::RowSettings { .. }
+                                    | Command::RowEnvironment { .. }
                                     | Command::Subscribe { .. }
                                     | Command::Negotiate { .. }
                                     | Command::Receive { .. }

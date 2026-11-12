@@ -98,7 +98,7 @@ pub(crate) fn process(
         .and_then(Value::as_str)
         .or_else(|| text(properties, "agent_session"));
     let mut command = config.command(session, conversational, writable);
-    if let Some(socket) = invocation.args.get("wm_socket").and_then(Value::as_str) {
+    if let Some(socket) = text(properties, "wm_socket") {
         command.env("FLOWWM_SOCKET", socket);
     }
     if !conversational {
@@ -119,11 +119,18 @@ pub(crate) fn process(
         format!("{context}\n\nUser request:\n{prompt}")
     } else if let Some(inputs) = properties
         .get("data_inputs")
-        .filter(|v| v.as_object().is_some_and(|a| !a.is_empty()))
+        .and_then(Value::as_object)
+        .map(|v| {
+            v.iter()
+                .filter(|(k, _)| k.as_str() != "env")
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<serde_json::Map<_, _>>()
+        })
+        .filter(|v| !v.is_empty())
     {
         format!(
             "{prompt}\n\nWorkflow inputs:\n{}",
-            serde_json::to_string_pretty(inputs)?
+            serde_json::to_string_pretty(&inputs)?
         )
     } else {
         prompt.into()

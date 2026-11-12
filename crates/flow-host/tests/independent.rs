@@ -71,6 +71,7 @@ impl Fixture {
         self.client
             .command(Command::Create {
                 workflow: Workflow {
+                    row_settings: Default::default(),
                     id: id.clone(),
                     name: "Fixture".into(),
                     workspace: Some("local:user".into()),
@@ -149,7 +150,12 @@ fn native_graph_executes_through_worker_and_survives_client_reconnection() {
     let workflow = f.graph(
         vec![
             node("first", "shell", "sleep 0.1; printf first", cwd),
-            node("second", "shell", "printf \"$FLOWWM_ARG_NUMBER\"", cwd),
+            node(
+                "second",
+                "shell",
+                "printf \"${FLOWWM_ARG_NUMBER-unset}\"",
+                cwd,
+            ),
         ],
         vec![wire("first", "out", "second", "in")],
     );
@@ -166,7 +172,7 @@ fn native_graph_executes_through_worker_and_survives_client_reconnection() {
     });
     let state = reconnected.snapshot().unwrap();
     assert_eq!(state.executions.len(), 2);
-    assert_eq!(state.queue.published[&"second".into()]["stdout"], "7");
+    assert_eq!(state.queue.published[&"second".into()]["stdout"], "unset");
     let saved = std::fs::read_to_string(cwd.join("data/runtime.json")).unwrap();
     for forbidden in [
         "compatibility",
@@ -462,6 +468,7 @@ fn moving_across_real_hosts_preserves_origin_and_forwards_interruption() {
     wait(|| a.snapshot().is_ok() && b.snapshot().is_ok());
     a.command(Command::Create {
         workflow: Workflow {
+            row_settings: Default::default(),
             id: "moving".into(),
             name: "Moved".into(),
             workspace: Some("a:user".into()),
@@ -731,6 +738,7 @@ impl Hosts {
             .command_as(
                 Command::Create {
                     workflow: Workflow {
+                        row_settings: Default::default(),
                         id: id.into(),
                         name: id.into(),
                         workspace: Some("a:user".into()),
@@ -964,4 +972,84 @@ fn destroying_a_source_waits_for_its_owned_polling_process_to_exit() {
             .sources
             .contains_key(&"poll".into())
     });
+}
+
+#[test]
+fn row_settings_are_snapshotted_per_run_and_env_inputs_can_replace_them() {
+    let fixture = Fixture::new();
+    let cwd = fixture.dir.path();
+    let workflow = fixture.graph(
+        vec![node(
+            "print",
+            "shell",
+            "sleep 0.1; printf '%s:%s' \"$FLOWWM_ROWSET_PROJECT\" \"${FLOWWM_ARG_NUMBER-unset}\"",
+            cwd,
+        )],
+        vec![],
+    );
+    let set = |value: &str| {
+        fixture
+            .client
+            .command(Command::SetRowSettings {
+                workflow: workflow.clone(),
+                settings: [("project".into(), value.into())].into(),
+            })
+            .unwrap()
+    };
+    set("before");
+    fixture.run(&workflow, "print", "before");
+    wait(|| {
+        fixture
+            .client
+            .snapshot()
+            .unwrap()
+            .executions
+            .get(&"before".into())
+            .is_some_and(|e| e.status == ExecutionStatus::Running)
+    });
+    set("after");
+    assert_eq!(
+        fixture.until_terminal("before").result["stdout"],
+        "before:unset"
+    );
+    fixture.run(&workflow, "print", "after");
+    assert_eq!(
+        fixture.until_terminal("after").result["stdout"],
+        "after:unset"
+    );
+    let mut graph = fixture.client.snapshot().unwrap().workflows[&workflow]
+        .graph
+        .clone();
+    graph.nodes.push(node("empty", "empty_env", "", cwd));
+    graph.connections.push(wire("empty", "env", "print", "env"));
+    fixture
+        .client
+        .command(Command::ReplaceGraph {
+            workflow: workflow.clone(),
+            graph,
+        })
+        .unwrap();
+    fixture.run(&workflow, "print", "empty");
+    assert_eq!(fixture.until_terminal("empty").result["stdout"], ":unset");
+    let settings = fixture
+        .client
+        .command(Command::RowSettings {
+            workflow: workflow.clone(),
+        })
+        .unwrap();
+    assert_eq!(settings["settings"]["project"], "after");
+    assert!(
+        settings["effective"]["pwd"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+    );
+    assert!(
+        fixture
+            .client
+            .command(Command::SetRowSettings {
+                workflow,
+                settings: [("x".into(), "a".into()), ("X".into(), "b".into())].into()
+            })
+            .is_err()
+    );
 }

@@ -110,6 +110,7 @@ pub fn can_cast(state: &State, from: &Type, to: &Type) -> bool {
 }
 pub fn pin_label(node: &Node, pin: &Pin, output: bool) -> String {
     match (pin.name.as_str(), output) {
+        ("env", _) => "Env".into(),
         ("in", false) => "Run".into(),
         ("out", true) if !node.kind.primitive() => "Completed".into(),
         ("out", true) => "Continue".into(),
@@ -122,6 +123,10 @@ pub fn pin_label(node: &Node, pin: &Pin, output: bool) -> String {
 }
 pub fn pin_description(pin: &Pin, output: bool) -> &'static str {
     match (pin.name.as_str(), output) {
+        ("env", false) => {
+            "Environment for this run; unconnected inputs inherit the row environment"
+        }
+        ("env", true) => "Complete environment; connect to a node's Env input",
         ("in", false) => "Start this step when an event arrives",
         ("out", true) => "Emits after successful completion",
         ("failed", true) => "Emits when this step fails; connect a recovery step",

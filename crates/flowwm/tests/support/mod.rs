@@ -131,6 +131,7 @@ pub fn fixture_with_niri(
         native
             .command(Command::Create {
                 workflow: Workflow {
+                    row_settings: Default::default(),
                     id: row.id.clone().into(),
                     name: row.name.clone(),
                     workspace: Some("local:user".into()),

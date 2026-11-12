@@ -129,6 +129,7 @@ impl Sources {
                     args = json!({"tick":sequence});
                 } else {
                     let invocation = Invocation {
+                        environment: source.environment.clone(),
                         input: String::new(),
                         id: format!("{}:sample:{sequence}", source.handle).into(),
                         workflow: source.workflow.clone(),

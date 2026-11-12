@@ -9,6 +9,7 @@ use std::{
 
 fn invocation(id: &str, kind: &str, directory: &std::path::Path, command: &str) -> Invocation {
     Invocation {
+        environment: None,
         input: String::new(),
         id: id.into(),
         workflow: "workflow".into(),

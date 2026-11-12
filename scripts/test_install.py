@@ -28,6 +28,18 @@ def current_bundle(bundle, metadata=None):
 
 
 class ProfileIsolation(unittest.TestCase):
+    def test_row_environment_upgrade_preserves_custom_shortcuts_and_terminal_flags(self):
+        from configuration import row_environment_bindings
+        text = 'binds {\n    Mod+T repeat=false { spawn "kitty" "--single-instance"; }\n}\n'
+        upgraded = row_environment_bindings(text)
+        self.assertIn('spawn "flowwm" "row-settings"', upgraded)
+        self.assertIn('spawn "flowwm" "launch" "--" "kitty" "--single-instance"', upgraded)
+        self.assertEqual(row_environment_bindings(upgraded), upgraded)
+        custom = 'binds {\n    Mod+L { spawn "custom-lock"; }\n}\n'
+        self.assertEqual(row_environment_bindings(custom), custom)
+        inline = 'binds { Mod+L { spawn "custom-lock"; }; }\n'
+        self.assertEqual(row_environment_bindings(inline), inline)
+
     def profile(self, root):
         arguments = [root / 'config', root / 'state', root / 'cache', root / 'bundle', root / 'original', root / 'original-state', root / 'original-cache', root / 'bin/flowwm-session']
         installer.prepare_profile(*arguments)

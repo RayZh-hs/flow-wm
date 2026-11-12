@@ -78,7 +78,7 @@ def activate_launcher_bindings(config, state, launcher, compositor):
     if not main.is_file():
         return False
     original = main.read_text()
-    upgraded = launcher_focus_bindings(original, launcher)
+    upgraded = row_environment_bindings(launcher_focus_bindings(original, launcher))
     if original == upgraded:
         return False
     backup = Path(state) / 'config-backups/before-launcher-input/config.kdl'
@@ -103,6 +103,21 @@ def current_wm_commands(text):
         command["action"] = command.pop("op")
         return match[1] + json.dumps(json.dumps(command, separators=(",", ":")))
     return pattern.sub(upgrade, text)
+
+
+def row_environment_bindings(text):
+    """Add row settings without replacing a user's existing Win+L action."""
+    active = '\n'.join(line for line in text.splitlines() if not line.lstrip().startswith('//'))
+    if not re.search(r'(?i)(?<![\w+"])(?:Mod|Super)\+L(?=\s|\{)', active):
+        binding = '    Mod+L hotkey-overlay-title="Row settings and owning workspace" repeat=false allow-inhibiting=false { spawn "flowwm" "row-settings"; }'
+        match = re.search(r'(?m)^binds\s*\{', text)
+        if match:
+            text = text[:match.end()] + '\n' + binding + text[match.end():]
+        else:
+            text += '\nbinds {\n' + binding + '\n}\n'
+    # Preserve the chosen terminal and flags while routing its launch through the row.
+    pattern = re.compile(r'(\b(?:Mod|Super)\+(?:T|K)\b[^\n{]*\{\s*)spawn\s+("(?:alacritty|foot|kitty|konsole|gnome-terminal|xterm)")', re.IGNORECASE)
+    return pattern.sub(r'\1spawn "flowwm" "launch" "--" \2', text)
 
 
 def migrate(config, state, defaults, launcher, atomic_text):

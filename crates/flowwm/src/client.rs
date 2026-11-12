@@ -24,6 +24,7 @@ pub struct ApplicationSelection {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum UiCommand {
+    RowSettings,
     Workflows,
     Toggle,
     Nodes,
@@ -926,6 +927,7 @@ impl DesktopClient {
                     .clone();
                 self.inner.host.command(Command::Create {
                     workflow: Workflow {
+                        row_settings: Default::default(),
                         id: id.clone().into(),
                         name: name.clone(),
                         workspace: Some(WorkspaceId::new(&host.0, "user")?),
@@ -1060,7 +1062,11 @@ impl DesktopClient {
                         .insert("conversational".into(), json!(true));
                     Ok(())
                 })?;
-                result = self.run(&state, &id, json!({"graph_context":context,"wm_socket":crate::agent::socket(),"agent_session":session}))?;
+                result = self.run(
+                    &state,
+                    &id,
+                    json!({"graph_context":context,"agent_session":session}),
+                )?;
             }
             Action::HumanProgress { id, text } => {
                 state.node_mut(&id).context("Node not found")?.output = text;

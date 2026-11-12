@@ -3,8 +3,8 @@ mod bindings;
 mod runtime;
 mod types;
 
-pub use runtime::{Activation, Evaluation, evaluate, signal_environment};
-pub use runtime::{EvaluationContext, ScriptEvaluator, evaluate_with};
+pub use runtime::{Activation, Evaluation, evaluate, validate_signal_args};
+pub use runtime::{EvaluationContext, ScriptEvaluator, evaluate_input_with, evaluate_with};
 pub use types::*;
 
 use crate::domain::{FlowNet, NodeSpec as Node};
@@ -237,6 +237,18 @@ pub fn pins_for(node: &Node, definition: Option<&NodeDefinition>, output: bool) 
         } else {
             pins.push(pin.clone());
         }
+    }
+    if !output
+        && matches!(
+            type_id(node),
+            "window" | "shell" | "agent" | "metric_sample" | "python"
+        )
+        && !pins.iter().any(|p| p.name == "env")
+    {
+        pins.push(Pin {
+            default: Some(json!({})),
+            ..Pin::new("env", Type::Env)
+        });
     }
     pins
 }

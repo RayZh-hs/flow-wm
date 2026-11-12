@@ -12,7 +12,7 @@ use std::{
 pub fn python(
     node: &NodeSpec,
     bindings: &Record,
-    args: &Value,
+    _args: &Value,
     cancel: &AtomicBool,
     limits: &crate::local::Limits,
 ) -> Result<Value> {
@@ -30,7 +30,6 @@ pub fn python(
                 .and_then(Value::as_str)
                 .unwrap_or("."),
         )
-        .envs(signal_environment(args)?)
         .env("FLOWWM_NODE_ID", &node.id.0)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -39,12 +38,9 @@ pub fn python(
     if own_group {
         command.process_group(0);
     }
-    for (key, _) in
-        std::env::vars_os().filter(|(k, _)| k.as_encoded_bytes().starts_with(b"FLOWWM_ARG_"))
-    {
-        command.env_remove(key);
+    if let Some(env) = bindings.get("inputs").and_then(|v| v.get("env")) {
+        crate::environment::apply(&mut command, &serde_json::from_value(env.clone())?)?;
     }
-    command.envs(signal_environment(args)?);
     unsafe {
         command.pre_exec(move || {
             if libc::dup2(result_fd, 3) < 0 {

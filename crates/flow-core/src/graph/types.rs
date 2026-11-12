@@ -13,6 +13,7 @@ pub enum Type {
     UInt8,
     Float,
     String,
+    Env,
     List {
         item: Box<Type>,
     },
@@ -59,6 +60,7 @@ impl std::fmt::Display for Type {
             Self::UInt8 => write!(f, "UInt8"),
             Self::Float => write!(f, "Float"),
             Self::String => write!(f, "String"),
+            Self::Env => write!(f, "Env"),
             Self::Named { name } => write!(f, "{name}"),
             Self::List { item } => write!(f, "List[{item}]"),
             Self::Record { fields, open } | Self::Signal { args: fields, open } => {
@@ -103,7 +105,6 @@ pub struct CastDefinition {
 }
 
 pub fn validate_type(state: &FlowNet, ty: &Type, depth: usize) -> Result<()> {
-    let signal = ty.is_signal();
     ensure!(depth < 32, "Recursive or deeply nested type");
     match ty {
         Type::Named { name } => {
@@ -123,13 +124,8 @@ pub fn validate_type(state: &FlowNet, ty: &Type, depth: usize) -> Result<()> {
             validate_type(state, item, depth + 1)?;
         }
         Type::Record { fields, .. } | Type::Signal { args: fields, .. } => {
-            let mut env = HashSet::new();
             for (name, ty) in fields {
                 validate_name(name)?;
-                ensure!(
-                    !signal || env.insert(name.to_ascii_uppercase()),
-                    "Argument names collide after uppercasing: {name}"
-                );
                 ensure!(!ty.is_signal(), "Record fields must carry data");
                 validate_type(state, ty, depth + 1)?;
             }
@@ -222,6 +218,12 @@ pub fn check_value(state: &FlowNet, value: &Value, ty: &Type) -> Result<()> {
         Type::UInt8 => value.as_u64().is_some_and(|v| u8::try_from(v).is_ok()),
         Type::Float => value.as_f64().is_some_and(f64::is_finite),
         Type::String => value.is_string(),
+        Type::Env => {
+            let env: crate::environment::Env = serde_json::from_value(value.clone())
+                .context("Env must contain variable names and string values")?;
+            crate::environment::validate(&env)?;
+            true
+        }
         Type::Named { name } => {
             check_value(
                 state,

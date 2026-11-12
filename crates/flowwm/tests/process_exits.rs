@@ -256,13 +256,47 @@ fn provider_observes_application_exit_after_the_gtk_client_closes() {
             ..Default::default()
         },
     });
+    graph.nodes.push(NodeSpec {
+        id: "bake".into(),
+        type_id: "local.bake_args_into_env".into(),
+        flow: Flow {
+            properties: [(
+                "mappings".into(),
+                json!({"exit_code":"FLOWWM_ARG_EXIT_CODE"}),
+            )]
+            .into(),
+            ..Default::default()
+        },
+    });
+    graph.connections.extend([
+        Connection {
+            source: Endpoint {
+                node: "bake".into(),
+                pin: "out".into(),
+            },
+            target: Endpoint {
+                node: "sink".into(),
+                pin: "in".into(),
+            },
+        },
+        Connection {
+            source: Endpoint {
+                node: "bake".into(),
+                pin: "env".into(),
+            },
+            target: Endpoint {
+                node: "sink".into(),
+                pin: "env".into(),
+            },
+        },
+    ]);
     graph.connections.push(Connection {
         source: Endpoint {
             node: app.node.0,
             pin: "on_exit".into(),
         },
         target: Endpoint {
-            node: "sink".into(),
+            node: "bake".into(),
             pin: "in".into(),
         },
     });
@@ -308,6 +342,7 @@ fn compositor_teardown_cleans_current_desktop_assignments_without_killing_shared
             .orchestrate(
                 Command::Create {
                     workflow: Workflow {
+                        row_settings: Default::default(),
                         id: id.into(),
                         name: id.into(),
                         workspace: Some(workspace.into()),

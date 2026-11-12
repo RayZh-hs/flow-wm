@@ -62,31 +62,92 @@ receive arbitrary argument records. A closed empty signal record represents a
 trigger. Extension type names are nominal; a representation specifies their
 serializable shape, while explicit casts connect different nominal types.
 
-## Signal arguments in subprocesses
+## Row environments and signal arguments
 
-Each top-level argument becomes `FLOWWM_ARG_<UPPERCASE_NAME>`. For example:
+The **owning workspace** (`host:session`) is visible in the top bar. Click it or
+press **Win+L** to open the current row's settings. The panel contains its owning
+workspace, working directory, and row variables. Save applies them to future
+launches; running nodes and applications retain their original environments.
 
-```json
-{"path":"/tmp/example","count":2,"options":{"verbose":true}}
-```
+The runtime starts with the session environment. Row settings append
+`FLOWWM_ROWSET_<UPPERCASE_NAME>` variables to form the **row environment**.
+For example, the row setting `project = demo` adds `FLOWWM_ROWSET_PROJECT=demo`.
+Row setting names are identifiers and must remain unique after uppercasing.
+Settings persist with the workflow, including workspace moves and transfers.
 
-sets `FLOWWM_ARG_PATH=/tmp/example`, `FLOWWM_ARG_COUNT=2`, and
-`FLOWWM_ARG_OPTIONS={"verbose":true}`. Strings remain raw; other values use JSON.
-Names must be ASCII identifiers. Names that collide after uppercasing, such as
-`path` and `PATH`, are rejected. Values containing NUL are rejected. Child
-processes do not inherit arguments from unrelated signals.
+Shell, agent, Python, and application nodes expose an optional **Env** data input.
+An unconnected input inherits the row environment. A connected Env replaces that
+whole environment, so an explicit empty Env stays empty. Env is a map from
+variable names to strings; variable names cannot contain `=` or NUL and values
+cannot contain NUL. FlowWM adds the node's own control metadata when starting
+managed processes. Env is excluded from the `FLOWWM_DATA_INPUTS` payload and
+agent prompt context.
 
-Shell and agent nodes receive their resolved data inputs as a JSON record in
-`FLOWWM_DATA_INPUTS`. Successful shell/agent handoffs emit `out`; failures
+The builtin environment nodes are available through create search:
+
+| Node | Controls | Data pins |
+| --- | --- | --- |
+| **Set Env** | Add/remove name–value rows; one node can set many variables | Env → Env |
+| **Unset Env** | Add/remove variable names | Env → Env |
+| **Empty Env** | No configuration | → Env |
+| **Bake Args into Env** | Argument → environment-variable mappings | Env → Env, plus in/out signals |
+
+Set, Unset, and Bake inherit the row environment when their Env input is
+unconnected. To build a minimal environment, connect **Empty Env → Set Env**.
+The resulting map contains only the variables configured in Set Env.
+
+Signal arguments remain typed records. Vox reads them as `args.name`; Python
+reads them as `args['name']`. Signals never implicitly modify environment
+variables. Case-distinct argument names and NUL-containing strings remain valid
+record values, even when they cannot be encoded in an environment.
+
+To expose arguments to a shell command, add **Bake Args into Env** to its signal
+path and connect the node's **Env** output to the command's **Env** input. Its
+mapping editor fills known argument names from the incoming signal schema and
+prefills each destination with `FLOWWM_ARG_<UPPERCASE_NAME>`. Edit destinations
+or add mappings as needed. Only explicitly configured mappings are exported;
+multiple arguments cannot target the same variable. Strings remain raw, and
+other values use JSON. For example, map `path → TARGET_PATH` and
+`count → FLOWWM_ARG_COUNT` to export both arguments while forwarding the
+original signal record unchanged. Environment values containing NUL are rejected.
+
+Shell and agent nodes receive their other resolved data inputs as a JSON record
+in `FLOWWM_DATA_INPUTS`. Successful shell/agent handoffs emit `out`; failures
 emit `failed`. Review nodes emit after approval or rejection. Signals delivered
 while a shell/agent node is busy wait in order.
+
+The builtin **pwd** row-settings extension defaults to the owning host's home
+directory and exports `FLOWWM_ROWSET_PWD`. Supported terminals use it as their
+startup directory. Defaults and terminal adapters are configurable in
+`~/.config/flow-wm/runtime.kdl`:
+
+```kdl
+row-settings {
+    // Omit pwd to default to HOME.
+    pwd "/home/example/projects"
+    terminal "alacritty" "--working-directory"
+    terminal "kitty" "--directory"
+    terminal "foot" "--working-directory"
+    terminal "wezterm" "start" "--cwd"
+    // An empty adapter disables directory injection for that executable.
+    terminal "custom-terminal"
+}
+```
+
+**Win+T**, **Win+K**, and terminal launches from Windows view use the row
+environment. `flowwm launch -- command ...` does the same for custom bindings.
+FlowWM supplies this command as Dux's default launch prefix; an explicit user
+launch prefix takes precedence. Existing Win+L bindings are preserved on upgrade.
+Restart the runtime to reload extension configuration; row-panel edits need no
+restart.
 
 ## Application windows
 
 Window nodes have one built-in output: `on_exit(exit_code: UInt8)`, represented as
 `Signal[{exit_code: UInt8}]`. They do not inherit the workflow outputs Completed,
 Failed, or Output text. The exit payload contains exactly one field, `exit_code`;
-recipients receive it as `args.exit_code` and `FLOWWM_ARG_EXIT_CODE`.
+recipients receive it as the typed `args.exit_code` field. Use Bake Args into Env
+to export `FLOWWM_ARG_EXIT_CODE` to shell commands.
 
 FlowWM automatically opens a Linux pidfd for the client PID reported by Niri.
 The signal is delivered once per observed window/process association when the

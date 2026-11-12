@@ -1,5 +1,7 @@
 //! Builtin platform providers, kept outside the portable core.
+pub mod environment;
 pub mod python;
+pub mod row_settings;
 pub mod worker;
 use anyhow::Result;
 use flow_core::{

@@ -17,6 +17,16 @@ pub struct Request {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum Command {
+    RowEnvironment {
+        workflow: WorkflowId,
+    },
+    RowSettings {
+        workflow: WorkflowId,
+    },
+    SetRowSettings {
+        workflow: WorkflowId,
+        settings: crate::environment::Env,
+    },
     Info,
     UnregisterApplication {
         node: NodeId,

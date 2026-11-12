@@ -183,6 +183,8 @@ pub enum Visibility {
 pub struct Workflow {
     pub id: WorkflowId,
     pub name: String,
+    #[serde(default)]
+    pub row_settings: crate::environment::Env,
     pub workspace: Option<WorkspaceId>,
     pub visibility: Visibility,
     pub owner: Option<WorkflowId>,
@@ -397,6 +399,7 @@ impl RuntimeState {
         Ok(&self.workflows[id])
     }
     pub fn create(&mut self, workflow: Workflow) -> Result<()> {
+        crate::environment::validate_row_settings(&workflow.row_settings)?;
         ensure!(
             !self.workflows.contains_key(&workflow.id),
             "Duplicate workflow ID"

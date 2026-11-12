@@ -7,6 +7,7 @@ pub mod extensions;
 pub mod graph;
 pub mod groups;
 pub mod ipc;
+pub mod launch;
 pub mod model;
 pub mod niri;
 pub mod performance;

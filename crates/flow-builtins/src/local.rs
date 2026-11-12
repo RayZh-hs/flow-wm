@@ -73,6 +73,7 @@ impl Limits {
 
 #[derive(Clone, Default)]
 pub struct Environment {
+    pub row_settings: crate::row_settings::Extension,
     pub config_directory: Option<PathBuf>,
     pub data_directory: Option<PathBuf>,
     pub control_socket: Option<PathBuf>,
@@ -114,6 +115,7 @@ impl Default for Local {
 }
 impl ExecutionProvider for Local {
     fn validate(&self, type_id: &str, properties: &Record) -> Result<()> {
+        crate::environment::validate_properties(type_id, properties)?;
         if matches!(
             type_id,
             "local.metric" | "local.timer" | "local.watcher" | "local.receive"
@@ -192,6 +194,12 @@ impl ExecutionProvider for Local {
     }
 
     fn read(&self, invocation: Invocation) -> Result<Value> {
+        if matches!(
+            invocation.type_id.as_str(),
+            "local.set_env" | "local.unset_env" | "local.empty_env" | "local.bake_args_into_env"
+        ) {
+            return crate::environment::read(&invocation);
+        }
         ensure!(
             invocation.type_id == "local.constant",
             "Unsupported lazy computation"
@@ -310,6 +318,10 @@ impl ExecutionProvider for Local {
             process.command.env("FLOWWM_CLI", cli);
         }
         if let Some(inputs) = invocation.properties.get("data_inputs") {
+            let mut inputs = inputs.clone();
+            if let Some(inputs) = inputs.as_object_mut() {
+                inputs.remove("env");
+            }
             process
                 .command
                 .env("FLOWWM_DATA_INPUTS", inputs.to_string());
@@ -366,7 +378,7 @@ pub(crate) fn directory(invocation: &Invocation) -> PathBuf {
 fn shell(invocation: &Invocation, _: &Environment, limits: &Limits) -> Result<Process> {
     let source = text(&invocation.properties, "command").context("Shell requires a command")?;
     let mut command = Command::new("/bin/sh");
-    command.args(["-lc", source]);
+    command.args(["-c", source]);
     Ok(Process {
         command,
         input: None,
@@ -404,7 +416,11 @@ pub fn registry(limits: Limits) -> Result<Registry> {
 }
 pub fn registry_with_environment(limits: Limits, environment: Environment) -> Result<Registry> {
     let mut registry = Registry::default();
-    let definitions = [
+    registry.session_environment = std::env::vars_os()
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+        .collect();
+    environment.row_settings.install(&mut registry);
+    let mut definitions: Vec<_> = [
         ("shell", Behavior::Invoked, vec!["shell"]),
         ("constant", Behavior::Lazy, vec![]),
         ("metric_sample", Behavior::Invoked, vec!["shell"]),
@@ -538,6 +554,7 @@ pub fn registry_with_environment(limits: Limits, environment: Environment) -> Re
         }
     })
     .collect();
+    definitions.extend(crate::environment::definitions());
     registry.mount(
         "local".into(),
         definitions,

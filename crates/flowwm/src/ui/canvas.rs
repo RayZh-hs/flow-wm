@@ -696,6 +696,7 @@ pub(super) fn row_state(state: &State, workspace: &str) -> State {
                         (
                             key.clone(),
                             Workflow {
+                                row_settings: w.row_settings.clone(),
                                 id: w.id.clone(),
                                 name: w.name.clone(),
                                 workspace: w.workspace.clone(),

@@ -46,18 +46,47 @@ pub struct Alert {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EvaluationContext {
+    #[serde(default)]
+    pub input: Option<String>,
+    #[serde(default)]
+    pub environment: crate::environment::Env,
     pub workflow: crate::domain::WorkflowId,
     pub published: BTreeMap<crate::domain::NodeId, Record>,
 }
 impl EvaluationContext {
     pub fn apply(&self, graph: &mut FlowNet) {
+        let defaults: BTreeMap<_, _> = graph
+            .nodes
+            .iter()
+            .map(|node| {
+                let pins = pins(graph, node, false)
+                    .into_iter()
+                    .filter(|p| p.ty == Type::Env && p.name == "env")
+                    .map(|mut p| {
+                        p.default = Some(serde_json::json!(self.environment));
+                        p
+                    })
+                    .collect::<Vec<_>>();
+                (node.id.clone(), pins)
+            })
+            .collect();
         for node in &mut graph.nodes {
             node.flow.values = self.published.get(&node.id).cloned().unwrap_or_default();
+            for pin in &defaults[&node.id] {
+                if let Some(existing) = node.flow.inputs.iter_mut().find(|p| p.name == pin.name) {
+                    if existing.default.is_none() {
+                        existing.default = pin.default.clone();
+                    }
+                } else {
+                    node.flow.inputs.push(pin.clone());
+                }
+            }
         }
     }
 }
 
 struct ContextData {
+    root_input: Option<String>,
     state: FlowNet,
     queue: VecDeque<(String, Value, Type, String)>,
     cache: HashMap<String, String>,
@@ -121,9 +150,32 @@ pub fn evaluate_with(
     cancel: Arc<AtomicBool>,
     scripts: Arc<dyn ScriptEvaluator>,
 ) -> Result<Evaluation> {
+    evaluate_target(state, root, None, signal, cancel, scripts)
+}
+
+/// Resolve one data input without activating its node or any signal path.
+pub fn evaluate_input_with(
+    state: FlowNet,
+    root: &str,
+    input: &str,
+    cancel: Arc<AtomicBool>,
+    scripts: Arc<dyn ScriptEvaluator>,
+) -> Result<Evaluation> {
+    evaluate_target(state, root, Some(input.into()), None, cancel, scripts)
+}
+
+fn evaluate_target(
+    state: FlowNet,
+    root: &str,
+    root_input: Option<String>,
+    signal: Option<(&str, Value)>,
+    cancel: Arc<AtomicBool>,
+    scripts: Arc<dyn ScriptEvaluator>,
+) -> Result<Evaluation> {
     state.validate()?;
     state.node(root).context("Node not found")?;
     let context = Arc::new(Mutex::new(ContextData {
+        root_input,
         state,
         queue: VecDeque::new(),
         cache: HashMap::new(),
@@ -142,7 +194,7 @@ pub fn evaluate_with(
     }));
     if let Some((pin, args)) = signal {
         if pin.is_empty() {
-            signal_environment(&args)?;
+            validate_signal_args(&args)?;
             let mut context = context.lock().unwrap();
             let ty = pins(&context.state, context.node(root)?, false)
                 .into_iter()
@@ -352,7 +404,7 @@ impl ContextData {
             .context("Missing signal output")?;
         ensure!(output.ty.is_signal(), "Expected a signal output");
         check_value(&self.state, &args, &output.ty)?;
-        signal_environment(&args)?;
+        validate_signal_args(&args)?;
         let source_type = argument_type(&self.current_args_type, &output.ty);
         for edge in self
             .state
@@ -386,7 +438,15 @@ impl ContextData {
     }
     fn call(&mut self, op: &str, a: &str, b: &str, c: &str) -> Result<String> {
         match op {
-            "mode" => Ok(if self.data { "data" } else { "signal" }.into()),
+            "mode" => Ok(if self.root_input.is_some() {
+                "input"
+            } else if self.data {
+                "data"
+            } else {
+                "signal"
+            }
+            .into()),
+            "root_input" => Ok(self.root_input.clone().unwrap_or_default()),
             "root" => Ok(self.root.clone()),
             "cached" => Ok(self.cache.get(a).cloned().unwrap_or_default()),
             "enter" => {
@@ -524,7 +584,7 @@ impl ContextData {
                         inputs[&pin.name].clone(),
                     );
                 }
-                signal_environment(&args)?;
+                validate_signal_args(&args)?;
                 Ok(args.to_string())
             }
             "cast_input" => {
@@ -557,7 +617,7 @@ impl ContextData {
                             .context("Merge arguments must be a record")?
                             .clone(),
                     );
-                signal_environment(&args)?;
+                validate_signal_args(&args)?;
                 Ok(args.to_string())
             }
             "break" => {
@@ -779,25 +839,14 @@ impl ContextData {
     }
 }
 
-/// Signal fields are individual variables. Strings remain raw; other JSON
-/// values use JSON encoding, allowing lossless records/lists in subprocesses.
-pub fn signal_environment(args: &Value) -> Result<BTreeMap<String, String>> {
-    let mut env = BTreeMap::new();
-    for (name, value) in args
+/// Signal records keep their typed values until a node explicitly encodes them.
+pub fn validate_signal_args(args: &Value) -> Result<()> {
+    for name in args
         .as_object()
         .context("Signal arguments must be a record")?
+        .keys()
     {
         validate_name(name)?;
-        let name = format!("FLOWWM_ARG_{}", name.to_ascii_uppercase());
-        let value = value
-            .as_str()
-            .map(str::to_string)
-            .unwrap_or_else(|| value.to_string());
-        ensure!(!value.contains('\0'), "Signal argument contains NUL");
-        ensure!(
-            env.insert(name.clone(), value).is_none(),
-            "Signal arguments collide: {name}"
-        );
     }
-    Ok(env)
+    Ok(())
 }

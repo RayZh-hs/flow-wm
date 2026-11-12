@@ -10,6 +10,7 @@ PluginComponent {
     readonly property var catalog: bridge?.catalog ?? ({})
     readonly property bool graphVisible: catalog.presentation?.graph_visible ?? false
     readonly property bool online: bridge?.online ?? false
+    readonly property string owningWorkspace: String(catalog.owning_workspace ?? "")
     readonly property string geometryKey: JSON.stringify([parentScreen?.name, barConfig?.position ?? 0, barThickness, barSpacing, barConfig?.bottomGap ?? 0])
     function reportGeometry() {
         const insets = [0, 0, 0, 0];
@@ -50,7 +51,7 @@ PluginComponent {
     }
 
     pillClickAction: () => bridge?.toggle()
-    pillRightClickAction: () => bridge?.lookup()
+    pillRightClickAction: () => bridge?.command(["row-settings"])
 
     horizontalBarPill: Component {
         Item {
@@ -76,6 +77,35 @@ PluginComponent {
                     font.pixelSize: Theme.fontSizeSmall
                     color: root.graphVisible ? Theme.primary : Theme.surfaceText
                     anchors.verticalCenter: parent.verticalCenter
+                }
+                Item {
+                    visible: root.online
+                    implicitWidth: Math.min(workspaceLabel.implicitWidth, root.iconSize * 10) + Theme.spacingM
+                    implicitHeight: root.iconSize
+                    anchors.verticalCenter: parent.verticalCenter
+                    Accessible.role: Accessible.Button
+                    Accessible.name: I18n.tr("Row settings") + " · " + root.owningWorkspace
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: Theme.cornerRadius
+                        color: workspaceMouse.containsMouse ? Theme.primaryContainer : "transparent"
+                    }
+                    StyledText {
+                        id: workspaceLabel
+                        anchors.centerIn: parent
+                        width: parent.width - Theme.spacingM
+                        elide: Text.ElideRight
+                        text: root.owningWorkspace || I18n.tr("Unassigned")
+                        font.pixelSize: Theme.fontSizeSmall
+                        color: workspaceMouse.containsMouse ? Theme.primary : Theme.surfaceVariantText
+                    }
+                    MouseArea {
+                        id: workspaceMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.bridge?.command(["row-settings"])
+                    }
                 }
                 Row {
                     visible: root.graphVisible

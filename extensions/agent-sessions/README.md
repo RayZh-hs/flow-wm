@@ -12,7 +12,7 @@ The signal has an `ERROR` argument:
 {"ERROR":{"code":0,"kind":"none","message":""},"AGENT":"codex","SESSION":"session-id"}
 ```
 
-`code == 0` means successful completion. A nonzero code takes the handler node's `error` output. Negative process codes denote Unix signals. `unknown_exit`, code `-1`, means an unwrapped process disappeared and its exit status is unavailable. Downstream shell commands receive the record as `FLOWWM_ARG_ERROR` and can inspect `code`, `kind`, and `message`.
+`code == 0` means successful completion. A nonzero code takes the handler node's `error` output. Negative process codes denote Unix signals. `unknown_exit`, code `-1`, means an unwrapped process disappeared and its exit status is unavailable. Downstream Vox and Python nodes receive the typed `ERROR` argument record and can inspect `code`, `kind`, and `message`. To expose it as `FLOWWM_ARG_ERROR` to a shell command, add **Bake Args into Env** with an `ERROR → FLOWWM_ARG_ERROR` mapping and connect its Env output to the command.
 
 Connect `terminal.on_session_finish` to **Handle session error**, then wire its `success` and `error` branches. This handler preserves the incoming event arguments. Nothing is executed just by discovering a session or loading its schema.
 

@@ -1,6 +1,7 @@
 mod canvas;
 mod collapse;
 mod empty;
+mod environment;
 mod gpu;
 mod keybindings;
 mod layout;

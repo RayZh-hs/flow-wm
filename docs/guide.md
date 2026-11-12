@@ -57,6 +57,7 @@ Bindings that require a newer compositor are activated at the next login, after 
 | Shortcut | Action |
 | --- | --- |
 | Win+Tab | Toggle windows/nodes; leave a window peek before switching views |
+| Win+L | Row settings and owning workspace |
 | Win+Shift+Tab | Return to Windows view |
 | Win+Space | Open Dux app search in Windows; create a node in Nodes |
 | Alt+Space | Open Dux app search in either view |
@@ -162,7 +163,25 @@ Node settings show controls for the node's actual job. Scripts have source edito
 
 Data connections evaluate lazily. Signals activate recipients and carry named arguments. One event shares upstream data computations, while the next event evaluates them afresh. Data cycles are rejected; signal loops have bounded evaluation time and steps. [Nodes and signals](nodes-and-signals.md) documents typing, casts, extension schemas, and the control API.
 
-Running a node, branch, or workspace is explicit. Independent branches can run concurrently. Writable shell/agent work in the same canonical directory is serialized. Shell steps receive typed data in `FLOWWM_DATA_INPUTS` and signal arguments in `FLOWWM_ARG_*`. Sequence steps through explicit pins; use a Join for correlated all-parent completion. Interrupt signals owned subprocess groups with configured escalation. Human tasks and decisions explicitly wait for resolution; failure pins can connect recovery steps. Metrics, timers, watchers and Receive are lifecycle-managed sources with no ordinary Run/Stop controls.
+Running a node, branch, or workspace is explicit. Independent branches can run concurrently. Writable shell/agent work in the same canonical directory is serialized. Shell steps receive typed data in `FLOWWM_DATA_INPUTS`. Signal arguments remain records; use **Bake Args into Env** for explicit environment mappings. Sequence steps through explicit pins; use a Join for correlated all-parent completion. Interrupt signals owned subprocess groups with configured escalation. Human tasks and decisions explicitly wait for resolution; failure pins can connect recovery steps. Metrics, timers, watchers and Receive are lifecycle-managed sources with no ordinary Run/Stop controls.
+
+## Row settings and environments
+
+The top-bar workspace label, such as **local:desktop**, opens the current row's
+settings. **Win+L** opens the same panel from either view; `flowwm row-settings`
+is the CLI equivalent. Choose an owning workspace, set the working directory,
+and add row variables, then save. Running nodes keep their existing environment.
+The older `flowwm workflows` manager remains available for creating workflows,
+references, and ownership changes.
+
+Row variables become `FLOWWM_ROWSET_<NAME>` on top of the session environment.
+The builtin `pwd` setting defaults to home and sets supported terminals' startup
+directory. Nodes with an **Env** data input inherit this row environment when the
+input is unconnected. Use **Set Env**, **Unset Env**, and **Empty Env** to build
+an alternative environment; each Set/Unset node can modify multiple variables.
+**Bake Args into Env** explicitly maps signal arguments to environment variables.
+See [row environments and signal arguments](nodes-and-signals.md#row-environments-and-signal-arguments)
+for connections, mapping behavior, and configurable terminal adapters.
 
 ## Terminal session extension
 

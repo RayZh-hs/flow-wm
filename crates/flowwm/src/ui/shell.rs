@@ -620,7 +620,7 @@ impl Shell {
                 pinned_rows: RefCell::new(HashSet::new()),
             }
         });
-        on_click(&workspace_button, &shell, |s| s.workspace_dialog());
+        on_click(&workspace_button, &shell, |s| s.row_settings());
         on_click(&add_button, &shell, |s| s.palette());
         on_click(&windows_button, &shell, |s| s.show_windows());
         on_click(&show_nodes, &shell, |s| s.show_nodes());
@@ -2072,6 +2072,7 @@ impl Shell {
     }
     fn control(&self, command: UiCommand) {
         match command {
+            UiCommand::RowSettings => self.row_settings(),
             UiCommand::Workflows => self.workspace_dialog(),
             UiCommand::RunSelected | UiCommand::StopSelected => {
                 let run = matches!(command, UiCommand::RunSelected);
@@ -2107,17 +2108,29 @@ impl Shell {
                         }
                     }
                 } else {
-                    let action = if run {
-                        niri_ipc::Action::Spawn {
-                            command: crate::config::flow()
-                                .terminal
-                                .clone()
-                                .unwrap_or_else(|| vec!["alacritty".into()]),
-                        }
+                    let result = if run {
+                        let state = self.engine.snapshot().state;
+                        let host = flow_host::client::Client::new(flow_host::ipc::host_socket());
+                        crate::launch::row_environment(
+                            &host,
+                            &state.selected_workspace.clone().into(),
+                        )
+                        .and_then(|env| {
+                            crate::launch::command(
+                                &crate::config::flow()
+                                    .terminal
+                                    .clone()
+                                    .unwrap_or_else(|| vec!["alacritty".into()]),
+                                &env,
+                            )
+                        })
                     } else {
-                        niri_ipc::Action::CloseWindow { id: None }
+                        niri::request(niri_ipc::Request::Action(niri_ipc::Action::CloseWindow {
+                            id: None,
+                        }))
+                        .map(|_| ())
                     };
-                    if let Err(error) = niri::request(niri_ipc::Request::Action(action)) {
+                    if let Err(error) = result {
                         self.show_error(&error.to_string());
                     }
                 }
@@ -3344,15 +3357,25 @@ impl Shell {
         let dialog = self.dialog("Node parameters", 560, -1);
         let root = column(14);
         root.add_css_class("dialog-body");
+        let environment_node = matches!(
+            node.flow.node_type.as_str(),
+            "local.set_env" | "local.unset_env" | "local.empty_env" | "local.bake_args_into_env"
+        );
         root.append(&label(
-            &format!("{} parameters", node.kind.label()),
+            &if environment_node {
+                node.title.clone()
+            } else {
+                format!("{} parameters", node.kind.label())
+            },
             "dialog-title",
         ));
         let title = entry(&node.title);
         title.set_activates_default(true);
         field(&root, "Name", &title);
         let directory = entry(&node.cwd.to_string_lossy());
-        if !node.kind.primitive() || matches!(node.kind, NodeKind::Vox | NodeKind::Python) {
+        if (!node.kind.primitive() || matches!(node.kind, NodeKind::Vox | NodeKind::Python))
+            && !environment_node
+        {
             field(&root, "Working directory", &directory);
         }
         let fields = super::parameters::Fields::new(&state, &node);
@@ -3392,7 +3415,7 @@ impl Shell {
         }
         if matches!(node.kind, NodeKind::Shell | NodeKind::Metric) {
             let info = label(
-                "Runs as your user. Typed inputs are JSON in $FLOWWM_DATA_INPUTS; signal arguments are FLOWWM_ARG_*.",
+                "Typed inputs are in $FLOWWM_DATA_INPUTS. Use Bake Args into Env to expose signal arguments as variables.",
                 "hint",
             );
             info.set_wrap(true);
@@ -3556,6 +3579,185 @@ impl Shell {
         caller: Option<String>,
     ) -> Result<serde_json::Value> {
         self.engine.orchestrate(command, caller.map(Into::into))
+    }
+
+    fn row_settings(&self) {
+        use flow_core::environment::Env;
+        use flow_core::{domain::WorkflowId, protocol::Command};
+        let state = self.engine.snapshot().state;
+        let current = WorkflowId(state.selected_workspace.clone());
+        let Some(runtime) = state.orchestration.as_ref() else {
+            return;
+        };
+        let Some(workflow) = runtime.workflows.get(&current) else {
+            return;
+        };
+        let value = match self.orchestrate(
+            Command::RowSettings {
+                workflow: current.clone(),
+            },
+            Some(current.0.clone()),
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                self.show_error(&error.to_string());
+                return;
+            }
+        };
+        let overrides: Env = serde_json::from_value(value["settings"].clone()).unwrap_or_default();
+        let dialog = self.dialog("Row settings", 520, 560);
+        dialog.set_resizable(false);
+        let root = column(12);
+        root.add_css_class("dialog-body");
+        let heading = row(12);
+        let titles = column(3);
+        titles.set_hexpand(true);
+        titles.append(&label("Row settings", "dialog-title"));
+        titles.append(&label(&workflow.name, "muted"));
+        heading.append(&titles);
+        let close = gtk::Button::from_icon_name("window-close-symbolic");
+        close.add_css_class("flat");
+        close.set_valign(gtk::Align::Start);
+        close.set_tooltip_text(Some("Close · Escape"));
+        let d = dialog.clone();
+        close.connect_clicked(move |_| d.close());
+        heading.append(&close);
+        root.append(&heading);
+        let mut workspaces: Vec<_> = runtime
+            .workspaces
+            .definitions()
+            .filter(|w| {
+                runtime
+                    .workspaces
+                    .availability(&w.id)
+                    .is_some_and(|a| a.active)
+                    || workflow.workspace.as_ref() == Some(&w.id)
+            })
+            .map(|w| w.id.clone())
+            .collect();
+        workspaces.sort();
+        let names: Vec<_> = workspaces
+            .iter()
+            .map(|w| {
+                if runtime.workspaces.availability(w).is_some_and(|a| a.active) {
+                    w.0.clone()
+                } else {
+                    format!("{} · unavailable", w.0)
+                }
+            })
+            .collect();
+        let workspace =
+            gtk::DropDown::from_strings(&names.iter().map(String::as_str).collect::<Vec<_>>());
+        if let Some(index) = workspaces
+            .iter()
+            .position(|w| Some(w) == workflow.workspace.as_ref())
+        {
+            workspace.set_selected(index as u32);
+        }
+        field(&root, "Owning workspace", &workspace);
+        let pwd = entry(overrides.get("pwd").map(String::as_str).unwrap_or(""));
+        pwd.set_placeholder_text(value["definitions"]["pwd"]["default"].as_str());
+        pwd.set_hexpand(true);
+        let directory = row(6);
+        directory.append(&pwd);
+        let reset = gtk::Button::from_icon_name("edit-undo-symbolic");
+        reset.add_css_class("flat");
+        reset.set_tooltip_text(Some("Use the default working directory"));
+        let p = pwd.clone();
+        reset.connect_clicked(move |_| p.set_text(""));
+        directory.append(&reset);
+        field(&root, "Working directory", &directory);
+        let custom: Env = overrides
+            .iter()
+            .filter(|(k, _)| k.as_str() != "pwd")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let variables = super::environment::MapEditor::new(&custom, "Setting name", "Value", false);
+        let variables_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .max_content_height(180)
+            .propagate_natural_height(true)
+            .child(&variables.widget)
+            .build();
+        field(&root, "Row variables", &variables_scroll);
+        let hint = label(
+            "New nodes receive FLOWWM_ROWSET_<NAME>. Running nodes keep their environment.",
+            "row-settings-hint",
+        );
+        hint.set_wrap(true);
+        hint.set_max_width_chars(50);
+        root.append(&hint);
+        let error = label("", "row-settings-error");
+        error.set_wrap(true);
+        error.set_visible(false);
+        root.append(&error);
+        let actions = row(8);
+        actions.set_halign(gtk::Align::End);
+        let cancel = gtk::Button::with_label("Cancel");
+        cancel.add_css_class("flat");
+        let d = dialog.clone();
+        cancel.connect_clicked(move |_| d.close());
+        actions.append(&cancel);
+        let save = gtk::Button::with_label("Save");
+        save.add_css_class("accent");
+        actions.append(&save);
+        root.append(&actions);
+        let old_workspace = workflow.workspace.clone();
+        let focus = workspace.clone();
+        let weak = self.weak.clone();
+        let d = dialog.clone();
+        save.connect_clicked(move |_| {
+            let Some(shell) = weak.upgrade() else {
+                return;
+            };
+            let result = (|| -> Result<()> {
+                let mut settings = variables.read()?;
+                anyhow::ensure!(
+                    !settings.contains_key("pwd"),
+                    "Use Working directory to set pwd"
+                );
+                if !pwd.text().is_empty() {
+                    settings.insert("pwd".into(), pwd.text().to_string());
+                }
+                flow_core::environment::validate_row_settings(&settings)?;
+                let destination = workspaces
+                    .get(workspace.selected() as usize)
+                    .context("Choose an owning workspace")?;
+                if let Some(runtime) = shell.engine.snapshot().state.orchestration.as_ref() {
+                    runtime.workspaces.require_active(destination)?;
+                }
+                shell.orchestrate(
+                    Command::SetRowSettings {
+                        workflow: current.clone(),
+                        settings,
+                    },
+                    Some(current.0.clone()),
+                )?;
+                if old_workspace.as_ref() != Some(destination) {
+                    shell.orchestrate(
+                        Command::Move {
+                            workflow: current.clone(),
+                            workspace: destination.clone(),
+                        },
+                        Some(current.0.clone()),
+                    )?;
+                }
+                Ok(())
+            })();
+            match result {
+                Ok(()) => d.close(),
+                Err(e) => {
+                    error.set_text(&e.to_string());
+                    error.set_visible(true);
+                }
+            }
+        });
+        dialog.set_default_widget(Some(&save));
+        dialog.set_child(Some(&root));
+        let (_, natural_height, _, _) = root.measure(gtk::Orientation::Vertical, 520);
+        dialog.set_default_size(520, natural_height);
+        dialog.present();
+        focus.grab_focus();
     }
 
     fn workspace_dialog(&self) {
@@ -3724,6 +3926,7 @@ impl Shell {
                 return;
             }
             let workflow = Workflow {
+                row_settings: Default::default(),
                 id: crate::model::id().into(),
                 name: name.text().to_string(),
                 workspace: Some(destination.clone()),

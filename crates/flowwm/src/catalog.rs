@@ -21,6 +21,7 @@ pub struct CatalogNode {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CatalogWorkspace {
+    pub owning_workspace: Option<String>,
     pub id: String,
     pub name: String,
     pub nodes: usize,
@@ -37,6 +38,7 @@ pub struct CatalogRecipe {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Catalog {
+    pub owning_workspace: Option<String>,
     pub lookup: Option<Lookup>,
     pub version: u32,
     pub selected_workspace: String,
@@ -168,6 +170,12 @@ impl Catalog {
     pub fn new(snapshot: &ViewSnapshot, presentation: Presentation, macros: &[Macro]) -> Self {
         let state = &snapshot.state;
         Self {
+            owning_workspace: state
+                .orchestration
+                .as_ref()
+                .and_then(|r| r.workflows.get(&state.selected_workspace.clone().into()))
+                .and_then(|w| w.workspace.as_ref())
+                .map(|w| w.0.clone()),
             lookup: presentation.lookup_node.as_deref().and_then(|id| {
                 Lookup::new(
                     state,
@@ -223,6 +231,12 @@ impl Catalog {
                         .is_none_or(|r| r.visible(&w.id.clone().into(), None))
                 })
                 .map(|w| CatalogWorkspace {
+                    owning_workspace: state
+                        .orchestration
+                        .as_ref()
+                        .and_then(|r| r.workflows.get(&w.id.clone().into()))
+                        .and_then(|w| w.workspace.as_ref())
+                        .map(|w| w.0.clone()),
                     id: w.id.clone(),
                     name: w.name.clone(),
                     nodes: state.nodes.iter().filter(|n| n.workspace == w.id).count(),

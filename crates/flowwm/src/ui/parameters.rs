@@ -93,7 +93,7 @@ impl Fields {
                     "Return a record, for example { value = inputs.x + 1, }. Use args for signal arguments."
                 }
                 NodeKind::Python => {
-                    "Assign an outputs dictionary. Read inputs and args; signal arguments are also in FLOWWM_ARG_*."
+                    "Assign an outputs dictionary. Read inputs and args as records. Connect Env to override the row environment."
                 }
                 _ => "",
             };
@@ -137,10 +137,92 @@ impl Fields {
                     }
                 }
             }
+            let environment_node = matches!(
+                node.flow.node_type.as_str(),
+                "local.set_env"
+                    | "local.unset_env"
+                    | "local.empty_env"
+                    | "local.bake_args_into_env"
+            );
+            if environment_node {
+                let hint = gtk::Label::new(Some(
+                    if node.flow.node_type == "local.bake_args_into_env" {
+                        "Map signal arguments to environment variables. Connect both out and Env to the next step. Unconnected Env inherits this row."
+                    } else {
+                        "Unconnected Env inherits this row. Connect Empty Env to start with no variables."
+                    },
+                ));
+                hint.set_wrap(true);
+                hint.set_xalign(0.);
+                hint.add_css_class("hint");
+                root.append(&hint);
+            }
             for (name, (ty, default)) in properties {
                 let value = node.flow.properties.get(&name).unwrap_or(&default);
+                if node.flow.node_type == "local.bake_args_into_env" && name == "mappings" {
+                    let mut values: flow_core::environment::Env =
+                        serde_json::from_value(value.clone()).unwrap_or_default();
+                    for edge in state
+                        .connections
+                        .iter()
+                        .filter(|e| e.target.node == node.id && e.target.pin == "in")
+                    {
+                        if let Some(source) = state.node(&edge.source.node) {
+                            for pin in graph::pins(state, source, true)
+                                .into_iter()
+                                .filter(|p| p.name == edge.source.pin)
+                            {
+                                if let Type::Signal { args, .. } = pin.ty {
+                                    for arg in args.keys() {
+                                        values.entry(arg.clone()).or_insert_with(|| {
+                                            flow_builtins::environment::default_argument_variable(
+                                                arg,
+                                            )
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let editor = super::environment::MapEditor::new(
+                        &values,
+                        "Argument",
+                        "Environment variable",
+                        true,
+                    );
+                    field(&root, "Argument → Variable", &editor.widget);
+                    setters.push(Rc::new(move |node| {
+                        node.flow
+                            .properties
+                            .insert("mappings".into(), json!(editor.read()?));
+                        Ok(())
+                    }));
+                    continue;
+                }
+                if node.flow.node_type == "local.unset_env" && name == "names" {
+                    let names =
+                        serde_json::from_value::<Vec<String>>(value.clone()).unwrap_or_default();
+                    let editor = super::environment::MapEditor::names(&names);
+                    field(&root, "Remove variables", &editor.widget);
+                    setters.push(Rc::new(move |node| {
+                        node.flow.properties.insert(
+                            "names".into(),
+                            json!(editor.read()?.into_keys().collect::<Vec<_>>()),
+                        );
+                        Ok(())
+                    }));
+                    continue;
+                }
                 let (widget, read) = value_editor(state, &ty, value);
-                field(&root, &name, &widget);
+                field(
+                    &root,
+                    if name == "variables" {
+                        "Variables"
+                    } else {
+                        &name
+                    },
+                    &widget,
+                );
                 setters.push(Rc::new(move |node| {
                     node.flow.properties.insert(name.clone(), read()?);
                     Ok(())
@@ -150,6 +232,9 @@ impl Fields {
         if matches!(
             node.kind,
             NodeKind::Vox | NodeKind::Python | NodeKind::Extension
+        ) && !matches!(
+            node.flow.node_type.as_str(),
+            "local.set_env" | "local.unset_env" | "local.empty_env" | "local.bake_args_into_env"
         ) {
             let pins = PinEditor::new(state, node);
             root.append(&pins.widget);
@@ -177,6 +262,7 @@ pub fn default_value(ty: &Type) -> Value {
         Type::Int | Type::UInt | Type::UInt8 => json!(0),
         Type::Float => json!(0.0),
         Type::String => json!(""),
+        Type::Env => json!({}),
         Type::List { .. } => json!([]),
         Type::Record { fields, .. } => Value::Object(
             fields
@@ -190,6 +276,7 @@ pub fn default_value(ty: &Type) -> Value {
 pub fn type_choices(state: &State) -> Vec<Type> {
     let mut types = vec![
         Type::String,
+        Type::Env,
         Type::Int,
         Type::UInt,
         Type::UInt8,
@@ -220,6 +307,14 @@ fn type_choice(types: &[Type], ty: &Type) -> gtk::DropDown {
     choice
 }
 pub fn value_editor(state: &State, ty: &Type, value: &Value) -> (gtk::Widget, ReadValue) {
+    if *ty == Type::Env {
+        let values = serde_json::from_value(value.clone()).unwrap_or_default();
+        let editor = super::environment::MapEditor::new(&values, "Variable", "Value", false);
+        return (
+            editor.widget.clone().upcast(),
+            Rc::new(move || Ok(json!(editor.read()?))),
+        );
+    }
     if let Type::Named { name } = ty
         && let Some(def) = state.types.iter().find(|t| t.name == *name)
     {

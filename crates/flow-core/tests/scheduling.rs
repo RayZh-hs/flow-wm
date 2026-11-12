@@ -88,6 +88,7 @@ fn setup() -> (Orchestrator, Arc<Provider>) {
     core.execute(
         Command::Create {
             workflow: Workflow {
+                row_settings: Default::default(),
                 id: "flow".into(),
                 name: "Flow".into(),
                 workspace: Some("local:user".into()),

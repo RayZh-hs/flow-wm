@@ -15,6 +15,14 @@ systemd-workspace true
 remote-retry-secs 2
 remote-timeout-secs 10
 remote-batch-size 4
+// Builtin working-directory extension. pwd defaults to the session's home.
+// An empty terminal argument list disables that terminal's adapter.
+row-settings {
+    terminal "alacritty" "--working-directory"
+    terminal "kitty" "--directory"
+    terminal "foot" "--working-directory"
+    terminal "wezterm" "start" "--cwd"
+}
 // include "hosts.kdl"
 // host "builder" {
 //     transport "ssh"

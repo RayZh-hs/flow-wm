@@ -97,6 +97,8 @@ impl WindowInterface {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Invocation {
+    #[serde(default)]
+    pub environment: Option<crate::environment::Env>,
     pub input: String,
     pub id: InvocationId,
     pub workflow: WorkflowId,
@@ -172,10 +174,33 @@ pub trait Storage: Send + Sync {
 }
 #[derive(Clone, Default)]
 pub struct Registry {
+    pub session_environment: crate::environment::Env,
+    pub row_settings: BTreeMap<String, crate::environment::RowSettingDefinition>,
     definitions: BTreeMap<String, Definition>,
     providers: BTreeMap<ProviderId, Arc<dyn ExecutionProvider>>,
 }
 impl Registry {
+    pub fn effective_row_settings(
+        &self,
+        settings: &crate::environment::Env,
+    ) -> crate::environment::Env {
+        let mut values: crate::environment::Env = self
+            .row_settings
+            .values()
+            .map(|d| (d.name.clone(), d.default.clone()))
+            .collect();
+        values.extend(settings.clone());
+        values
+    }
+    pub fn row_environment(
+        &self,
+        settings: &crate::environment::Env,
+    ) -> Result<crate::environment::Env> {
+        crate::environment::row_environment(
+            &self.session_environment,
+            &self.effective_row_settings(settings),
+        )
+    }
     pub fn definitions(&self) -> impl Iterator<Item = &Definition> {
         self.definitions.values()
     }
@@ -304,6 +329,8 @@ pub trait ApplicationProvider: Send + Sync {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SourceRegistration {
+    #[serde(default)]
+    pub environment: Option<crate::environment::Env>,
     pub subscription: Option<SignalSubscription>,
     pub workflow: WorkflowId,
     pub node: NodeId,

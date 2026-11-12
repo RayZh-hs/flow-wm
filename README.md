@@ -74,6 +74,7 @@ See the [user guide](docs/guide.md) for configuration, updates, rollback, and CL
 | Shortcut | Action |
 | --- | --- |
 | Win+Tab | Switch between windows and nodes; return from a window peek first |
+| Win+L | Row settings and owning workspace |
 | Win+Space | Open Dux app search in Windows; create a node in Nodes |
 | Alt+Space | Open Dux app search in either view |
 | Win+Shift+Space | Find a node |

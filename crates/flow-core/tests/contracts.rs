@@ -6,6 +6,7 @@ use std::{
 };
 fn workflow(id: &str, workspace: &str, owner: Option<&str>) -> Workflow {
     Workflow {
+        row_settings: Default::default(),
         id: id.into(),
         name: id.into(),
         workspace: Some(workspace.into()),

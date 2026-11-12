@@ -83,3 +83,6 @@ dropdown button { border: 1px solid @flow_outline; background: @flow_surface_hig
 .extension-body { padding: 24px; }
 .extension-output { padding: 14px; border-radius: __RADIUS__; border: 1px solid alpha(@flow_outline, 0.5); }
 entry.error { border-color: @flow_error; }
+.env-key { font-family: monospace; }
+.row-settings-error { color: @flow_error; font-size: 12px; }
+.row-settings-hint { color: @flow_muted; font-size: 11px; }

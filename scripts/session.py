@@ -39,6 +39,7 @@ def environment(profile=False):
     result["FLOWWM_INSTALL_ROOT"] = str(ROOT)
     result["FLOWWM_STATE_DIR"] = data["state"]
     result["FLOWWM_CACHE_DIR"] = data["cache"]
+    result.setdefault("DMS_DEFAULT_LAUNCH_PREFIX", "flowwm launch --")
     adapters = ROOT / "extensions/agent-sessions/bin"
     paths = [str(ROOT / "bin")]
     if adapters.is_dir() and result.get("FLOWWM_AGENT_SESSIONS") != "0":

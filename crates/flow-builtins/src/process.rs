@@ -67,15 +67,9 @@ impl Supervisor {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        // Signal arguments belong to this delivery, never to its parent process.
-        for (key, _) in
-            std::env::vars_os().filter(|(k, _)| k.as_encoded_bytes().starts_with(b"FLOWWM_ARG_"))
-        {
-            process.command.env_remove(key);
+        if let Some(env) = &invocation.environment {
+            crate::environment::apply(&mut process.command, env)?;
         }
-        process
-            .command
-            .envs(flow_core::graph::signal_environment(&invocation.args)?);
         process.command.env("FLOWWM_NODE_ID", &invocation.node.0);
         let mut child = process.command.spawn().context("Start builtin execution")?;
         let pid = child.id();
