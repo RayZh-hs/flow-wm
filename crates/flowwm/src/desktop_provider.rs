@@ -58,6 +58,9 @@ pub struct Bindings {
     pub selected: String,
     pub rows: BTreeMap<String, crate::model::Row>,
     pub applications: BTreeMap<String, Binding>,
+    /// Declarative selectors reconnect attachments without persisting a live process handle.
+    #[serde(default)]
+    pub selectors: BTreeMap<String, String>,
     #[serde(default)]
     pub disowned: BTreeSet<u64>,
 }
@@ -94,6 +97,11 @@ impl Bindings {
         }
     }
     pub fn apply_native(&self, state: &mut crate::model::State) {
+        for node in &mut state.nodes {
+            if let Some(selector) = self.selectors.get(&node.id) {
+                node.window_match = Some(selector.clone());
+            }
+        }
         for row in &mut state.workspaces {
             if let Some(binding) = self.rows.get(&row.id) {
                 row.row = Some(binding.clone());
@@ -522,6 +530,7 @@ pub fn run() -> Result<()> {
                 for node in state.nodes.iter().filter(|n| n.window_id.is_some()) {
                     let window = node.window_id.unwrap();
                     let native = desktop.windows.iter().find(|w| w.id == window);
+                    if let Some(native)=native {bindings.selectors.insert(node.id.clone(),crate::groups::selector(native));}
                     let pid = native.and_then(|w| w.pid);
                     if !runtime
                         .workflows

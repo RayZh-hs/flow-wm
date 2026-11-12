@@ -51,6 +51,7 @@ def main():
                 run(*cargo(name, "test"))
                 run(*cargo(name, "clippy", "--all-targets", "--", "-D", "warnings"))
                 run("python3", "-m", "unittest", "discover", "-s", "scripts", "-p", "test_install.py")
+                run("python3", "-m", "unittest", "discover", "-s", "scripts", "-p", "test_upgrade.py")
                 run("python3", "-m", "unittest", "discover", "-s", "extensions/agent-sessions")
                 run("python3", "-m", "unittest", "discover", "-s", "sdk/python")
             elif name == "niri":

@@ -257,7 +257,7 @@ ExecCondition=/bin/sh -c "! /usr/bin/systemctl --user --quiet is-active flowwm-c
     if link.is_symlink():
         run("systemctl", "--user", "disable", "flowwm.service")
     run("systemctl", "--user", "daemon-reload")
-    run("systemd-analyze", "--user", "verify", "flowwm-compositor.service", "flowwm-core.service", "flowwm.service", "flowwm-dms.service", "flowwm-session.target", "flowwm-agent-sessions.service", "flowwm-shutdown.target")
+    run("systemd-analyze", "--user", "verify", "flowwm-compositor.service", "flowwm-core.service", "flowwm-desktop.service", "flowwm.service", "flowwm-dms.service", "flowwm-session.target", "flowwm-agent-sessions.service", "flowwm-shutdown.target")
 
 
 def service_pid(unit):
@@ -335,6 +335,50 @@ def replace_session(bundle, session):
     print("FlowWM and DMS are using the selected snapshot. Compositor updates take effect at the next login.")
 
 
+def install_launchers(user_home, current):
+    launcher = Path(user_home) / ".local/bin/flowwm-session"
+    loader = f'''#!/usr/bin/env python3
+import os, sys
+from pathlib import Path
+current=Path({str(current)!r})
+pinned=os.environ.get("FLOWWM_INSTALL_ROOT")
+services={{"compositor","host","desktop","shell","dms","agent-sessions"}}
+root=Path(pinned) if pinned and sys.argv[1:2] and sys.argv[1] in services else current.resolve()
+script=root/"session.py"
+os.execv(sys.executable,[sys.executable,str(script),*sys.argv[1:]])
+'''
+    atomic_text(launcher, loader, 0o755)
+    cli = f'#!/bin/sh\nexec {json.dumps(str(launcher))} cli "$@"\n'
+    atomic_text(user_home / ".local/bin/flowwm", cli, 0o755)
+
+
+def assemble_bundle(bundle, config, state, cache, workflow_data):
+    """Stage a complete immutable bundle before selecting it or touching services."""
+    bundle=Path(bundle)
+    commit=subprocess.check_output(["git","rev-parse","--short=12","HEAD"],cwd=ROOT,text=True).strip()
+    (bundle / "bin").mkdir()
+    sources = {"niri": ROOT / "target/niri/release/niri", "flowwm": ROOT / "target/release/flowwm",
+               "flow-core": ROOT / "target/release/flow-core", "flowwm-desktop": ROOT / "target/release/flowwm-desktop", "flowwm-shell": ROOT / "target/release/flowwm-shell", "dms.real": ROOT / "components/dms/core/bin/dms"}
+    for name, source in sources.items():
+        shutil.copy2(source, bundle / "bin" / name)
+        (bundle / "bin" / name).chmod(0o755)
+    shutil.copytree(ROOT / "components/dms/quickshell", bundle / "shell", symlinks=False,
+                    ignore=shutil.ignore_patterns(".git", ".github", "tests", "__pycache__"))
+    shutil.copy2(ROOT / "scripts/session.py", bundle / "session.py")
+    shutil.copy2(ROOT / "scripts/configuration.py", bundle / "configuration.py")
+    if (ROOT / "sdk").is_dir():
+        shutil.copytree(ROOT / "sdk", bundle / "sdk", ignore=shutil.ignore_patterns("__pycache__"))
+    if (ROOT / "extensions").is_dir():
+        shutil.copytree(ROOT / "extensions", bundle / "extensions", ignore=shutil.ignore_patterns("__pycache__", "test_*.py"))
+    metadata = {"orchestrator_protocol": 3, "runtime_format": 3, "commit": commit, "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)), "installed_at": bundle.name, "config": str(config), "state": str(state),
+                "cache": str(cache), "workflow_data": str(workflow_data),
+                "sha256": {name: hashlib.sha256((bundle / "bin" / name).read_bytes()).hexdigest() for name in sources}}
+    atomic_text(bundle / "installation.json", json.dumps(metadata, indent=2) + "\n")
+    wrapper = '#!/usr/bin/env python3\nimport os, sys\nfrom pathlib import Path\np=Path(__file__).resolve().parents[1]/"session.py"\nos.execv(sys.executable,[sys.executable,str(p),"dms-cli",*sys.argv[1:]])\n'
+    atomic_text(bundle / "bin/dms", wrapper, 0o755)
+    validate_bundle(bundle)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
@@ -350,6 +394,7 @@ def main():
     if args.replace:
         try:
             session = running_session()
+            validate_bundle(session[1])
         except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
             parser.exit(1, f"Cannot replace the running session: {error}\n")
     user_home = Path.home()
@@ -388,50 +433,20 @@ def main():
     bundle = versions / version
     bundle.mkdir()
     try:
-        (bundle / "bin").mkdir()
-        sources = {"niri": ROOT / "target/niri/release/niri", "flowwm": ROOT / "target/release/flowwm",
-                   "flow-core": ROOT / "target/release/flow-core", "flowwm-desktop": ROOT / "target/release/flowwm-desktop", "flowwm-shell": ROOT / "target/release/flowwm-shell", "dms.real": ROOT / "components/dms/core/bin/dms"}
-        for name, source in sources.items():
-            shutil.copy2(source, bundle / "bin" / name)
-            (bundle / "bin" / name).chmod(0o755)
-        shutil.copytree(ROOT / "components/dms/quickshell", bundle / "shell", symlinks=False,
-                        ignore=shutil.ignore_patterns(".git", ".github", "tests", "__pycache__"))
-        shutil.copy2(ROOT / "scripts/session.py", bundle / "session.py")
-        shutil.copy2(ROOT / "scripts/configuration.py", bundle / "configuration.py")
-        if (ROOT / "sdk").is_dir():
-            shutil.copytree(ROOT / "sdk", bundle / "sdk", ignore=shutil.ignore_patterns("__pycache__"))
-        if (ROOT / "extensions").is_dir():
-            shutil.copytree(ROOT / "extensions", bundle / "extensions", ignore=shutil.ignore_patterns("__pycache__", "test_*.py"))
         profile = user_config / "flow-wm"
         config = profile
         state = user_state / "flow-wm"
         cache = user_cache / "flow-wm"
-        metadata = {"orchestrator_protocol": 3, "runtime_format": 3, "commit": commit, "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)), "installed_at": version, "config": str(config), "state": str(state),
-                    "cache": str(cache), "workflow_data": str(user_data / "flowwm"),
-                    "sha256": {name: hashlib.sha256((bundle / "bin" / name).read_bytes()).hexdigest() for name in sources}}
-        atomic_text(bundle / "installation.json", json.dumps(metadata, indent=2) + "\n")
+        assemble_bundle(bundle,config,state,cache,user_data / "flowwm")
         launcher = user_home / ".local/bin/flowwm-session"
         prepare_profile(config, state, cache, bundle, user_config, user_state, user_cache, launcher)
         desktop_template = ROOT / "config/flowwm.desktop.in"
         if desktop_template.is_file():
             atomic_text(config / "flowwm.desktop", desktop_template.read_text().replace("@SESSION@", json.dumps(str(launcher))))
-        wrapper = '#!/usr/bin/env python3\nimport os, sys\nfrom pathlib import Path\np=Path(__file__).resolve().parents[1]/"session.py"\nos.execv(sys.executable,[sys.executable,str(p),"dms-cli",*sys.argv[1:]])\n'
-        atomic_text(bundle / "bin/dms", wrapper, 0o755)
         run(bundle / "bin/niri", "validate", "--config", config / "config.kdl")
         run(bundle / "bin/dms.real", "version")
         current = installed / "current"
-        loader = f'''#!/usr/bin/env python3
-import os, sys
-from pathlib import Path
-current=Path({str(current)!r})
-pinned=os.environ.get("FLOWWM_INSTALL_ROOT")
-root=Path(pinned) if pinned and sys.argv[1:2] != ["login"] else current.resolve()
-script=root/"session.py"
-os.execv(sys.executable,[sys.executable,str(script),*sys.argv[1:]])
-'''
-        atomic_text(launcher, loader, 0o755)
-        cli = f'#!/bin/sh\nexec {json.dumps(str(launcher))} cli "$@"\n'
-        atomic_text(user_home / ".local/bin/flowwm", cli, 0o755)
+        install_launchers(user_home, current)
         install_units(user_config, launcher, user_home)
         validate_bundle(bundle)
         if current.is_symlink():

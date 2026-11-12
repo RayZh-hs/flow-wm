@@ -68,9 +68,10 @@ no native window handles. No save round-trips through an old desktop State.
 
 The host rejects `state.json`, `runtime-v2.json`, unsupported runtime formats and
 old request/manifest versions with an error. Their input files remain untouched.
-There is no automatic conversion or importer in the live runtime. Preserve old
-data separately; reconstruct unsupported dependency barriers, reviews and watchers
-using explicit current nodes before exporting a current graph. This cutover does
+There is no automatic conversion or importer in the live runtime. The separate
+[one-time upgrade tools](upgrading.md) preserve v1 input and validate supported
+definitions into separate native output. Unsupported reviews, repeating metrics
+and watcher tables require explicit current node authoring. This cutover does
 not fabricate continuity for processes from an earlier runtime.
 
 Invocations are checkpointed as queued with stable ID, generation, arguments,

@@ -306,7 +306,7 @@ All development, nested and smoke startup uses three independent processes:
 See [explicit startup without systemd](runtime.md#explicit-startup). Runtime format
 3, Orchestrator Protocol 3, Signal Protocol 1 and manifest 3 are the supported live
 contracts. Old state/envelopes and manifests are rejected without rewriting files.
-No import tool is linked into load/save.
+No import tool is linked into load/save. [First upgrade handling](upgrading.md) uses separately invoked conversion and a staged service cutover.
 
 `runtime.kdl` configures scheduling, queues, timeouts, sources, interruption and
 peers. `config.kdl` owns UI and compositor policy. Installer shortcuts are upgraded
