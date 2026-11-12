@@ -5,7 +5,7 @@ use crate::{
 };
 use gtk::{
     cairo::{self, Context},
-    gdk, glib,
+    gdk, glib, pango,
     prelude::*,
 };
 use std::{
@@ -2482,18 +2482,40 @@ pub(super) fn text(
     mono: bool,
 ) {
     let _ = c.save();
-    if mono {
-        c.select_font_face(
-            "monospace",
-            cairo::FontSlant::Normal,
-            cairo::FontWeight::Normal,
-        );
-    }
-    c.set_font_size(size);
+    let layout = text_layout(c, text, size, mono);
     c.set_source_rgb(rgb.0, rgb.1, rgb.2);
-    c.move_to(x, y);
-    let _ = c.show_text(text);
+    // Callers position text by its baseline; Pango positions layouts by their top edge.
+    c.move_to(x, y - layout.baseline() as f64 / pango::SCALE as f64);
+    pangocairo::functions::show_layout(c, &layout);
     let _ = c.restore();
+}
+pub(super) fn text_layout(c: &Context, text: &str, size: f64, mono: bool) -> pango::Layout {
+    let face = c.font_face();
+    let mut font = pango::FontDescription::new();
+    let family = if mono {
+        "monospace".into()
+    } else {
+        face.toy_get_family().unwrap_or_else(|| "sans-serif".into())
+    };
+    font.set_family(&family);
+    font.set_absolute_size(size * pango::SCALE as f64);
+    if !mono {
+        font.set_weight(match face.toy_get_weight() {
+            cairo::FontWeight::Bold => pango::Weight::Bold,
+            _ => pango::Weight::Normal,
+        });
+        font.set_style(match face.toy_get_slant() {
+            cairo::FontSlant::Italic => pango::Style::Italic,
+            cairo::FontSlant::Oblique => pango::Style::Oblique,
+            _ => pango::Style::Normal,
+        });
+    }
+    // Shape the full string so fallback fonts, combining marks, and emoji sequences work.
+    let layout = pangocairo::functions::create_layout(c);
+    layout.set_font_description(Some(&font));
+    layout.set_single_paragraph_mode(true);
+    layout.set_text(text);
+    layout
 }
 fn ellipsize(s: &str, length: usize) -> String {
     if s.chars().count() > length {
@@ -2506,6 +2528,52 @@ fn ellipsize(s: &str, length: usize) -> String {
 #[cfg(test)]
 mod rendering_tests {
     use super::*;
+
+    #[test]
+    fn canvas_text_draws_available_fallback_glyphs_instead_of_missing_boxes() {
+        for mono in [false, true] {
+            let image = cairo::ImageSurface::create(cairo::Format::ARgb32, 160, 80).unwrap();
+            let c = Context::new(&image).unwrap();
+            c.select_font_face(
+                if mono { "monospace" } else { "sans-serif" },
+                cairo::FontSlant::Normal,
+                cairo::FontWeight::Normal,
+            );
+            c.set_font_size(28.);
+            // Font coverage varies across Linux installations. Find a character that
+            // needs fallback and has an installed font, rather than requiring Noto.
+            let candidate = ["🧭", "✳", "中", "अ", "ا", "∑", "⌘", "⏵"]
+                .into_iter()
+                .find(|value| {
+                    let (glyphs, _) = c.scaled_font().text_to_glyphs(0., 0., value).unwrap();
+                    glyphs.iter().any(|glyph| glyph.index() == 0)
+                        && text_layout(&c, value, 28., mono).unknown_glyphs_count() == 0
+                });
+            let Some(value) = candidate else {
+                eprintln!("No installed fallback font for test characters (mono={mono})");
+                continue;
+            };
+            let missing = raster(160, 80, |c| {
+                c.select_font_face(
+                    if mono { "monospace" } else { "sans-serif" },
+                    cairo::FontSlant::Normal,
+                    cairo::FontWeight::Normal,
+                );
+                c.set_font_size(28.);
+                c.set_source_rgb(1., 1., 1.);
+                c.move_to(12., 48.);
+                c.show_text(value).unwrap();
+            });
+            let rendered = raster(160, 80, |c| {
+                text(c, 12., 48., value, 28., (1., 1., 1.), mono);
+            });
+            assert!(rendered.iter().any(|byte| *byte != 0));
+            assert_ne!(
+                rendered, missing,
+                "{value} must use a fallback (mono={mono})"
+            );
+        }
+    }
 
     #[test]
     fn node_selection_and_window_focus_fade_independently_through_reversals() {

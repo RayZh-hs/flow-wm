@@ -161,18 +161,17 @@ pub(super) fn draw(c: &Context, width: f64, height: f64, theme: &Theme, hover: O
 }
 
 fn centered(c: &Context, y: f64, value: &str, size: f64, color: super::theme::Color) {
-    c.set_font_size(size);
-    if let Ok(extents) = c.text_extents(value) {
-        canvas::text(
-            c,
-            (WIDTH - extents.width()) / 2.0 - extents.x_bearing(),
-            y,
-            value,
-            size,
-            color.rgb(),
-            false,
-        );
-    }
+    let (ink, _) = canvas::text_layout(c, value, size, false).extents();
+    let scale = gtk::pango::SCALE as f64;
+    canvas::text(
+        c,
+        (WIDTH - ink.width() as f64 / scale) / 2.0 - ink.x() as f64 / scale,
+        y,
+        value,
+        size,
+        color.rgb(),
+        false,
+    );
 }
 
 fn motif(c: &Context, theme: &Theme) {
