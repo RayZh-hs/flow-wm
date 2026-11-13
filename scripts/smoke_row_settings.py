@@ -145,6 +145,14 @@ def main():
                     return same
                 wait(settled,compositor)
 
+            def capture_widget(name):
+                path = artifacts / name
+                path.unlink(missing_ok=True)
+                ui("capture", path=str(path))
+                wait(path.exists, compositor)
+                with Image.open(path) as screenshot:
+                    return screenshot.convert("RGBA")
+
             def transition(name, opening, trigger):
                 frames = []
                 for path in artifacts.glob(f"{name}-*.png"):
@@ -200,11 +208,10 @@ def main():
             open_with_fade("cold-open")
             wait(lambda: any(layer["namespace"] == "flowwm-dialog" for layer in layers()), compositor)
             capture("row-settings.png")
-            ui("capture",path=str(artifacts / "row-settings-widget.png"))
-            def opaque_popup():
-                with Image.open(artifacts / "row-settings-widget.png") as screenshot:
-                    return screenshot.convert("RGBA").getpixel((screenshot.width // 2, 4))[3] == 255
-            wait(opaque_popup, compositor)
+            popup = capture_widget("row-settings-widget.png")
+            assert popup.getpixel((popup.width // 2, 4))[3] == 255
+            with Image.open(artifacts / "row-settings.png") as screen:
+                assert max(screen.convert("RGB").getpixel((20, screen.height // 2))) < 40, "Popup backdrop did not dim the desktop"
             # A second invocation preserves the current editor instead of stacking another one.
             input("key", "super+l")
             assert sum(layer["namespace"] == "flowwm-dialog" for layer in layers()) == 1
@@ -228,8 +235,10 @@ def main():
             # Reverse a closing popup without creating a duplicate or losing its editor.
             ui("row_settings")
             capture("before-reversal.png")
-            input("key", "Tab")
+            input("key", "Tab", "Tab", "Tab")
             input("type", temporary)
+            input("key", "Escape")
+            assert any(layer["namespace"] == "flowwm-dialog" for layer in layers()), "Escape closed an active field instead of clearing focus"
             input("key", "Escape", "super+l")
             wait(lambda: any(layer["namespace"] == "flowwm-dialog" for layer in layers()), compositor)
             capture("reopened-during-exit.png")
@@ -244,6 +253,51 @@ def main():
                 ui("row_settings")
                 capture(f"{name}-before.png")
                 close_with_fade(f"{name}-exit", lambda: input("mousemove", round(x), round(y), "click", "--delay", 0, 1))
+            # Adding an entry grows the form instead of clipping it into the Add button's old height.
+            ui("row_settings")
+            capture("variables-empty.png")
+            empty = capture_widget("variables-empty-widget.png")
+            with Image.open(artifacts / "row-settings.png") as screen:
+                screen_width, screen_height = screen.size
+            left = (screen_width - empty.width) / 2
+            bottom = (screen_height + empty.height) / 2
+            input("mousemove", round(left + 90), round(bottom - 136), "click", "--delay", 0, 1)
+            capture("variables-added.png")
+            expanded = capture_widget("variables-added-widget.png")
+            assert expanded.height >= empty.height + 40, (empty.size, expanded.size)
+            input("type", "EXTRA")
+            input("key", "Tab")
+            input("type", "space to grow")
+            input("key", "Escape")
+            assert any(layer["namespace"] == "flowwm-dialog" for layer in layers()), "Escape discarded the active variable editor"
+            capture("variables-expanded.png")
+            capture_widget("variables-expanded-widget.png")
+            right = (screen_width + expanded.width) / 2
+            bottom = (screen_height + expanded.height) / 2
+            close_with_fade("variables-save-exit", lambda: input("mousemove", round(right - 44), round(bottom - 31), "click", "--delay", 0, 1))
+            assert command("row_settings", workflow=current)["settings"]["EXTRA"] == "space to grow"
+            ui("row_settings")
+            capture("outside-before.png")
+            input("key", "Tab", "Tab")
+            close_with_fade("outside-exit", lambda: input("mousemove", 20, screen_height // 2, "click", "--delay", 0, 1))
+            ui("row_settings")
+            capture("workspace-picker-before.png")
+            input("key", "Tab", "Tab", "space")
+            capture("workspace-picker-active.png")
+            input("key", "Escape")
+            assert any(layer["namespace"] == "flowwm-dialog" for layer in layers()), "Escape closed the panel with its workspace picker active"
+            close_with_fade("workspace-picker-exit")
+            # Long forms use the screen height and keep the actions outside the scroller.
+            many = {"pwd":temporary, **{f"PARAM_{i}":str(i) for i in range(16)}}
+            command("set_row_settings", workflow=current, settings=many)
+            ui("row_settings")
+            capture("variables-many.png")
+            large = capture_widget("variables-many-widget.png")
+            assert empty.height + 200 <= large.height <= screen_height - 24, (empty.size, large.size, screen_height)
+            right = (screen_width + large.width) / 2
+            bottom = (screen_height + large.height) / 2
+            close_with_fade("many-variables-save-exit", lambda: input("mousemove", round(right - 44), round(bottom - 31), "click", "--delay", 0, 1))
+            assert command("row_settings", workflow=current)["settings"] == many
             command("set_row_settings", workflow=current, settings={"pwd":temporary,"project":"smoke"})
             ui("row_settings")
             wait(lambda: any(layer["namespace"] == "flowwm-dialog" for layer in layers()), compositor)
@@ -287,7 +341,7 @@ def main():
             inherited = json.loads(recorded.read_text())
             assert inherited["MODE"] == "development" and inherited["FLOWWM_ROWSET_PROJECT"] == "smoke"
             assert "FLOWWM_ARG_COUNT" not in inherited
-            print("PASS: default enter/exit animations before/after restart with GTK animations off, opaque surface, reopening during exit, clipboard stacking/focus, top-bar click, command/app Env launches and all Env editors")
+            print("PASS: backdrop/outside dismissal, Escape clears focus, growing and screen-bounded variables, default enter/exit animations, restart, clipboard stacking/focus, top-bar click, Env launches and editors")
             print("Screenshots:", artifacts)
         finally:
             for child in reversed(children):

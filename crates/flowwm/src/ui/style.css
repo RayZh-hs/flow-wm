@@ -98,6 +98,7 @@ window.row-settings-window { background: transparent; border: none; border-radiu
 .row-settings-section.last { border-bottom-left-radius: __WINDOW_RADIUS__; border-bottom-right-radius: __WINDOW_RADIUS__; }
 .row-settings-body entry, .row-settings-body dropdown > button { background: @flow_surface_high; border: 1px solid transparent; min-height: 24px; padding: 8px 12px; }
 .row-settings-body entry:focus-within, .row-settings-body dropdown > button:focus-visible { border-color: @flow_primary; outline: none; }
+.row-settings-body entry text > placeholder { color: alpha(@flow_muted, 0.6); opacity: 1; }
 .row-settings-body entry.error { border-color: @flow_error; }
 .row-settings-body button.flat { border-radius: __RADIUS__; }
 .row-settings-body button.accent { border-radius: __RADIUS__; }

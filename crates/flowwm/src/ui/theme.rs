@@ -55,6 +55,8 @@ pub struct Theme {
     pub radius: f64,
     pub window_radius: f64,
     pub popup_opacity: f64,
+    pub backdrop: Color,
+    pub backdrop_opacity: f64,
     pub font_scale: f64,
     pub font: String,
     pub motion_ms: u32,
@@ -83,6 +85,8 @@ impl Default for Theme {
             radius: 12.0,
             window_radius: 16.0,
             popup_opacity: flow.popup_opacity.unwrap_or(1.0),
+            backdrop: Color(0., 0., 0.),
+            backdrop_opacity: 0.55,
             font_scale: 1.0,
             font: "sans-serif".into(),
             motion_ms: flow.motion_ms.unwrap_or(220),
@@ -164,7 +168,7 @@ impl Theme {
             && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
         {
             let palette = value.get(mode).unwrap_or(&value);
-            let map = serde_json::json!({"primary":palette["primary"],"on_primary":palette["primaryText"],"primary_container":palette["primaryContainer"],"surface":palette["surface"],"surface_container_low":palette["surfaceContainerLow"],"surface_container":palette["surfaceContainer"],"surface_container_high":palette["surfaceContainerHigh"],"surface_container_highest":palette["surfaceContainerHighest"],"on_surface":palette["surfaceText"],"on_surface_variant":palette["surfaceVariantText"],"outline_variant":palette["outlineVariant"],"error":palette["error"]});
+            let map = serde_json::json!({"primary":palette["primary"],"on_primary":palette["primaryText"],"primary_container":palette["primaryContainer"],"surface":palette["surface"],"surface_container_low":palette["surfaceContainerLow"],"surface_container":palette["surfaceContainer"],"surface_container_high":palette["surfaceContainerHigh"],"surface_container_highest":palette["surfaceContainerHighest"],"on_surface":palette["surfaceText"],"on_surface_variant":palette["surfaceVariantText"],"outline_variant":palette["outlineVariant"],"error":palette["error"],"scrim":palette["scrim"],"surface_dim":palette["surfaceDim"]});
             theme.apply_material(&map);
         }
         theme.apply_popup_settings(&settings);
@@ -211,6 +215,11 @@ impl Theme {
         self.radius = fixed.unwrap_or((12. * scale).round());
         self.window_radius = fixed.unwrap_or((16. * scale).round());
         self.font_scale = settings["fontScale"].as_f64().unwrap_or(1.).clamp(0.5, 3.);
+        self.backdrop_opacity = if settings["modalDarkenBackground"].as_bool() == Some(false) {
+            0.
+        } else {
+            0.55
+        };
     }
     pub fn desktop_insets() -> [i32; 4] {
         let settings = std::fs::read(&Self::paths()[1])
@@ -254,6 +263,20 @@ impl Theme {
                 *color = parsed;
             }
         }
+        let lightness = (self.surface.0.max(self.surface.1).max(self.surface.2)
+            + self.surface.0.min(self.surface.1).min(self.surface.2))
+            / 2.;
+        self.backdrop = if lightness >= 0.5 {
+            value["surface_dim"]
+                .as_str()
+                .and_then(Color::parse)
+                .unwrap_or(self.surface_low)
+        } else {
+            value["scrim"]
+                .as_str()
+                .and_then(Color::parse)
+                .unwrap_or(Color(0., 0., 0.))
+        };
     }
     pub fn css(&self) -> String {
         let mut css = String::new();
@@ -299,6 +322,21 @@ impl Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn popup_backdrop_follows_dms_palette_and_darken_preference() {
+        let mut theme = Theme::default();
+        theme.apply_material(
+            &serde_json::json!({"surface":"#fafafa","surface_dim":"#dedede","scrim":"#000000"}),
+        );
+        assert_eq!(theme.backdrop.hex(), "#dedede");
+        theme.apply_material(&serde_json::json!({"surface":"#101010","scrim":"#000000"}));
+        assert_eq!(theme.backdrop.hex(), "#000000");
+        theme.apply_popup_settings(&serde_json::json!({"modalDarkenBackground":false}));
+        assert_eq!(theme.backdrop_opacity, 0.);
+        theme.apply_popup_settings(&serde_json::json!({"modalDarkenBackground":true}));
+        assert_eq!(theme.backdrop_opacity, 0.55);
+    }
 
     #[test]
     fn popup_shape_tracks_dms_strength_fixed_and_legacy_profiles() {

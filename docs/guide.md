@@ -176,8 +176,17 @@ references, and ownership changes.
 
 Row settings uses Dux's popup shape, typography, surface colors, and grouped rows.
 Its background is opaque by default so windows and workspace lines stay hidden.
+The surrounding desktop dims with Dux's modal backdrop preference. Clicking
+outside closes the panel. Escape clears the active control or dropdown first;
+with no control active, it closes the panel. Clicking an empty part of the panel
+also clears focus. The working directory's inherited default appears as dimmed
+placeholder text until you enter an override.
 Clipboard history opens above the editor and returns keyboard focus when dismissed.
 Pressing Win+L again keeps the existing editor and its unsaved changes.
+
+Adding row variables grows the form to fit. Long forms scroll within the screen
+while the title and Save/Cancel buttons remain visible; a new variable receives
+keyboard focus automatically.
 
 Row settings fades and scales in over 180 ms and out over 140 ms. Closing with
 Escape, Cancel, Save, or the close button keeps the surface mapped until the exit

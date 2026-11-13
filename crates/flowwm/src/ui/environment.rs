@@ -60,7 +60,7 @@ impl MapEditor {
         let value_hint = value_hint.to_owned();
         add.connect_clicked(move |_| {
             if let Some(root) = root.upgrade() {
-                Self::append(&root, &rs, "", "", &key_hint, &value_hint, mode);
+                Self::append(&root, &rs, "", "", &key_hint, &value_hint, mode).grab_focus();
             }
         });
         Self { widget, rows }
@@ -73,12 +73,14 @@ impl MapEditor {
         key_hint: &str,
         value_hint: &str,
         mode: Mode,
-    ) {
+    ) -> gtk::Entry {
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        line.add_css_class("env-row");
         let key = gtk::Entry::new();
         key.set_text(name);
         key.set_placeholder_text(Some(key_hint));
-        key.set_width_chars(14);
+        key.set_width_chars(1);
+        key.set_max_width_chars(14);
         key.set_hexpand(true);
         key.add_css_class("env-key");
         line.append(&key);
@@ -91,7 +93,8 @@ impl MapEditor {
         entry.set_text(value);
         entry.set_placeholder_text(Some(value_hint));
         entry.set_hexpand(true);
-        entry.set_width_chars(18);
+        entry.set_width_chars(1);
+        entry.set_max_width_chars(18);
         if mode != Mode::Names {
             line.append(&entry);
         }
@@ -132,7 +135,8 @@ impl MapEditor {
         } else {
             root.append(&line);
         }
-        rows.borrow_mut().push((key, entry, removed));
+        rows.borrow_mut().push((key.clone(), entry, removed));
+        key
     }
     pub fn read(&self) -> Result<Env> {
         let mut values = Env::new();

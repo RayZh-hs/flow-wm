@@ -3678,7 +3678,6 @@ impl Shell {
         let overrides: Env = serde_json::from_value(value["settings"].clone()).unwrap_or_default();
         let dialog = self.dialog("Row settings", 520, 560);
         dialog.add_css_class("row-settings-window");
-        dialog.set_resizable(false);
         let root = column(12);
         root.add_css_class("row-settings-body");
         let heading = gtk::CenterBox::new();
@@ -3686,16 +3685,9 @@ impl Shell {
         icon.set_pixel_size(20);
         icon.set_margin_start(8);
         heading.set_start_widget(Some(&icon));
-        let titles = column(3);
         let title = label("Row settings", "dialog-title");
         title.set_xalign(0.5);
-        titles.append(&title);
-        let subtitle = label(&workflow.name, "muted");
-        subtitle.set_xalign(0.5);
-        subtitle.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        subtitle.set_max_width_chars(42);
-        titles.append(&subtitle);
-        heading.set_center_widget(Some(&titles));
+        heading.set_center_widget(Some(&title));
         let close = gtk::Button::from_icon_name("window-close-symbolic");
         close.add_css_class("flat");
         close.set_valign(gtk::Align::Start);
@@ -3705,7 +3697,12 @@ impl Shell {
         heading.set_end_widget(Some(&close));
         root.append(&heading);
         let sections = column(2);
-        root.append(&sections);
+        let form = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_height(true)
+            .child(&sections)
+            .build();
+        root.append(&form);
         let mut workspaces: Vec<_> = runtime
             .workspaces
             .definitions()
@@ -3745,6 +3742,7 @@ impl Shell {
         let pwd = entry(overrides.get("pwd").map(String::as_str).unwrap_or(""));
         pwd.set_placeholder_text(value["definitions"]["pwd"]["default"].as_str());
         pwd.set_hexpand(true);
+        pwd.set_width_chars(1);
         let directory = row(6);
         directory.append(&pwd);
         let reset = gtk::Button::from_icon_name("edit-undo-symbolic");
@@ -3763,16 +3761,10 @@ impl Shell {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         let variables = super::environment::MapEditor::new(&custom, "Setting name", "Value", false);
-        let variables_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .max_content_height(180)
-            .propagate_natural_height(true)
-            .child(&variables.widget)
-            .build();
         let section = column(8);
         section.add_css_class("row-settings-section");
         section.add_css_class("last");
-        field(&section, "Row variables", &variables_scroll);
+        field(&section, "Row variables", &variables.widget);
         let hint = label(
             "New nodes receive FLOWWM_ROWSET_<NAME>. Running nodes keep their environment.",
             "row-settings-hint",
@@ -3798,7 +3790,6 @@ impl Shell {
         actions.append(&save);
         root.append(&actions);
         let old_workspace = workflow.workspace.clone();
-        let focus = workspace.clone();
         let weak = self.weak.clone();
         let d = dialog.clone();
         save.connect_clicked(move |_| {
@@ -3848,15 +3839,12 @@ impl Shell {
             }
         });
         dialog.set_default_widget(Some(&save));
-        let (_, natural_height, _, _) = root.measure(gtk::Orientation::Vertical, 520);
-        dialog.set_default_size(520, natural_height);
-        let (open_ms, close_ms) = {
+        {
             let view = self.view.borrow();
-            (view.theme.popup_open_ms, view.theme.popup_close_ms)
-        };
-        super::popup::Popup::attach(&dialog, &root, open_ms, close_ms);
+            super::popup::Popup::attach(&dialog, &root, &view.theme);
+        }
         dialog.present();
-        focus.grab_focus();
+        gtk::prelude::GtkWindowExt::set_focus(&dialog, None::<&gtk::Widget>);
     }
 
     fn workspace_dialog(&self) {
@@ -4209,7 +4197,13 @@ impl Shell {
         let d = dialog.clone();
         key.connect_key_pressed(move |_, key, _, _| {
             if key == gdk::Key::Escape {
-                d.close();
+                if d.has_css_class("row-settings-window")
+                    && let Some(popup) = d.child().and_downcast::<super::popup::Popup>()
+                {
+                    popup.escape(&d);
+                } else {
+                    d.close();
+                }
                 glib::Propagation::Stop
             } else {
                 glib::Propagation::Proceed
@@ -4229,10 +4223,18 @@ impl Shell {
             })
             .filter(|window| window.is_visible() && window.is_mapped())
             .unwrap_or_else(|| self.window().clone().upcast());
-        let widget: gtk::Widget = window.clone().upcast();
+        let widget = window
+            .child()
+            .and_downcast::<super::popup::Popup>()
+            .and_then(|popup| popup.body())
+            .unwrap_or_else(|| window.clone().upcast());
         let paintable = gtk::WidgetPaintable::new(Some(&widget));
         let snapshot = gtk::Snapshot::new();
-        paintable.snapshot(&snapshot, widget.width() as f64, widget.height() as f64);
+        paintable.snapshot(
+            &snapshot,
+            paintable.intrinsic_width() as f64,
+            paintable.intrinsic_height() as f64,
+        );
         let node = snapshot.to_node().context("Window has not rendered yet")?;
         let renderer = gtk::gsk::CairoRenderer::new();
         renderer
