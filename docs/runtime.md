@@ -87,6 +87,13 @@ An orderly writer shutdown flushes pending metadata; an abrupt exit may lose
 metadata updates since the last save. Background write failures are logged, and
 synchronous saves report errors to the caller.
 
+Reopening an application or changing its native window/PID replaces its attachment
+token. The desktop provider retires the previous host registration using its exact
+token and session before registering the replacement, and releases obsolete process
+exit watches. It also reconciles a host registration committed before a crash left
+`desktop.json` with an older or missing binding. Events from the retired attachment
+remain stale and cannot report an exit for the replacement window.
+
 The host rejects `state.json`, `runtime-v2.json`, unsupported runtime formats and
 old request/manifest versions with an error. Their input files remain untouched.
 There is no automatic conversion or importer in the live runtime. The separate

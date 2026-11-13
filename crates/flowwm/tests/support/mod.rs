@@ -95,6 +95,14 @@ pub fn fixture_with_config(
     niri: Option<&std::path::Path>,
     configure: impl FnOnce(&std::path::Path),
 ) -> (TestClient, mpsc::Receiver<UiCommand>) {
+    fixture_with_provider_setup(state, niri, configure, |_, _| {})
+}
+pub fn fixture_with_provider_setup(
+    state: State,
+    niri: Option<&std::path::Path>,
+    configure: impl FnOnce(&std::path::Path),
+    setup: impl FnOnce(&Client, &std::path::Path),
+) -> (TestClient, mpsc::Receiver<UiCommand>) {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path();
     let socket = path.join("host.sock");
@@ -192,6 +200,7 @@ pub fn fixture_with_config(
         serde_json::to_vec(&bindings).unwrap(),
     )
     .unwrap();
+    setup(&native, &data);
     let mut provider = Process::new(env!("CARGO_BIN_EXE_flowwm-desktop"));
     provider
         .env("FLOWWM_HOST_SOCKET", &socket)

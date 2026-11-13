@@ -642,28 +642,58 @@ pub fn run() -> Result<()> {
                         })
                         .map(|b| b.token.clone())
                         .unwrap_or_else(crate::model::id);
-                    if runtime
+                    let registration = ApplicationRegistration {
+                        workflow: node.workspace.clone().into(),
+                        node: node.id.clone().into(),
+                        workspace: workspace.clone(),
+                        incarnation: desktop.session.clone(),
+                        token: registration_token.clone(),
+                        operations: ApplicationOperations {
+                            open: true,
+                            close_window: true,
+                            interrupt: false,
+                            disown: true,
+                        },
+                    };
+                    let previous = runtime.applications.get(&registration.node);
+                    if previous.is_none_or(|r| {
+                        r.token != registration.token
+                            || r.incarnation != registration.incarnation
+                            || r.workflow != registration.workflow
+                            || r.workspace != registration.workspace
+                    }) {
+                        // Closing a window can leave its registration alive for
+                        // process-exit delivery. A replacement attachment needs
+                        // a new token, so retire the exact host registration
+                        // before registering it. The host may also be ahead of
+                        // desktop.json after a crash between the two saves.
+                        if let Some(previous) = previous
+                            && previous.incarnation == registration.incarnation
+                            && previous.token != registration.token
+                        {
+                            host.command(Command::UnregisterApplication {
+                                node: previous.node.clone(),
+                                token: previous.token.clone(),
+                                incarnation: previous.incarnation.clone(),
+                            })?;
+                        }
+                        host.command(Command::RegisterApplication { registration })?;
+                    }
+                    if bindings
                         .applications
-                        .get(&node.id.clone().into())
-                        .is_none_or(|r| {
-                            r.token != registration_token || r.incarnation != desktop.session
-                        })
+                        .get(&node.id)
+                        .is_none_or(|b| b.token != registration_token)
                     {
-                        host.command(Command::RegisterApplication {
-                            registration: ApplicationRegistration {
-                                workflow: node.workspace.clone().into(),
-                                node: node.id.clone().into(),
-                                workspace: workspace.clone(),
-                                incarnation: desktop.session.clone(),
-                                token: registration_token.clone(),
-                                operations: ApplicationOperations {
-                                    open: true,
-                                    close_window: true,
-                                    interrupt: false,
-                                    disown: true,
-                                },
-                            },
-                        })?;
+                        let obsolete: Vec<_> = watches
+                            .iter()
+                            .filter(|(_, (id, _, _))| id == &node.id)
+                            .map(|(token, _)| *token)
+                            .collect();
+                        for token in obsolete {
+                            monitor.unwatch(token);
+                            watches.remove(&token);
+                        }
+                        watched.retain(|(id, _, _)| id != &node.id);
                     }
                     applications.insert(
                         node.id.clone(),

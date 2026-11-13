@@ -289,6 +289,7 @@ pub(crate) fn synchronize_with_processes(
             n.desktop_window
                 && n.kind == NodeKind::Window
                 && n.spec().type_id == "local.window"
+                && !n.flow.properties.contains_key("application")
                 && !retained.contains(&n.id)
                 && !seen.contains(&n.id)
         })

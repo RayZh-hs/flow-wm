@@ -110,6 +110,122 @@ fn application_node() -> (State, String) {
 }
 
 #[test]
+fn reopening_an_application_replaces_its_registration_and_rejects_old_exit_events() {
+    let pid = std::process::id() as i32;
+    let compositor = Compositor::new(pid);
+    let (state, id) = application_node();
+    let (desktop, _) = support::fixture_with_niri(state, Some(&compositor.socket));
+    support::wait(|| desktop.bindings().applications.contains_key(&id));
+    let original = desktop.bindings().applications[&id].clone();
+
+    compositor.publish(json!({"WindowClosed":{"id":1}}));
+    support::wait(|| !desktop.bindings().applications.contains_key(&id));
+    compositor.publish(json!({"WindowOpenedOrChanged":{"window":window(pid, 2, "Reopened")}}));
+    support::wait(|| {
+        desktop
+            .bindings()
+            .applications
+            .get(&id)
+            .is_some_and(|b| b.window == 2)
+    });
+    let replacement = desktop.bindings().applications[&id].clone();
+    assert_ne!(replacement.token, original.token);
+    let runtime = desktop.orchestrate(Command::Snapshot, None).unwrap();
+    assert_eq!(runtime["applications"][&id]["token"], replacement.token);
+    let error = desktop
+        .orchestrate(
+            Command::ApplicationEvent {
+                node: id.clone().into(),
+                token: original.token,
+                incarnation: compositor.socket.to_string_lossy().into_owned(),
+                pin: "on_exit".into(),
+                delivery: "obsolete-exit".into(),
+                args: json!({"exit_code":0}),
+            },
+            Some(replacement.workflow.into()),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("Stale application event"));
+
+    // PID metadata can change without a window ID changing, too.
+    compositor.publish(json!({"WindowOpenedOrChanged":{"window":window(0, 2, "Updated PID")}}));
+    support::wait(|| {
+        desktop
+            .bindings()
+            .applications
+            .get(&id)
+            .is_some_and(|b| b.pid == Some(0) && b.token != replacement.token)
+    });
+    desktop.shutdown();
+}
+
+fn recover_registration_before_desktop_save(keep_binding: bool) {
+    let pid = std::process::id() as i32;
+    let compositor = Compositor::new(pid);
+    let (mut state, id) = application_node();
+    let workflow = state.selected_workspace.clone();
+    state.node_mut(&id).unwrap().window_id = Some(1);
+    let (desktop, _) = support::fixture_with_provider_setup(
+        state,
+        Some(&compositor.socket),
+        |_| {},
+        |host, data| {
+            let document = data.join("desktop.json");
+            let mut bindings: flowwm::desktop_provider::Bindings =
+                serde_json::from_slice(&std::fs::read(&document).unwrap()).unwrap();
+            if keep_binding {
+                bindings.applications.get_mut(&id).unwrap().pid = Some(pid);
+            } else {
+                bindings.applications.clear();
+            }
+            std::fs::write(document, serde_json::to_vec(&bindings).unwrap()).unwrap();
+            host.command(Command::ActivateSession {
+                workspace: "local:desktop".into(),
+                provider: "desktop".into(),
+                incarnation: bindings.session.clone(),
+            })
+            .unwrap();
+            host.command(Command::RegisterApplication {
+                registration: flow_core::providers::ApplicationRegistration {
+                    workflow: workflow.into(),
+                    node: id.clone().into(),
+                    workspace: "local:desktop".into(),
+                    incarnation: bindings.session,
+                    token: "committed-before-desktop-save".into(),
+                    operations: flow_core::providers::ApplicationOperations {
+                        open: true,
+                        close_window: true,
+                        interrupt: false,
+                        disown: true,
+                    },
+                },
+            })
+            .unwrap();
+        },
+    );
+    support::wait(|| {
+        let bindings = desktop.bindings();
+        let runtime = desktop.orchestrate(Command::Snapshot, None).unwrap();
+        bindings.applications.get(&id).is_some_and(|b| {
+            b.window == 1 && b.pid == Some(pid) && runtime["applications"][&id]["token"] == b.token
+        })
+    });
+    compositor.publish(json!({"WindowOpenedOrChanged":{"window":window(pid, 1, "Recovered")}}));
+    support::wait(|| desktop.bindings().applications[&id].title == "Recovered");
+    desktop.shutdown();
+}
+
+#[test]
+fn provider_recovers_when_registration_was_saved_before_its_binding() {
+    recover_registration_before_desktop_save(false);
+}
+
+#[test]
+fn provider_recovers_when_the_saved_binding_has_an_older_token() {
+    recover_registration_before_desktop_save(true);
+}
+
+#[test]
 fn animated_titles_keep_ui_commands_live_when_metadata_storage_fails() {
     use flowwm::client::UiCommand;
     use std::time::Duration;
