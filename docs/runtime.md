@@ -47,8 +47,11 @@ be used for a standalone editor.
 
 The host's `info` response includes `node_types`, the registered providers' graph
 schemas. Desktop clients use them for pin lookup and validation before creating
-the first node of a provider type. Workflow graphs still store only the provider
-schemas they use; schema discovery never starts a provider execution.
+the first node of a provider type. The desktop also loads schemas from extension
+manifests, so subprocess nodes remain available when a compatible running host
+predates schema discovery. Mounted host schemas take precedence over manifest
+definitions. Workflow graphs still store only the provider schemas they use;
+schema discovery never starts a provider execution.
 
 Installed systemd units start `flowwm-core.service`, `flowwm-desktop.service` and
 `flowwm.service` in that order. GTK and DMS replacement preserves a compatible

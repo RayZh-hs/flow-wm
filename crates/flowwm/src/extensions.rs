@@ -282,6 +282,7 @@ pub fn load_bundle(directory: &Path) -> Result<Extensions> {
         ..Default::default()
     };
     for provider in flow_builtins::external::load(directory)? {
+        bundle.nodes.push(provider.definition.node_schema());
         bundle.macros.push(Macro {
             id: provider.definition.id.clone(),
             name: provider.name,

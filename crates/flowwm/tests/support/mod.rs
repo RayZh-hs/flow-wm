@@ -62,12 +62,16 @@ impl TestClient {
         .unwrap();
     }
     pub fn reconnect(&self) -> (Self, mpsc::Receiver<UiCommand>) {
+        self.reconnect_with_socket(self._processes.socket.clone())
+    }
+    pub fn reconnect_with_socket(
+        &self,
+        socket: std::path::PathBuf,
+    ) -> (Self, mpsc::Receiver<UiCommand>) {
         self.client.shutdown();
-        let (client, events) = DesktopClient::connect_with_provider(
-            self._processes.socket.clone(),
-            self._processes.provider_socket.clone(),
-        )
-        .unwrap();
+        let (client, events) =
+            DesktopClient::connect_with_provider(socket, self._processes.provider_socket.clone())
+                .unwrap();
         (
             Self {
                 client,
@@ -84,6 +88,13 @@ pub fn fixture_with_niri(
     state: State,
     niri: Option<&std::path::Path>,
 ) -> (TestClient, mpsc::Receiver<UiCommand>) {
+    fixture_with_config(state, niri, |_| {})
+}
+pub fn fixture_with_config(
+    state: State,
+    niri: Option<&std::path::Path>,
+    configure: impl FnOnce(&std::path::Path),
+) -> (TestClient, mpsc::Receiver<UiCommand>) {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path();
     let socket = path.join("host.sock");
@@ -95,6 +106,7 @@ pub fn fixture_with_niri(
         "flow { notification-command; }\n",
     )
     .unwrap();
+    configure(&path.join("config"));
     let host_binary =
         std::path::Path::new(env!("CARGO_BIN_EXE_flowwm")).with_file_name("flow-core");
     let host = Process::new(host_binary)

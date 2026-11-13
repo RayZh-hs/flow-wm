@@ -325,9 +325,15 @@ impl DesktopClient {
         .unwrap_or_else(crate::notifications::default_command);
         let writer = Writer::new(directory)?;
         let mut state = State::empty(std::env::current_dir()?);
-        // Creation and pin lookup need provider schemas before their first node exists.
-        state.node_types =
-            serde_json::from_value(info.get("node_types").cloned().unwrap_or_else(|| json!([])))?;
+        // Older hosts omit schemas from Info. Keep manifest definitions available
+        // before the first instance exists, with the mounted host schemas taking precedence.
+        crate::extensions::load_bundle(&config_directory.join("extensions"))?.apply(&mut state)?;
+        for definition in serde_json::from_value::<Vec<crate::graph::NodeDefinition>>(
+            info.get("node_types").cloned().unwrap_or_else(|| json!([])),
+        )? {
+            state.node_types.retain(|d| d.id != definition.id);
+            state.node_types.push(definition);
+        }
         crate::projection::apply(&mut state, &host.snapshot()?);
         writer.load(&mut state)?;
         let bindings = crate::desktop_provider::bindings_at(&provider_socket)?;
@@ -574,11 +580,6 @@ impl DesktopClient {
             .clone();
         let extensions =
             crate::extensions::load_bundle(&self.inner.config_directory.join("extensions"))?;
-        for definition in extensions.nodes {
-            if !graph.node_types.iter().any(|d| d.id == definition.id) {
-                graph.node_types.push(definition);
-            }
-        }
         for definition in extensions.types {
             if !graph.types.iter().any(|d| d.name == definition.name) {
                 graph.types.push(definition);
@@ -590,6 +591,13 @@ impl DesktopClient {
             }
         }
         edit(&mut graph)?;
+        for definition in extensions.nodes {
+            if graph.nodes.iter().any(|n| n.type_id == definition.id)
+                && !graph.node_types.iter().any(|d| d.id == definition.id)
+            {
+                graph.node_types.push(definition);
+            }
+        }
         self.inner.host.command(Command::ReplaceGraph {
             workflow: workflow.into(),
             graph,
