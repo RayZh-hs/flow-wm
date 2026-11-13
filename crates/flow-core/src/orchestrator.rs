@@ -480,6 +480,117 @@ impl Orchestrator {
                 self.state.revision += 1;
                 Ok(Value::Null)
             }
+            Command::RelocateNodes {
+                source,
+                target,
+                nodes,
+            } => {
+                ensure!(source != target, "Source and target must differ");
+                let from = self.state.lookup(&source, caller)?;
+                let to = self.state.lookup(&target, caller)?;
+                ensure!(
+                    from.authority == self.state.host_id
+                        && to.authority == self.state.host_id
+                        && from.transfer.is_none()
+                        && to.transfer.is_none(),
+                    "Nodes can only move between local workflows that are not being transferred"
+                );
+                let ids: BTreeSet<_> = nodes.into_iter().collect();
+                ensure!(
+                    !ids.is_empty() && ids.iter().all(|id| from.graph.node(&id.0).is_some()),
+                    "Node not found"
+                );
+                let mut from_graph = from.graph.clone();
+                let mut to_graph = to.graph.clone();
+                to_graph.nodes.extend(
+                    from_graph
+                        .nodes
+                        .iter()
+                        .filter(|n| ids.contains(&n.id))
+                        .cloned(),
+                );
+                to_graph.connections.extend(
+                    from_graph
+                        .connections
+                        .iter()
+                        .filter(|e| {
+                            ids.contains(&e.source.node.clone().into())
+                                && ids.contains(&e.target.node.clone().into())
+                        })
+                        .cloned(),
+                );
+                for definition in &from_graph.node_types {
+                    if !to_graph.node_types.iter().any(|d| d.id == definition.id) {
+                        to_graph.node_types.push(definition.clone());
+                    }
+                }
+                for definition in &from_graph.types {
+                    if !to_graph.types.iter().any(|d| d.name == definition.name) {
+                        to_graph.types.push(definition.clone());
+                    }
+                }
+                for definition in &from_graph.casts {
+                    if !to_graph.casts.contains(definition) {
+                        to_graph.casts.push(definition.clone());
+                    }
+                }
+                from_graph.nodes.retain(|n| !ids.contains(&n.id));
+                from_graph.connections.retain(|e| {
+                    !ids.contains(&e.source.node.clone().into())
+                        && !ids.contains(&e.target.node.clone().into())
+                });
+                for graph in [&mut from_graph, &mut to_graph] {
+                    self.registry.prepare_graph(graph);
+                    graph.validate()?;
+                    self.registry.validate_graph(graph)?;
+                }
+                self.state.workflows.get_mut(&source).unwrap().graph = from_graph;
+                self.state.workflows.get_mut(&target).unwrap().graph = to_graph;
+                for app in self
+                    .state
+                    .applications
+                    .values_mut()
+                    .filter(|a| ids.contains(&a.node))
+                {
+                    app.workflow = target.clone();
+                }
+                for source in self
+                    .state
+                    .sources
+                    .values_mut()
+                    .filter(|s| ids.contains(&s.node))
+                {
+                    source.workflow = target.clone();
+                }
+                for frame in self
+                    .state
+                    .queue
+                    .frames
+                    .iter_mut()
+                    .filter(|f| ids.contains(&f.root))
+                {
+                    frame.workflow = target.clone();
+                }
+                for execution in self
+                    .state
+                    .executions
+                    .values_mut()
+                    .filter(|e| ids.contains(&e.node))
+                {
+                    execution.workflow = target.clone();
+                }
+                for context in self
+                    .state
+                    .queue
+                    .invocations
+                    .values_mut()
+                    .filter(|c| ids.contains(&c.request.node))
+                {
+                    context.request.workflow = target.clone();
+                }
+                self.state.revision += 1;
+                Ok(Value::Null)
+            }
             Command::ReplaceGraph {
                 workflow,
                 mut graph,

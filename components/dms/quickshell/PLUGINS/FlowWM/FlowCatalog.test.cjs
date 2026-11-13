@@ -5,12 +5,12 @@ const vm = require('node:vm');
 const path = require('node:path');
 const context = vm.createContext({});
 vm.runInContext(fs.readFileSync(path.join(__dirname, 'FlowCatalog.js'), 'utf8').replace(/^\.pragma library\s*/, ''), context);
-const labels = { kind: { agent: 'Agent', human: 'You' }, status: { idle: 'Ready', review: 'Needs you' }, expand: 'Open', reveal: 'Reveal', create: 'Create', open: 'Open', workspace: 'Workspace', nodes: 'nodes', idleRecipe: 'Idle workflow', graph: 'Graph', graphHint: 'Orchestrate', newNode: 'New node', createHint: 'Choose a type' };
+const labels = { kind: { agent: 'Agent', human: 'You' }, status: { idle: 'Ready', review: 'Needs you' }, expand: 'Open', reveal: 'Reveal', create: 'Create', open: 'Open', workspace: 'Workspace', nodes: 'nodes', idleRecipe: 'Idle workflow', macros:'Macros', macrosHint:'Workflow operations', arrange:'Rearrange', arrangeHint:'Compact and align', fit:'Frame all nodes', fitHint:'Fit workflow', undo:'Undo', undoHint:'Last edit', redo:'Redo', redoHint:'Last edit', run:'Run', graph: 'Graph', graphHint: 'Orchestrate', newNode: 'New node', createHint: 'Choose a type' };
 const catalog = { selected_workspace: 'a', workspaces: [{ id: 'a', name: 'Compiler', nodes: 2 }, { id: 'b', name: 'Website', nodes: 1 }], nodes: [{ id: 'a1', title: 'Inspect parser', workspace: 'a', kind: 'agent', status: 'idle' }, { id: 'a2', title: 'My notes', workspace: 'a', kind: 'human', status: 'idle' }, { id: 'b1', title: 'Review deployment', workspace: 'b', kind: 'agent', status: 'review' }], macros: [{ id: 'agent', name: 'Agent session', description: 'A coding task' }], recipes: [{ id: 'r1', name: 'Inspect and decide', nodes: 3 }] };
 const items = query => JSON.parse(JSON.stringify(context.items(catalog, query, labels)));
 
 test('lookup searches other workspaces and prioritizes decisions', () => {
-    assert.equal(items('')[0].id, 'node:b1');
+    assert.deepEqual(items('').map(item => item.id), ['flowwm:macros','flowwm:create']);
     assert.equal(items('parser compiler')[0].id, 'node:a1');
     assert.equal(items('rvw dply')[0].id, 'node:b1');
 });
@@ -35,16 +35,17 @@ test('creation strips the mode prefix and never runs the macro', () => {
     assert.deepEqual(items('+ coding')[0].flowwmArgs, ['create', 'agent']);
     assert.equal(items('+ missing').length, 0);
 });
-test('window lookup chooses an explicit expansion action', () => {
-    assert.deepEqual(items('> parser')[0].flowwmArgs, ['focus', 'a1', '--open']);
+test('workflow macros search executes operations rather than creating nodes', () => {
+    const operation = items('> rearrange')[0];
+    assert.equal(operation.id, 'operation:arrange');
+    assert.deepEqual(JSON.parse(operation.flowwmArgs[1]), {action:'ui',command:{action:'arrange'}});
+    assert.equal(items('> parser').length,0);
+    assert.equal(items('> ').length,4);
 });
-test('ordinary search omits window titles, while explicit open lookup can find them', () => {
+test('ordinary and macro search omit window titles', () => {
     const input = { ...catalog, nodes: [{ id: 'window', title: 'A long constant window title\nwith a second line', kind: 'window', status: 'running' }] };
     assert.equal(context.items(input, 'const', labels).length, 0);
-    const results = context.items(input, '> const', labels);
-    assert.equal(results.length, 1);
-    assert.equal(results[0].name.includes('\n'), false);
-    assert.deepEqual(Array.from(results[0].flowwmArgs), ['focus', 'window', '--open']);
+    assert.equal(context.items(input, '> const', labels).length, 0);
 });
 test('fuzzy matching cannot assemble a token across unrelated title words', () => {
     assert.equal(context.matches('Choose the next step', 'const'), false);
@@ -57,10 +58,11 @@ test('workspace mode excludes node and macro results', () => {
 test('recipe lookup instantiates rather than executes a workflow', () => {
     assert.deepEqual(items('# decide')[0].flowwmArgs, ['recipe', 'r1']);
 });
-test('an empty catalog still provides a graph and creation entry', () => {
-    const results = context.items({}, '', labels);
+test('bare search provides only macros and creation even with many ambiguous rows', () => {
+    const results = context.items({...catalog, workspaces:Array.from({length:50},(_,i)=>({id:String(i),name:'My workspace',nodes:0}))}, '', labels);
     assert.equal(results.length, 2);
-    assert.equal(results[0].id, 'flowwm:graph');
+    assert.equal(results[0].id, 'flowwm:macros');
+    assert.equal(results[1].id, 'flowwm:create');
 });
 
 const linked = {

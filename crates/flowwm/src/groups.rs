@@ -246,6 +246,23 @@ pub(crate) fn synchronize_with_processes(
             changed = true;
             state.nodes.len() - 1
         });
+        if state.nodes[index].workspace != group_id {
+            let right = state
+                .nodes
+                .iter()
+                .filter(|n| n.workspace == group_id)
+                .map(|n| n.position.x + 340.)
+                .fold(100., f64::max);
+            let node = &mut state.nodes[index];
+            node.workspace = group_id;
+            node.position = Position { x: right, y: 80. };
+            node.column = None;
+            node.column_mode = match view {
+                RowView::Nodes => ColumnMode::Node,
+                RowView::Windows => ColumnMode::Window,
+            };
+            changed = true;
+        }
         let node = &mut state.nodes[index];
         let newly_bound = node.window_id != Some(window.id);
         if newly_bound {
@@ -282,6 +299,16 @@ pub(crate) fn synchronize_with_processes(
             }
         }
     }
+    let owners: std::collections::HashMap<_, _> = state
+        .nodes
+        .iter()
+        .map(|n| (n.id.as_str(), n.workspace.as_str()))
+        .collect();
+    let previous_edges = state.connections.len();
+    state
+        .connections
+        .retain(|e| owners.get(e.source.node.as_str()) == owners.get(e.target.node.as_str()));
+    changed |= previous_edges != state.connections.len();
     let removed: HashSet<_> = state
         .nodes
         .iter()

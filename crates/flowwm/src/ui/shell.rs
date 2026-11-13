@@ -648,19 +648,6 @@ impl Shell {
             }
             glib::Propagation::Proceed
         });
-        let w = shell.weak.clone();
-        let keys = gtk::EventControllerKey::new();
-        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
-        keys.connect_key_pressed(move |_, key, _, modifiers| {
-            if modifiers.contains(gdk::ModifierType::CONTROL_MASK) && key == gdk::Key::p {
-                if let Some(s) = w.upgrade() {
-                    s.dms_launcher(Some("nodes"));
-                }
-                return glib::Propagation::Stop;
-            }
-            glib::Propagation::Proceed
-        });
-        window.add_controller(keys);
         shell.apply_insets();
         shell.refresh();
         shell
@@ -672,7 +659,7 @@ impl Shell {
             CanvasAction::Open(id) => self.open(&id),
             CanvasAction::Add => self.palette(),
             CanvasAction::Edit(id) => self.edit(&id),
-            CanvasAction::Delete(id) => self.engine.dispatch(Action::Delete { id }),
+            CanvasAction::Delete(ids) => self.engine.dispatch(Action::DeleteMany { ids }),
             CanvasAction::Run(id) => self.engine.dispatch(Action::Run {
                 id,
                 downstream: false,
@@ -682,6 +669,9 @@ impl Shell {
             CanvasAction::ConnectSearch => self.connect_search(),
             CanvasAction::ConnectPin(endpoint, output) => self.connect_pin_search(endpoint, output),
             CanvasAction::Arrange => self.arrange(),
+            CanvasAction::Macros => self.search(Some("macros")),
+            CanvasAction::Undo => self.engine.dispatch(Action::Undo),
+            CanvasAction::Redo => self.engine.dispatch(Action::Redo),
             CanvasAction::Copy(cut) => self.copy_selection(cut),
             CanvasAction::Paste => self.paste_selection(),
             CanvasAction::Duplicate => {
@@ -769,9 +759,7 @@ impl Shell {
         let text = serde_json::json!({"flowwm_clipboard":1,"recipe":recipe}).to_string();
         self.canvas().clipboard().set_text(&text);
         if cut {
-            for id in selected {
-                self.engine.dispatch(Action::Delete { id });
-            }
+            self.engine.dispatch(Action::DeleteMany { ids: selected });
         }
     }
     fn paste_selection(&self) {
@@ -1943,11 +1931,67 @@ impl Shell {
                     .then_some("create")
             });
             self.dms_launcher(mode);
+        } else if mode == Some("macros") {
+            self.workflow_macros();
         } else if mode.is_none_or(|mode| mode == "create") {
             self.palette();
         } else {
             self.search_nodes();
         }
+    }
+    fn workflow_macros(&self) {
+        let popup = self.dialog("Macros", 480, 300);
+        let root = column(8);
+        root.add_css_class("dialog-body");
+        let search = gtk::SearchEntry::new();
+        search.set_placeholder_text(Some("Search workflow operations…"));
+        search.set_search_delay(0);
+        root.append(&search);
+        let list = gtk::ListBox::new();
+        let operations = [
+            ("Rearrange", UiCommand::Arrange),
+            ("Frame all nodes", UiCommand::Fit),
+            ("Undo", UiCommand::Undo),
+            ("Redo", UiCommand::Redo),
+        ];
+        let titles = operations
+            .iter()
+            .map(|(title, _)| title.to_lowercase())
+            .collect::<Vec<_>>();
+        for (title, _) in &operations {
+            list.append(&label(title, ""));
+        }
+        let query = Rc::new(RefCell::new(String::new()));
+        let filter = query.clone();
+        list.set_filter_func(move |row| {
+            titles[row.index() as usize].contains(filter.borrow().as_str())
+        });
+        let filtered = list.clone();
+        search.connect_search_changed(move |entry| {
+            *query.borrow_mut() = entry.text().to_lowercase();
+            filtered.invalidate_filter();
+        });
+        let weak = self.weak.clone();
+        let p = popup.clone();
+        list.connect_row_activated(move |_, row| {
+            p.close();
+            if let Some(shell) = weak.upgrade() {
+                shell.control(operations[row.index() as usize].1.clone());
+            }
+        });
+        let chosen = list.clone();
+        search.connect_activate(move |_| {
+            if let Some(row) = (0..4)
+                .filter_map(|i| chosen.row_at_index(i))
+                .find(|r| r.is_child_visible())
+            {
+                row.activate();
+            }
+        });
+        root.append(&list);
+        popup.set_child(Some(&root));
+        popup.present();
+        search.grab_focus();
     }
     fn dms_launcher(&self, mode: Option<&str>) {
         let query = mode.map(|mode| {
@@ -1967,6 +2011,7 @@ impl Shell {
             match mode {
                 "create" => "@ + ",
                 "recipes" => "@ # ",
+                "macros" => "@ > ",
                 _ => "@ ",
             }
             .to_string()
@@ -2140,6 +2185,8 @@ impl Shell {
             UiCommand::RefreshImages => self.collect_images(),
             UiCommand::AgentChat => self.agent_chat(),
             UiCommand::Arrange => self.arrange(),
+            UiCommand::Undo => self.engine.dispatch(Action::Undo),
+            UiCommand::Redo => self.engine.dispatch(Action::Redo),
             UiCommand::ConnectSearch => self.connect_search(),
             UiCommand::CreateConnected {
                 id,
@@ -2422,7 +2469,16 @@ impl Shell {
         }
         *self.displayed_row.borrow_mut() = state.workspace().row.clone();
         let selected = self.view.borrow().selected.clone();
-        if selected.as_ref().is_some_and(|id| state.node(id).is_none()) {
+        self.view.borrow_mut().selection.retain(|id| {
+            state
+                .node(id)
+                .is_some_and(|n| n.workspace == state.selected_workspace)
+        });
+        if selected.as_ref().is_some_and(|id| {
+            state
+                .node(id)
+                .is_none_or(|n| n.workspace != state.selected_workspace)
+        }) {
             self.select(None);
         }
         let missing: Vec<_> = self

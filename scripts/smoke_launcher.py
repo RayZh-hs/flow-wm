@@ -141,8 +141,11 @@ def run():
                 for view in ("windows", "nodes"):
                     request(runtime / "flowwm.sock", {"action": "ui", "command": {"action": view}})
                     wait(lambda: request(runtime / "flowwm.sock", {"action": "catalog"})["presentation"]["graph_visible"] == (view == "nodes"), compositor)
+                    shortcuts = [("super+space", "@ + " if view == "nodes" else ""), ("super+shift+space", "@ "), ("alt+space", "")]
+                    if view == "nodes":
+                        shortcuts.append(("ctrl+shift+p", "@ > "))
                     for attempt in range(2):
-                        for shortcut, prefix in (("super+space", "@ + " if view == "nodes" else ""), ("super+shift+space", "@ "), ("alt+space", "")):
+                        for shortcut, prefix in shortcuts:
                             started = time.monotonic()
                             keys(shortcut, "a", "b", "c", "BackSpace", "shift+d")
                             try:

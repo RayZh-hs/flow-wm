@@ -15,6 +15,11 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
     state
         .connections
         .retain(|e| ids.contains(&e.source.node) && ids.contains(&e.target.node));
+    let previous: std::collections::HashMap<_, _> = state
+        .nodes
+        .iter()
+        .map(|n| (n.id.clone(), n.clone()))
+        .collect();
     for workflow in runtime.workflows.values() {
         if !state.workspaces.iter().any(|w| w.id == workflow.id.0) {
             state.workspaces.push(Workspace {
@@ -74,18 +79,33 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
                 .nodes
                 .iter()
                 .position(|n| n.id == spec.id.0 && n.workspace == workflow.id.0);
-            let mut node = existing.map(|i| state.nodes[i].clone()).unwrap_or_else(|| {
-                Node::new(
-                    &workflow.id.0,
-                    kind,
-                    cwd.into(),
-                    Position {
-                        x: 100. + index as f64 * 360.,
-                        y: 80.,
-                    },
-                )
-            });
+            let mut node = existing
+                .map(|i| state.nodes[i].clone())
+                .or_else(|| previous.get(&spec.id.0).cloned())
+                .unwrap_or_else(|| {
+                    Node::new(
+                        &workflow.id.0,
+                        kind,
+                        cwd.into(),
+                        Position {
+                            x: 100. + index as f64 * 360.,
+                            y: 80.,
+                        },
+                    )
+                });
+            if node.workspace != workflow.id.0 {
+                node.position = Position {
+                    x: state
+                        .nodes
+                        .iter()
+                        .filter(|n| n.workspace == workflow.id.0 && n.id != node.id)
+                        .map(|n| n.position.x + 340.)
+                        .fold(100., f64::max),
+                    y: 80.,
+                };
+            }
             node.id = spec.id.0.clone();
+            node.workspace = workflow.id.0.clone();
             node.kind = kind;
             if workflow.graph.node_types.iter().any(|d| {
                 d.id == spec.type_id && d.behavior == flow_core::providers::Behavior::Source
@@ -143,6 +163,8 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
                 node.command = command.into();
             }
             if let Some(index) = existing {
+                state.nodes[index] = node;
+            } else if let Some(index) = state.nodes.iter().position(|n| n.id == node.id) {
                 state.nodes[index] = node;
             } else {
                 state.nodes.push(node);

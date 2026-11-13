@@ -36,11 +36,18 @@ Scope {
             expand: I18n.tr("Open window"), reveal: I18n.tr("Reveal node"), create: I18n.tr("Create"), open: I18n.tr("Open"),
             workspace: I18n.tr("Workspace"), nodes: I18n.tr("nodes"), idleRecipe: I18n.tr("Creates an idle workflow"),
             graph: I18n.tr("Open workflow graph"), graphHint: I18n.tr("Super+Tab · Orchestrate work in parallel"),
+            macros: I18n.tr("Macros"), macrosHint: I18n.tr("Ctrl+Shift+P · Workflow operations"),
+            arrange: I18n.tr("Rearrange"), arrangeHint: I18n.tr("Compact, align and frame the graph"),
+            fit: I18n.tr("Frame all nodes"), fitHint: I18n.tr("Fit the workflow in the viewport"),
+            undo: I18n.tr("Undo"), undoHint: I18n.tr("Ctrl+Z · Undo the last edit"),
+            redo: I18n.tr("Redo"), redoHint: I18n.tr("Ctrl+Shift+Z · Redo the last edit"), run: I18n.tr("Run"),
             newNode: I18n.tr("Create a node"), createHint: I18n.tr("Win+Space · Choose a node type")
         });
     }
 
     function executeItem(item) {
+        if (item?.flowwmArgs?.[0] === "search")
+            return { keepOpen: true, query: item.flowwmArgs[1] === "macros" ? "@ > " : "@ + " };
         if (item?.flowwmLayer) {
             if (item.flowwmLayer.back) {
                 if (targetKey) targetKey = "";

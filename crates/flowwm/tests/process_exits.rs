@@ -632,3 +632,103 @@ fn provider_repairs_saved_duplicate_owners_and_does_not_republish_them() {
     }
     desktop.shutdown();
 }
+
+#[test]
+fn moving_a_window_relocates_its_definition_binding_and_preview_without_recreating_it() {
+    let pid = std::process::id() as i32;
+    let compositor = Compositor::new(pid);
+    let (mut state, id) = application_node();
+    let original = state.selected_workspace.clone();
+    let dependent = Node::new(
+        &original,
+        NodeKind::Shell,
+        "/tmp".into(),
+        Default::default(),
+    );
+    let dependent_id = dependent.id.clone();
+    state.connections.push(Connection {
+        source: Endpoint {
+            node: id.clone(),
+            pin: "on_exit".into(),
+        },
+        target: Endpoint {
+            node: dependent_id.clone(),
+            pin: "in".into(),
+        },
+    });
+    state.nodes.push(dependent);
+    let (desktop, _) = support::fixture_with_niri(state, Some(&compositor.socket));
+    support::wait(|| desktop.bindings().applications.contains_key(&id));
+    let token = desktop.bindings().applications[&id].token.clone();
+    compositor.publish(json!({"WorkspacesChanged":{"workspaces":[
+        {"id":1,"idx":1,"name":null,"output":"TEST","is_urgent":false,"is_active":true,"is_focused":true,"active_window_id":1},
+        {"id":2,"idx":2,"name":"Destination","output":"TEST","is_urgent":false,"is_active":false,"is_focused":false,"active_window_id":null}
+    ]}}));
+    let mut moved = window(pid, 1, "Moved application");
+    moved["workspace_id"] = json!(2);
+    compositor.publish(json!({"WindowOpenedOrChanged":{"window":moved}}));
+    support::wait(|| {
+        desktop
+            .snapshot()
+            .state
+            .node(&id)
+            .is_some_and(|n| n.workspace != original && n.window_id == Some(1))
+    });
+    let snapshot = desktop.snapshot();
+    let destination = snapshot.state.node(&id).unwrap().workspace.clone();
+    assert_eq!(
+        snapshot.state.nodes.iter().filter(|n| n.id == id).count(),
+        1
+    );
+    assert_eq!(
+        snapshot.state.node(&dependent_id).unwrap().workspace,
+        original
+    );
+    assert!(
+        !snapshot
+            .state
+            .connections
+            .iter()
+            .any(|e| e.source.node == id)
+    );
+    assert_eq!(desktop.bindings().applications[&id].workflow, destination);
+    assert_eq!(desktop.bindings().applications[&id].token, token);
+    let runtime = desktop.orchestrate(Command::Snapshot, None).unwrap();
+    let runtime: RuntimeState = serde_json::from_value(runtime).unwrap();
+    assert!(
+        runtime.workflows[&original.clone().into()]
+            .graph
+            .node(&id)
+            .is_none()
+    );
+    assert!(
+        runtime.workflows[&destination.clone().into()]
+            .graph
+            .node(&id)
+            .is_some()
+    );
+    assert_eq!(
+        runtime.applications[&id.clone().into()].workflow.0,
+        destination
+    );
+    let position = snapshot.state.node(&id).unwrap().position.clone();
+    desktop
+        .request(Action::SelectWorkspace {
+            id: destination.clone(),
+        })
+        .unwrap();
+    assert_eq!(
+        desktop.snapshot().state.node(&id).unwrap().position.x,
+        position.x
+    );
+    let (reconnected, _) = desktop.reconnect();
+    assert_eq!(
+        reconnected.snapshot().state.node(&id).unwrap().workspace,
+        destination
+    );
+    assert_eq!(
+        reconnected.snapshot().state.node(&id).unwrap().window_id,
+        Some(1)
+    );
+    reconnected.shutdown();
+}

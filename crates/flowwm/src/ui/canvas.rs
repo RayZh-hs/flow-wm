@@ -119,13 +119,16 @@ pub enum CanvasAction {
     Open(String),
     Add,
     Edit(String),
-    Delete(String),
+    Delete(Vec<String>),
     Run(String),
     Stop(String),
     Chat,
     ConnectSearch,
     ConnectPin(crate::graph::Endpoint, bool),
     Arrange,
+    Macros,
+    Undo,
+    Redo,
     Copy(bool),
     Paste,
     Duplicate,
@@ -139,6 +142,7 @@ pub enum CanvasAction {
 #[derive(Clone)]
 enum Drag {
     Node,
+    Align,
     Pan {
         x: f64,
         y: f64,
@@ -391,22 +395,24 @@ pub fn zoom_keyboard(area: &super::surface::Surface, view: &Rc<RefCell<View>>, i
 pub fn move_selection(engine: &DesktopClient, view: &Rc<RefCell<View>>, direction: &str) {
     let state = engine.snapshot().state;
     let view = view.borrow();
-    for node in state.nodes.iter().filter(|n| {
-        n.workspace == state.selected_workspace
-            && (view.selection.contains(&n.id) || view.selected.as_ref() == Some(&n.id))
-    }) {
-        let mut position = node.position.clone();
-        match direction {
-            "up" => position.y -= GRID,
-            "down" => position.y += GRID,
-            "left" => position.x -= GRID,
-            _ => position.x += GRID,
-        }
-        engine.dispatch(Action::Move {
-            id: node.id.clone(),
-            position,
-        });
-    }
+    let positions = state
+        .nodes
+        .iter()
+        .filter(|n| n.workspace == state.selected_workspace)
+        .map(|node| {
+            let mut position = view.position(node);
+            if view.selection.contains(&node.id) || view.selected.as_ref() == Some(&node.id) {
+                match direction {
+                    "up" => position.y -= GRID,
+                    "down" => position.y += GRID,
+                    "left" => position.x -= GRID,
+                    _ => position.x += GRID,
+                }
+            }
+            (node.id.clone(), position)
+        })
+        .collect();
+    engine.dispatch(Action::MoveMany { positions });
 }
 
 pub fn focus_node(
@@ -534,13 +540,6 @@ impl View {
                     y: base.y + offset.y,
                 }
             })
-    }
-    pub fn stored_position(&self, node: &Node, position: &Position) -> Position {
-        let shown = self.position(node);
-        Position {
-            x: node.position.x + position.x - shown.x,
-            y: node.position.y + position.y - shown.y,
-        }
     }
     pub fn fit(&mut self, state: &State, width: f64, height: f64) {
         if !usable_viewport(width, height) {
@@ -936,6 +935,8 @@ fn make_scoped(
     });
     let click = gtk::GestureClick::new();
     click.set_button(1);
+    let control_click = Rc::new(RefCell::new(None));
+    let control_start = control_click.clone();
     let inline_pressed = Rc::new(RefCell::new(None));
     let inline_start = inline_pressed.clone();
     let empty_pressed = Rc::new(Cell::new(None));
@@ -946,6 +947,7 @@ fn make_scoped(
     let a = area.clone();
     click.connect_pressed(move |gesture, count, x, y| {
         inline_start.borrow_mut().take();
+        control_start.borrow_mut().take();
         a.grab_focus();
         let state = e.snapshot().state;
         let mut view = v.borrow_mut();
@@ -983,10 +985,9 @@ fn make_scoped(
                 .contains(gdk::ModifierType::CONTROL_MASK)
                 && view.selection.contains(&node.id)
             {
-                view.selection.remove(&node.id);
-            } else {
-                view.selection.insert(node.id.clone());
+                *control_start.borrow_mut() = Some((node.id.clone(), screen));
             }
+            view.selection.insert(node.id.clone());
         }
         view.selected = hit
             .filter(|n| view.selection.contains(&n.id))
@@ -1021,7 +1022,20 @@ fn make_scoped(
     let cb = callback.clone();
     let a = area.clone();
     let inline = inline_pressed.clone();
+    let v = view.clone();
     click.connect_released(move |_, _, x, y| {
+        if let Some((id, (px, py))) = control_click.borrow_mut().take()
+            && (x - px).hypot(y - py) < 4.
+        {
+            let mut view = v.borrow_mut();
+            view.selection.remove(&id);
+            view.selected = view.selection.iter().next().cloned();
+            let selected = view.selected.clone();
+            drop(view);
+            cb(CanvasAction::Select(selected));
+            a.queue_draw();
+            return;
+        }
         if let Some((id, (px, py))) = inline.borrow_mut().take()
             && (x - px).hypot(y - py) < 4.
         {
@@ -1105,7 +1119,7 @@ fn make_scoped(
             n.workspace == state.selected_workspace && contains(n, &view.position(n), wx, wy)
         }) {
             if g.current_event_state()
-                .intersects(gdk::ModifierType::SHIFT_MASK | gdk::ModifierType::CONTROL_MASK)
+                .contains(gdk::ModifierType::SHIFT_MASK)
             {
                 g.set_state(gtk::EventSequenceState::Denied);
                 return;
@@ -1121,7 +1135,16 @@ fn make_scoped(
                 .filter(|n| view.selection.contains(&n.id))
                 .map(|n| (n.id.clone(), view.position(n)))
                 .collect();
-            view.drag = Some(Drag::Node);
+            view.drag = Some(
+                if g.current_event_state()
+                    .contains(gdk::ModifierType::CONTROL_MASK)
+                    && crate::config::flow().arrange_drag.unwrap_or(true)
+                {
+                    Drag::Align
+                } else {
+                    Drag::Node
+                },
+            );
         } else {
             let additive = g
                 .current_event_state()
@@ -1137,11 +1160,21 @@ fn make_scoped(
             });
         }
     });
+    let e = engine.clone();
     let v = view.clone();
     let a = area.clone();
     gesture.connect_drag_update(move |g, dx, dy| {
         let mut view = v.borrow_mut();
         match view.drag.clone() {
+            Some(Drag::Align) => {
+                if dx.hypot(dy) >= 8. {
+                    view.previews = super::layout::align_selection(
+                        &e.snapshot().state,
+                        &view.origins,
+                        dx.abs() >= dy.abs(),
+                    );
+                }
+            }
             Some(Drag::Node) => {
                 let dx = (dx / view.zoom / GRID).round() * GRID;
                 let dy = (dy / view.zoom / GRID).round() * GRID;
@@ -1192,12 +1225,26 @@ fn make_scoped(
         let state = e.snapshot().state;
         let mut view = v.borrow_mut();
         let moves = std::mem::take(&mut view.previews);
-        for (id, position) in moves {
-            if let Some(node) = state.node(&id) {
-                let position = view.stored_position(node, &position);
-                // Keep the displayed position until the engine publishes the committed move.
-                let _ = e.request(Action::Move { id, position });
-            }
+        if !moves.is_empty() {
+            let positions = if state.workspace().graph_arranged {
+                moves.into_iter().collect()
+            } else {
+                state
+                    .nodes
+                    .iter()
+                    .filter(|n| n.workspace == state.selected_workspace)
+                    .map(|n| {
+                        (
+                            n.id.clone(),
+                            moves
+                                .get(&n.id)
+                                .cloned()
+                                .unwrap_or_else(|| view.position(n)),
+                        )
+                    })
+                    .collect()
+            };
+            let _ = e.request(Action::MoveMany { positions });
         }
         let mut pending_search = None;
         match view.drag.take() {
@@ -1584,6 +1631,9 @@ fn make_scoped(
             Some("search") => cb(CanvasAction::Search),
             Some("help") => cb(CanvasAction::Help),
             Some("arrange") => cb(CanvasAction::Arrange),
+            Some("macros") => cb(CanvasAction::Macros),
+            Some("undo") => cb(CanvasAction::Undo),
+            Some("redo") => cb(CanvasAction::Redo),
             Some("copy") => cb(CanvasAction::Copy(false)),
             Some("cut") => cb(CanvasAction::Copy(true)),
             Some("paste") => cb(CanvasAction::Paste),
@@ -1631,9 +1681,7 @@ fn make_scoped(
             Some("delete") => {
                 let mut ids = v.borrow().selection.clone();
                 ids.extend(selected);
-                for id in ids {
-                    cb(CanvasAction::Delete(id));
-                }
+                cb(CanvasAction::Delete(ids.into_iter().collect()));
             }
             Some("escape") => cb(CanvasAction::Escape),
             Some("focus") => {
@@ -2234,11 +2282,11 @@ fn draw_node_with_border(c: &Context, n: &Node, p: &Position, selection: f64, th
         status_color,
         false,
     );
-    text(
+    bounded_text(
         c,
         x + 17.0,
         y + 62.0,
-        &ellipsize(&n.title, 31),
+        &n.title,
         15.0,
         theme.text.rgb(),
         false,
@@ -2303,11 +2351,11 @@ fn draw_node_with_border(c: &Context, n: &Node, p: &Position, selection: f64, th
             NodeKind::Shell => "$ ",
             _ => "",
         };
-        text(
+        bounded_text(
             c,
             x + 17.0,
             y + 90.0,
-            &ellipsize(&format!("{prefix}{snippet}"), 35),
+            &format!("{prefix}{snippet}"),
             10.5,
             theme.muted.rgb(),
             true,
@@ -2370,11 +2418,11 @@ fn draw_node_with_border(c: &Context, n: &Node, p: &Position, selection: f64, th
             if n.writable { "  ·  can edit" } else { "" }
         )
     };
-    text(
+    bounded_text(
         c,
         x + 17.0,
         y + height - 14.0,
-        &ellipsize(&footer, 36),
+        &footer,
         9.5,
         theme.muted.rgb(),
         true,
@@ -2580,12 +2628,26 @@ pub(super) fn text_layout(c: &Context, text: &str, size: f64, mono: bool) -> pan
     layout.set_text(text);
     layout
 }
-fn ellipsize(s: &str, length: usize) -> String {
-    if s.chars().count() > length {
-        format!("{}…", s.chars().take(length - 1).collect::<String>())
-    } else {
-        s.into()
-    }
+fn bounded_text(
+    c: &Context,
+    x: f64,
+    y: f64,
+    value: &str,
+    size: f64,
+    rgb: (f64, f64, f64),
+    mono: bool,
+) {
+    let _ = c.save();
+    let layout = text_layout(c, value, size, mono);
+    layout.set_width(((WIDTH - 34.) * pango::SCALE as f64) as i32);
+    layout.set_ellipsize(pango::EllipsizeMode::End);
+    let top = y - layout.baseline() as f64 / pango::SCALE as f64;
+    c.rectangle(x, top, WIDTH - 34., layout.pixel_size().1 as f64);
+    c.clip();
+    c.set_source_rgb(rgb.0, rgb.1, rgb.2);
+    c.move_to(x, top);
+    pangocairo::functions::show_layout(c, &layout);
+    let _ = c.restore();
 }
 
 #[cfg(test)]
@@ -3220,6 +3282,23 @@ mod rendering_tests {
     }
 
     #[test]
+    fn multilingual_card_labels_are_clipped_to_the_measured_content_width() {
+        for title in [
+            "飞书｜字节跳动旗下AI工作平台 - 飞书官网".repeat(3),
+            "Wide W letters and 👩🏽‍💻 combining é".repeat(5),
+        ] {
+            let pixels = raster(600, 100, |c| {
+                bounded_text(c, 17., 62., &title, 15., (1., 1., 1.), false)
+            });
+            assert!((0..100).any(|y| (17..275).any(|x| pixel(&pixels, 600, x, y) != 0)));
+            assert!(
+                (0..100).all(|y| (275..600).all(|x| pixel(&pixels, 600, x, y) == 0)),
+                "text must stay inside the right content inset"
+            );
+        }
+    }
+
+    #[test]
     fn dragging_an_arranged_card_commits_the_displayed_delta_once() {
         let mut state = State::empty("/tmp".into());
         let mut node = Node::new(
@@ -3241,15 +3320,16 @@ mod rendering_tests {
             shown.x + 20.0,
             shown.y + 20.0
         ));
-        let stored = view.stored_position(
-            &state.nodes[0],
-            &Position {
-                x: shown.x + 20.0,
-                y: shown.y - 40.0,
-            },
-        );
-        assert_eq!(stored.x, state.nodes[0].position.x + 20.0);
-        assert_eq!(stored.y, state.nodes[0].position.y - 40.0);
+        let destination = Position {
+            x: shown.x + 20.,
+            y: shown.y - 40.,
+        };
+        state.nodes[0].position = destination.clone();
+        state.workspaces[0].graph_arranged = true;
+        view.presented_positions.clear();
+        view.arrangement.update(&state, 1200, 800);
+        assert_eq!(view.position(&state.nodes[0]).x, destination.x);
+        assert_eq!(view.position(&state.nodes[0]).y, destination.y);
     }
 
     #[test]

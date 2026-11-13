@@ -17,3 +17,5 @@ mod projection;
 pub mod ui;
 
 mod notifications;
+
+mod history;

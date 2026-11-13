@@ -63,7 +63,9 @@ Bindings that require a newer compositor are activated at the next login, after 
 | Alt+Space | Open Dux app search in either view |
 | Win+Shift+Space | Find a node in Dux search |
 | Ctrl+F or / | Search; frame all nodes first |
-| Ctrl+P | Arrange the graph into connected layers and frame it |
+| Ctrl+P | Compact, align and frame the graph |
+| Ctrl+Shift+P | Search workflow macros (`@ >`) |
+| Ctrl+Z / Ctrl+Shift+Z | Undo / redo graph edits |
 | H J K L | Smoothly pan left/down/up/right |
 | Shift+H J K L | Pan faster |
 | W A S D or Win+arrows | Select up/left/down/right |
@@ -99,12 +101,14 @@ Win+Page Up/Down or Win+I/U changes workspaces; add Ctrl to move a column or Shi
 | Win+- / Win+= | Zoom out / in around the viewport center |
 | Drag output pin to input | Connect |
 | Right-drag | Cut connections |
+| Ctrl+drag up/down on a selected node | Arrange the selection vertically |
+| Ctrl+drag left/right on a selected node | Arrange the selection horizontally |
 | Click a constant's value | Edit it on the graph |
 | Click outside an expanded window | Return to normal Nodes view |
 
 Two-finger panning follows trackpad movement in pixels and glides to a stop after release. A new gesture stops the glide. Peeking expands the live client in place in the node scene, temporarily moving nearby cards aside; closing the peek restores their graph positions.
 
-Entering Nodes from Windows frames the complete row. Manual node positions persist. Ctrl+P arranges and automatically frames the entire graph in one animation, including disconnected nodes and graphs containing signal loops. Layers stay horizontal as the view zooms out; wrapping is considered only when fitting a row would require zooming below `arrange-wrap-zoom` (40% by default). Large graphs can still zoom out further to keep all rows visible. Dependent layers stay below their inputs. Connections use straight spans with rounded bends; backwards routes loop around their endpoints. Window preview backgrounds are blurred and dimmed to stay visually inside the card.
+Entering Nodes from Windows frames the complete row. Manual node positions persist. Ctrl+P arranges and automatically frames the entire graph in one animation, including disconnected nodes and graphs containing signal loops. Layers stay horizontal as the view zooms out; wrapping is considered only when fitting a row would require zooming below `arrange-wrap-zoom` (40% by default). Large graphs can still zoom out further to keep all rows visible. Signal dependencies place their targets below their sources; data-only connections stay horizontal. Connected nodes sit together with compact gaps, and each row aligns the tops of window previews. Repeated rearrangement keeps the same order. Connections use straight spans with rounded bends; backwards routes loop around their endpoints. Window preview backgrounds are blurred and dimmed to stay visually inside the card.
 
 Copying preserves selected nodes, their internal connections, types, casts, and watcher definitions. Pasting creates fresh idle nodes with cleared results and window bindings. Copied commands do not run; copied watchers are disabled. Repeated pastes avoid existing cards. Cut uses the normal deletion behavior, including closing selected live windows.
 
@@ -120,13 +124,14 @@ You can start typing immediately after a search shortcut. The compositor holds t
 
 | Query | Results |
 | --- | --- |
+| `@` | Macros and Create a node |
 | `@ name` | Workflow nodes across workspaces |
 | `@ + type` | Node types, typed constants, and registered macros |
-| `@ > name` | Open a matching node's window |
+| `@ > name` | Workflow macros: Rearrange, Frame all nodes, Undo, Redo |
 | `@ / name` | Workspace rows |
 | `@ # name` | Saved recipes |
 
-Application window titles are kept out of ordinary search. Use `@ > title` to find and open a window explicitly. Fuzzy abbreviations match within words, so unrelated words in a long title cannot combine into a match.
+Application window titles are kept out of ordinary search. `Ctrl+Shift+P` opens `@ >` directly; choose Rearrange to compact and frame the workflow. Fuzzy abbreviations match within words, so unrelated words in a long title cannot combine into a match.
 
 With a selected node, **Tab** starts a connection search:
 
@@ -249,6 +254,9 @@ flow {
     removal-ms 180
     inertia-decay 10.0
     arrange-wrap-zoom 0.4
+    arrange-gap 48.0
+    arrange-drag true
+    undo-limit 100
     running-color "#71c68c"
     running-opacity 0.17
     binds {
@@ -260,6 +268,12 @@ flow {
 ```
 
 Graph keys use niri's key names and modifiers. `action="none"` disables a graph binding. A `flow.binds` block defines the graph's keys; keep the other shipped entries when adding your own. Native `include` files can override individual settings and bindings. Zero motion/removal duration disables that animation; niri's `animations { off; }` and Dux's reduce-motion setting disable both. The native niri slowdown setting also applies to graph animations. Removed cards shrink and fade briefly, and the renderer requests frames only while animation remains. On view changes, visible windows follow an eased arc; off-screen windows fade at their graph positions.
+
+`arrange-gap` controls spacing between arranged cards in graph pixels and must be nonnegative. `arrange-drag false` disables directional Ctrl-drag alignment. New default graph keys are merged with your `flow { binds { ... } }` overrides; an `action="none"` override disables a key.
+
+`undo-limit` controls the history length (100 by default; 0 disables it). Undo/redo keeps graph edits for the current shell session, including creation, parameters, connections, deletion, paste, dragging and rearrangement. A selection drag or deletion is one edit. Execution state is preserved; undoing a deletion restores its definition without reopening a closed application. The runtime still rejects edits to active invocation definitions. Starting a new edit clears redo.
+
+When an application window moves to another compositor row, its node moves with it using the same ID and attachment token. Connections to nodes left on the old row detach, and those nodes stay in place.
 
 `arrange-wrap-zoom` accepts values from `0.0` to `1.0`. Lower values keep more cards on each row before wrapping; `0.0` disables wrapping. The default `0.4` keeps six windows on one row even in a 1200-pixel-wide canvas. Arrange always zooms and centers the complete graph, including when starting from a single-node focus or a panned view.
 

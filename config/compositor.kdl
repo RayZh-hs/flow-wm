@@ -70,6 +70,7 @@ binds {
     Mod+minus hotkey-overlay-title="Zoom out (Nodes) / decrease column width (Windows)" repeat=true { spawn "flowwm" "send" "{\"action\": \"ui\", \"command\": {\"action\": \"zoom_out\"}}"; }
     Mod+Space hotkey-overlay-title="Dux app search (Windows) / create a node (Nodes)" repeat=false allow-inhibiting=false { spawn-with-keyboard-focus "flowwm" "new" namespace="dms:spotlight" wait-for-ready=true; }
     Alt+Space hotkey-overlay-title="Open Dux app search" repeat=false allow-inhibiting=false { spawn-with-keyboard-focus "flowwm" "launcher" namespace="dms:spotlight" wait-for-ready=true; }
+    Ctrl+Shift+P hotkey-overlay-title="Search workflow macros" repeat=false allow-inhibiting=false { spawn-with-keyboard-focus "flowwm" "search" "macros" namespace="dms:spotlight" wait-for-ready=true; }
     Mod+Shift+Space hotkey-overlay-title="Find a node in Dux" repeat=false allow-inhibiting=false { spawn-with-keyboard-focus "flowwm" "search" namespace="dms:spotlight" wait-for-ready=true; }
     Mod+Shift+slash hotkey-overlay-title="Show key bindings" repeat=false allow-inhibiting=false { spawn "flowwm" "send" "{\"action\": \"ui\", \"command\": {\"action\": \"help\"}}"; }
     Mod+Left hotkey-overlay-title="Select node / focus window left" repeat=true allow-inhibiting=false { spawn "flowwm" "navigate" "left"; }
@@ -208,6 +209,9 @@ flow {
     removal-ms 180
     inertia-decay 10.0
     arrange-wrap-zoom 0.4
+    arrange-gap 48.0
+    arrange-drag true
+    undo-limit 100
     running-color "#71c68c"
     running-opacity 0.17
     binds {
@@ -215,6 +219,9 @@ flow {
         Ctrl+f action="search" title="Find nodes; frame all"
         slash action="search" title="Find nodes; frame all"
         question action="help" title="Show key bindings"
+        Ctrl+Shift+p action="macros" title="Search workflow macros"
+        Ctrl+z action="undo" title="Undo the last graph edit"
+        Ctrl+Shift+z action="redo" title="Redo the last graph edit"
         Ctrl+p action="arrange" title="Arrange and frame the graph"
         Ctrl+a action="select_all" title="Select every node on this row"
         Ctrl+c action="copy" title="Copy selected nodes and their connections"

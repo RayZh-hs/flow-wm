@@ -127,6 +127,11 @@ pub enum Command {
         accepted: bool,
         result: Value,
     },
+    RelocateNodes {
+        source: WorkflowId,
+        target: WorkflowId,
+        nodes: Vec<NodeId>,
+    },
     ReplaceGraph {
         workflow: WorkflowId,
         graph: FlowNet,

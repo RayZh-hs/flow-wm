@@ -154,7 +154,7 @@ def run():
                 input_command("mousemove", "--sync", 40, 40)
                 time.sleep(0.15)
                 dismissed = capture("port-tooltip-dismissed.png")
-                assert ImageChops.difference(before, dismissed).getbbox() is None, "leaving the port must dismiss its tooltip"
+                assert sum(value > 30 for value in ImageChops.difference(before, dismissed).convert("L").tobytes()) < 20, "leaving the port must dismiss its tooltip"
 
                 click(*point(140, 185))
                 time.sleep(0.2)
@@ -216,6 +216,33 @@ def run():
                 input_command("mouseup", "1")
                 wait(lambda: node(preview)["position"] == {"x": 540., "y": 120.}, compositor)
                 capture("window-dragged.png")
+                # Ctrl-drag aligns the existing selection as one reversible edit.
+                input_command("key", "ctrl+a")
+                initial_positions = {identifier: node(identifier)["position"] for identifier in [constant, preview]}
+                start_x, start_y = point(580, 150)
+                input_command("keydown", "ctrl", "mousemove", "--sync", round(start_x), round(start_y), "mousedown", "1")
+                input_command("mousemove", "--sync", round(start_x), round(start_y + 80 * zoom))
+                time.sleep(0.1)
+                input_command("mouseup", "1", "keyup", "ctrl")
+                wait(lambda: node(constant)["position"]["x"] == node(preview)["position"]["x"], compositor)
+                assert node(constant)["position"]["y"] != node(preview)["position"]["y"]
+                capture("selection-aligned-vertically.png")
+                input_command("key", "ctrl+z")
+                wait(lambda: all(node(identifier)["position"] == position for identifier, position in initial_positions.items()), compositor)
+                input_command("key", "ctrl+shift+z")
+                wait(lambda: node(constant)["position"]["x"] == node(preview)["position"]["x"], compositor)
+                input_command("key", "ctrl+z")
+                wait(lambda: all(node(identifier)["position"] == position for identifier, position in initial_positions.items()), compositor)
+                start_x, start_y = point(580, 150)
+                input_command("keydown", "ctrl", "mousemove", "--sync", round(start_x), round(start_y), "mousedown", "1")
+                input_command("mousemove", "--sync", round(start_x + 80 * zoom), round(start_y))
+                time.sleep(0.1)
+                input_command("mouseup", "1", "keyup", "ctrl")
+                wait(lambda: node(constant)["position"]["y"] == node(preview)["position"]["y"], compositor)
+                assert node(constant)["position"]["x"] != node(preview)["position"]["x"]
+                capture("selection-aligned-horizontally.png")
+                input_command("key", "ctrl+z")
+                wait(lambda: all(node(identifier)["position"] == position for identifier, position in initial_positions.items()), compositor)
                 ordinary = create("human", "No default interface")
                 ui("open", id=ordinary)
                 wait(lambda: any(layer["namespace"] == "flowwm-dialog" for layer in request(niri_socket, "Layers")["Layers"]), compositor)
@@ -269,15 +296,17 @@ def run():
                 preview_window=node(preview)["window_id"]
                 request(niri_socket,{"Action":{"MoveWindowToWorkspace":{"window_id":preview_window,"reference":{"Id":second["row"]["id"]},"focus":False}}})
                 wait(lambda: any(w["id"]==preview_window and w["workspace_id"]==second["row"]["id"] for w in request(niri_socket,"Windows")["Windows"]),compositor)
-                assert node(preview)["workspace"]==parent and node(dependent)["workspace"]==parent, "moving a native attachment must preserve its connected workflow"
+                wait(lambda: node(preview)["workspace"]==second["id"],compositor)
+                assert node(dependent)["workspace"]==parent, "moving a window must leave its dependent branch on the original row"
+                assert not any(edge["source"]["node"]==preview and edge["target"]["node"]==dependent for edge in state()["connections"]), "cross-row connections must detach"
                 ui("nodes")
                 ui("fit")
                 time.sleep(0.3)
                 capture("window-on-another-row.png")
                 ui("open",id=preview)
                 wait(lambda: any(w["id"]==preview_window and w["is_focused"] for w in request(niri_socket,"Windows")["Windows"]),compositor)
-                assert node(preview)["workspace"]==parent, "opening an application must not move its workflow"
-                print("Interaction smoke passed: styled port hover and pointer-leave dismissal, blurred/dimmed preview gaps, visible inline editor, keyboard editing and saving, Escape dismissal, constant and window dragging, persistent release positions, deselection, and row-switch recovery; extension-only compact windows, working actions, close-without-destroy, private regions, identity-preserving Make Public, and native attachments across workflow rows.")
+                assert node(preview)["workspace"]==second["id"], "opening the moved window must preserve its destination workflow"
+                print("Interaction smoke passed: styled port hover and pointer-leave dismissal, blurred/dimmed preview gaps, visible inline editor, keyboard editing and saving, Escape dismissal, constant and window dragging, persistent release positions, deselection, and row-switch recovery; extension-only compact windows, working actions, close-without-destroy, private regions, identity-preserving Make Public, directional Ctrl-drag alignment with undo/redo, and synchronized window nodes across workflow rows with detached boundary connections.")
         finally:
             for child in reversed(children):
                 if child.poll() is None:

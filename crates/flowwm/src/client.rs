@@ -40,6 +40,8 @@ pub enum UiCommand {
         direction: String,
     },
     Arrange,
+    Undo,
+    Redo,
     ConnectSearch,
     CreateConnected {
         id: String,
@@ -109,6 +111,14 @@ fn notify_default() -> bool {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Action {
+    Undo,
+    Redo,
+    MoveMany {
+        positions: Vec<(String, Position)>,
+    },
+    DeleteMany {
+        ids: Vec<String>,
+    },
     Alert {
         id: String,
         message: String,
@@ -298,6 +308,7 @@ struct Inner {
     presentation: Mutex<Presentation>,
     launcher: Mutex<Option<mpsc::Sender<Option<String>>>>,
     writer: Mutex<Option<Writer>>,
+    history: Mutex<crate::history::History>,
     subscriptions: Mutex<std::collections::BTreeMap<&'static str, std::os::unix::net::UnixStream>>,
 }
 impl DesktopClient {
@@ -358,6 +369,7 @@ impl DesktopClient {
                 presentation: Mutex::new(Presentation::default()),
                 launcher: Mutex::new(None),
                 writer: Mutex::new(Some(writer)),
+                history: Mutex::new(Default::default()),
                 subscriptions: Mutex::new(Default::default()),
             }),
         };
@@ -649,11 +661,51 @@ impl DesktopClient {
         )
     }
     pub fn request(&self, action: Action) -> Result<Value> {
+        let history_positions = matches!(
+            &action,
+            Action::Move { .. } | Action::MoveMany { .. } | Action::Arrange { .. }
+        );
+        let history_nodes: std::collections::BTreeSet<String> = match &action {
+            Action::Create { node } | Action::Update { node } => vec![node.id.clone()],
+            Action::Delete { id } | Action::ExposeOutput { id, .. } => vec![id.clone()],
+            Action::DeleteMany { ids } => ids.clone(),
+            _ => vec![],
+        }
+        .into_iter()
+        .collect();
+        let history_edges = match &action {
+            Action::ConnectPins { connection } | Action::DisconnectPins { connection } => Some((
+                connection.source.node.clone(),
+                connection.target.node.clone(),
+            )),
+            Action::Connect { source, target } | Action::Disconnect { source, target } => {
+                Some((source.clone(), target.clone()))
+            }
+            _ => None,
+        };
+        let record = matches!(
+            &action,
+            Action::Create { .. }
+                | Action::Update { .. }
+                | Action::Move { .. }
+                | Action::MoveMany { .. }
+                | Action::Arrange { .. }
+                | Action::Delete { .. }
+                | Action::DeleteMany { .. }
+                | Action::Connect { .. }
+                | Action::ConnectPins { .. }
+                | Action::Disconnect { .. }
+                | Action::DisconnectPins { .. }
+                | Action::Paste { .. }
+                | Action::Instantiate { .. }
+                | Action::ExposeOutput { .. }
+        );
         let refresh_runtime = !matches!(
             &action,
             Action::Ui { .. }
                 | Action::Shutdown
                 | Action::Move { .. }
+                | Action::MoveMany { .. }
                 | Action::Arrange { .. }
                 | Action::ColumnMode { .. }
                 | Action::RowView { .. }
@@ -667,9 +719,41 @@ impl DesktopClient {
         );
         // Presentation edits are serialized under the WM lock, never the host's lock.
         let mut view = self.inner.view.lock().unwrap();
+        let mut before = view.state.clone();
+        if record && refresh_runtime {
+            let selected = before.selected_workspace.clone();
+            Arc::make_mut(&mut before).orchestration = Some(Arc::new(
+                self.inner.host.snapshot_as(Some(selected.into()))?,
+            ));
+        }
         let mut state = (*view.state).clone();
         let mut result = json!({"ok":true});
         match action {
+            Action::Undo | Action::Redo => {
+                let redo = matches!(action, Action::Redo);
+                let mut history = self.inner.history.lock().unwrap();
+                if let Some(edit) = history.peek(redo) {
+                    let runtime = self.inner.host.snapshot()?;
+                    let mut revision = runtime.revision;
+                    for (workflow, graph) in edit.graphs(&runtime, redo)? {
+                        let reply = self.inner.host.request(&flow_core::protocol::Request {
+                            protocol: flow_core::protocol::ORCHESTRATOR_VERSION,
+                            id: crate::model::id(),
+                            expected_revision: Some(revision),
+                            caller: Some(workflow.clone()),
+                            command: Command::ReplaceGraph { workflow, graph },
+                        })?;
+                        if let Some(error) = reply.error {
+                            anyhow::bail!("{}", error.message);
+                        }
+                        revision = reply.revision;
+                    }
+                    crate::projection::apply(&mut state, &self.inner.host.snapshot()?);
+                    self.inner.bindings.lock().unwrap().apply_native(&mut state);
+                    edit.apply_view(&mut state, redo);
+                    history.applied(redo);
+                }
+            }
             Action::Ui { command } => {
                 self.inner.ui.send(command)?;
             }
@@ -892,18 +976,47 @@ impl DesktopClient {
                     Ok(())
                 })?;
             }
-            Action::Delete { id } => {
-                let node = state.node(&id).context("Node not found")?;
-                if node.desktop_window && node.window_id.is_some() {
-                    self.application_operation(&id, "delete")?;
+            Action::Delete { .. } | Action::DeleteMany { .. } => {
+                let ids = match &action {
+                    Action::Delete { id } => vec![id.clone()],
+                    Action::DeleteMany { ids } => ids.clone(),
+                    _ => unreachable!(),
+                };
+                if let Some(first) = ids.first() {
+                    let workflow = state
+                        .node(first)
+                        .context("Node not found")?
+                        .workspace
+                        .clone();
+                    ensure!(
+                        ids.iter()
+                            .all(|id| state.node(id).is_some_and(|n| n.workspace == workflow)),
+                        "Delete a selection from one workflow at a time"
+                    );
+                    ensure!(
+                        !before.orchestration.as_ref().is_some_and(|r| r
+                            .executions
+                            .values()
+                            .any(|e| e.active() && ids.contains(&e.node.0))),
+                        "Interrupt an invocation before deleting its node"
+                    );
+                    for id in &ids {
+                        let node = state.node(id).unwrap();
+                        if node.desktop_window && node.window_id.is_some() {
+                            self.application_operation(id, "delete")?;
+                        }
+                    }
+                    self.edit_graph(&workflow, |g| {
+                        g.nodes.retain(|n| !ids.contains(&n.id.0));
+                        g.connections.retain(|e| {
+                            !ids.contains(&e.source.node) && !ids.contains(&e.target.node)
+                        });
+                        Ok(())
+                    })?;
+                    for id in ids {
+                        state.remove(&id)?;
+                    }
                 }
-                self.edit_graph(&node.workspace, |g| {
-                    g.nodes.retain(|n| n.id.0 != id);
-                    g.connections
-                        .retain(|e| e.source.node != id && e.target.node != id);
-                    Ok(())
-                })?;
-                state.remove(&id)?;
             }
             Action::Move { id, position } => {
                 ensure!(
@@ -912,7 +1025,13 @@ impl DesktopClient {
                 );
                 state.node_mut(&id).context("Node not found")?.position = position;
             }
-            Action::Arrange { positions } => {
+            Action::MoveMany { positions } | Action::Arrange { positions } => {
+                ensure!(
+                    positions.iter().all(|(id, p)| state.node(id).is_some()
+                        && p.x.is_finite()
+                        && p.y.is_finite()),
+                    "Invalid node position"
+                );
                 for (id, position) in positions {
                     state.node_mut(&id).context("Node not found")?.position = position;
                 }
@@ -1180,6 +1299,18 @@ impl DesktopClient {
         }
         if let Some(writer) = self.inner.writer.lock().unwrap().as_ref() {
             writer.save(&state)?;
+        }
+        if record {
+            let mut nodes = history_nodes;
+            if let Some(ids) = result.get("ids").and_then(Value::as_array) {
+                nodes.extend(ids.iter().filter_map(Value::as_str).map(String::from));
+            }
+            let mut edit = crate::history::Edit::between(&before, &state);
+            edit.scope(&nodes, history_edges.as_ref(), history_positions);
+            self.inner.history.lock().unwrap().record(
+                edit,
+                crate::config::flow().undo_limit.unwrap_or(100) as usize,
+            );
         }
         view.state = Arc::new(state);
         view.revision += 1;

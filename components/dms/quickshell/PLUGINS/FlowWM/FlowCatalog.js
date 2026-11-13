@@ -35,7 +35,7 @@ function items(catalog, query, labels) {
     var mode = "nodes";
     var prefix = query[0];
     if (prefix === "+" || prefix === ">" || prefix === "/" || prefix === "#") {
-        mode = ({ "+": "create", ">": "open", "/": "workspaces", "#": "recipes" })[prefix];
+        mode = ({ "+": "create", ">": "macros", "/": "workspaces", "#": "recipes" })[prefix];
         query = query.substring(1).trim();
     }
     var results = [];
@@ -49,7 +49,24 @@ function items(catalog, query, labels) {
         results.push({ id: id, name: name, comment: comment, icon: "material:" + icon, flowwmArgs: args, _preScored: relevance(name, comment, query),
             primaryAction: { name: primary, icon: icon, action: "execute" } });
     }
-    if (mode === "nodes" || mode === "open") {
+    if (mode === "macros") {
+        [
+            ["arrange", labels.arrange, labels.arrangeHint, "auto_awesome"],
+            ["fit", labels.fit, labels.fitHint, "fit_screen"],
+            ["undo", labels.undo, labels.undoHint, "undo"],
+            ["redo", labels.redo, labels.redoHint, "redo"]
+        ].forEach(function (macro) {
+            add("operation:" + macro[0], macro[1], macro[2], macro[3],
+                ["send", JSON.stringify({action:"ui",command:{action:macro[0]}})], labels.run);
+        });
+    }
+    if (mode === "nodes" && !query) {
+        add("flowwm:macros", labels.macros, labels.macrosHint, "auto_awesome", ["search", "macros"], labels.open);
+        add("flowwm:create", labels.newNode, labels.createHint, "add_circle", ["search", "create"], labels.open);
+        results.forEach(function (item, index) { item._preScored = 1002 - index; });
+        return results;
+    }
+    if (mode === "nodes") {
         (catalog.nodes || []).slice().sort(function (a, b) {
             var attentionA = a.status === "review" || a.status === "failed";
             var attentionB = b.status === "review" || b.status === "failed";
@@ -57,14 +74,12 @@ function items(catalog, query, labels) {
                 return attentionA ? -1 : 1;
             return Number(b.workspace === catalog.selected_workspace) - Number(a.workspace === catalog.selected_workspace);
         }).forEach(function (node) {
-            if (mode === "nodes" && node.kind === "window") return;
+            if (node.kind === "window") return;
             var status = node.kind === "window" && node.window_id ? labels.open : labels.status[node.status] || node.status;
             var kind = labels.kind[node.kind] || node.kind;
             var description = kind + " · " + status + " · " + (workspaces[node.workspace] || "");
             var args = ["focus", node.id];
-            if (mode === "open")
-                args.push("--open");
-            add("node:" + node.id, node.title, description, ({ agent: "smart_toy", shell: "terminal", metric: "monitoring", gate: "rule", human: "edit_note", window: "window" })[node.kind] || "account_tree", args, mode === "open" ? labels.expand : labels.reveal);
+            add("node:" + node.id, node.title, description, ({ agent: "smart_toy", shell: "terminal", metric: "monitoring", gate: "rule", human: "edit_note", window: "window" })[node.kind] || "account_tree", args, labels.reveal);
         });
     }
     if (mode === "create" || (mode === "nodes" && query)) {
@@ -73,7 +88,7 @@ function items(catalog, query, labels) {
             add("macro:" + macro.id, macro.name, macro.description, "add_circle", ["create", macro.id], labels.create);
         });
     }
-    if (mode === "workspaces" || mode === "nodes") {
+    if (mode === "workspaces") {
         (catalog.workspaces || []).forEach(function (workspace) {
             add("workspace:" + workspace.id, workspace.name, labels.workspace + " · " + workspace.nodes + " " + labels.nodes, "workspaces", ["workspace", workspace.id], labels.open);
         });
@@ -82,10 +97,6 @@ function items(catalog, query, labels) {
         (catalog.recipes || []).forEach(function (recipe) {
             add("recipe:" + recipe.id, recipe.name, recipe.nodes + " " + labels.nodes + " · " + labels.idleRecipe, "schema", ["recipe", recipe.id], labels.create);
         });
-    }
-    if (mode === "nodes") {
-        add("flowwm:graph", labels.graph, labels.graphHint, "account_tree", ["nodes"], labels.open);
-        add("flowwm:create", labels.newNode, labels.createHint, "add_circle", ["search", "create"], labels.open);
     }
     results.sort(function (a, b) { return b._preScored - a._preScored; });
     // DMS preserves plugin ordering for an empty query only above 900.

@@ -131,7 +131,7 @@ fn row_views_survive_switching_reordering_and_new_windows() {
             .find(|n| n.window_id == Some(3))
             .unwrap()
             .column_mode,
-        ColumnMode::Node
+        ColumnMode::Window
     );
     // An unnamed trailing row has its own default; it never inherits Nodes.
     desktop.activate_row(30, true);
@@ -166,7 +166,7 @@ fn row_reordering_and_title_changes_keep_node_ids_positions_and_group_identity()
 }
 
 #[test]
-fn moving_a_window_keeps_its_connected_branch_and_preserves_edges() {
+fn moving_a_window_leaves_its_branch_and_detaches_cross_row_edges() {
     let mut state = State::empty("/tmp".into());
     let mut desktop = desktop();
     groups::synchronize(&mut state, &desktop);
@@ -198,17 +198,9 @@ fn moving_a_window_keeps_its_connected_branch_and_preserves_edges() {
     .unwrap();
     desktop.windows[0].workspace_id = Some(20);
     groups::synchronize(&mut state, &desktop);
-    assert_eq!(state.node(&id).unwrap().workspace, group);
-    assert_eq!(
-        state.node(&id).unwrap().workspace,
-        state.node(&child_id).unwrap().workspace
-    );
-    assert!(
-        state
-            .connections
-            .iter()
-            .any(|e| e.source.node == id && e.target.node == child_id)
-    );
+    assert_ne!(state.node(&id).unwrap().workspace, group);
+    assert_eq!(state.node(&child_id).unwrap().workspace, group);
+    assert!(state.connections.is_empty());
     state.validate().unwrap();
 }
 
@@ -663,7 +655,7 @@ fn application_selection_binds_the_launched_window_to_the_configured_node() {
 }
 
 #[test]
-fn moving_a_native_attachment_does_not_move_a_connected_workflow_branch() {
+fn moving_a_native_attachment_follows_the_row_and_detaches_the_branch() {
     let mut state = State::empty("/tmp".into());
     let mut desktop = desktop();
     groups::synchronize(&mut state, &desktop);
@@ -699,7 +691,8 @@ fn moving_a_native_attachment_does_not_move_a_connected_workflow_branch() {
     .unwrap();
     desktop.windows[0].workspace_id = Some(20);
     groups::synchronize(&mut state, &desktop);
-    assert_eq!(state.node(&source.id).unwrap().workspace, original);
+    assert_ne!(state.node(&source.id).unwrap().workspace, original);
+    assert!(state.connections.is_empty());
     assert_eq!(state.node(&dependent_id).unwrap().workspace, original);
     assert_eq!(state.node(&source.id).unwrap().window_id, Some(1));
     state.validate().unwrap();

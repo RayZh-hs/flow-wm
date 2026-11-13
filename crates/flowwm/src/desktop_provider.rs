@@ -608,6 +608,27 @@ pub fn run() -> Result<()> {
                         bindings.rows.insert(row.id.clone(), row_binding.clone());
                     }
                 }
+                let mut moves = BTreeMap::<(WorkflowId, WorkflowId), Vec<NodeId>>::new();
+                for node in state.nodes.iter().filter(|n| n.window_id.is_some()) {
+                    if let Some(previous) = runtime
+                        .workflows
+                        .values()
+                        .find(|w| w.graph.node(&node.id).is_some())
+                        && previous.id.0 != node.workspace
+                    {
+                        moves
+                            .entry((previous.id.clone(), node.workspace.clone().into()))
+                            .or_default()
+                            .push(node.id.clone().into());
+                    }
+                }
+                for ((source, target), nodes) in moves {
+                    host.command(Command::RelocateNodes {
+                        source,
+                        target,
+                        nodes,
+                    })?;
+                }
                 bindings.selected = state.selected_workspace.clone();
                 let mut applications = BTreeMap::new();
                 for node in state.nodes.iter().filter(|n| n.window_id.is_some()) {
@@ -637,9 +658,7 @@ pub fn run() -> Result<()> {
                     let registration_token = bindings
                         .applications
                         .get(&node.id)
-                        .filter(|b| {
-                            b.window == window && b.pid == pid && b.workflow == node.workspace
-                        })
+                        .filter(|b| b.window == window && b.pid == pid)
                         .map(|b| b.token.clone())
                         .unwrap_or_else(crate::model::id);
                     let registration = ApplicationRegistration {

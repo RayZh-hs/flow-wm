@@ -149,8 +149,12 @@ impl Arrangement {
 
 pub const DEFAULT_WRAP_ZOOM: f64 = 0.4;
 
-/// Keep layers horizontal until fitting them would require excessive zooming
-/// out, then choose a wrapped layout without shortening those preferred rows.
+fn gap() -> f64 {
+    crate::config::flow().arrange_gap.unwrap_or(48.)
+}
+
+/// Signal flow runs down the graph; data flows across each signal layer.
+/// Stable spatial ordering keeps unrelated nodes in their existing relative order.
 pub fn arrange(state: &State, width: i32, height: i32, wrap_zoom: f64) -> Vec<(String, Position)> {
     use std::collections::{BTreeMap, BTreeSet};
     let nodes: BTreeMap<_, _> = state
@@ -159,21 +163,76 @@ pub fn arrange(state: &State, width: i32, height: i32, wrap_zoom: f64) -> Vec<(S
         .filter(|n| n.workspace == state.selected_workspace)
         .map(|n| (n.id.clone(), n))
         .collect();
-    let mut edges = BTreeSet::new();
-    for e in &state.connections {
-        edges.insert((e.source.node.clone(), e.target.node.clone()));
+    if nodes.is_empty() {
+        return vec![];
     }
-
-    edges.retain(|(a, b)| nodes.contains_key(a) && nodes.contains_key(b) && a != b);
+    let mut signals = BTreeSet::new();
+    let mut data = BTreeSet::new();
+    for edge in &state.connections {
+        let (Some(source), Some(_)) = (nodes.get(&edge.source.node), nodes.get(&edge.target.node))
+        else {
+            continue;
+        };
+        if edge.source.node == edge.target.node {
+            continue;
+        }
+        let signal = crate::graph::pins(state, source, true)
+            .iter()
+            .any(|p| p.name == edge.source.pin && p.ty.is_signal());
+        if signal { &mut signals } else { &mut data }
+            .insert((edge.source.node.clone(), edge.target.node.clone()));
+    }
+    let spatial = |a: &&String, b: &&String| {
+        nodes[*a]
+            .position
+            .y
+            .total_cmp(&nodes[*b].position.y)
+            .then_with(|| nodes[*a].position.x.total_cmp(&nodes[*b].position.x))
+            .then_with(|| a.cmp(b))
+    };
+    let mut seeds: Vec<_> = nodes.keys().collect();
+    seeds.sort_by(spatial);
+    let mut components = HashMap::<String, usize>::new();
+    for seed in seeds {
+        if components.contains_key(seed) {
+            continue;
+        }
+        let component = components.len();
+        let mut pending = vec![seed.clone()];
+        while let Some(id) = pending.pop() {
+            if components.insert(id.clone(), component).is_some() {
+                continue;
+            }
+            for (a, b) in signals.iter().chain(&data) {
+                let neighbour = if a == &id {
+                    b
+                } else if b == &id {
+                    a
+                } else {
+                    continue;
+                };
+                if !components.contains_key(neighbour) {
+                    pending.push(neighbour.clone());
+                }
+            }
+        }
+    }
+    let related = |a: &&String, b: &&String| {
+        components[*a]
+            .cmp(&components[*b])
+            .then_with(|| spatial(a, b))
+    };
     let mut pending: BTreeSet<_> = nodes.keys().cloned().collect();
     let mut ranks = BTreeMap::<String, usize>::new();
     while !pending.is_empty() {
         let ready = pending
             .iter()
-            .find(|id| !edges.iter().any(|(a, b)| b == *id && pending.contains(a)))
-            .cloned()
-            .unwrap_or_else(|| pending.first().unwrap().clone());
-        let rank = edges
+            .filter(|id| !signals.iter().any(|(a, b)| b == *id && pending.contains(a)))
+            .min_by(spatial)
+            .or_else(|| pending.iter().min_by(spatial))
+            .unwrap()
+            .clone();
+        let rank = signals
             .iter()
             .filter(|(_, b)| b == &ready)
             .filter_map(|(a, _)| ranks.get(a).map(|r| r + 1))
@@ -183,63 +242,131 @@ pub fn arrange(state: &State, width: i32, height: i32, wrap_zoom: f64) -> Vec<(S
         ranks.insert(ready, rank);
     }
     let mut layers = vec![vec![]; ranks.values().copied().max().unwrap_or(0) + 1];
-    for node in nodes.values() {
-        layers[ranks[&node.id]].push(*node);
+    for rank in 0..layers.len() {
+        let mut pending: BTreeSet<_> = nodes
+            .keys()
+            .filter(|id| ranks[*id] == rank)
+            .cloned()
+            .collect();
+        while !pending.is_empty() {
+            let ready = pending
+                .iter()
+                .filter(|id| !data.iter().any(|(a, b)| b == *id && pending.contains(a)))
+                .min_by(related)
+                .or_else(|| pending.iter().min_by(related))
+                .unwrap()
+                .clone();
+            pending.remove(&ready);
+            layers[rank].push(nodes[&ready]);
+        }
     }
-    for layer in &mut layers {
-        layer.sort_by(|a, b| {
-            a.position
-                .y
-                .total_cmp(&b.position.y)
-                .then_with(|| a.position.x.total_cmp(&b.position.x))
-                .then_with(|| a.id.cmp(&b.id))
-        });
-    }
+    let gap = gap();
     let row_height = |row: &[&Node]| {
         row.iter()
             .map(|n| super::canvas::node_height(n))
             .fold(0., f64::max)
     };
-    let max_columns = layers.iter().map(Vec::len).max().unwrap_or(0);
+    let max_columns = layers.iter().map(Vec::len).max().unwrap_or(1);
     let min_columns = if wrap_zoom > 0. {
-        // A row of c cards spans c * (WIDTH + gap) - gap graph pixels.
-        ((((width as f64 - 160.).max(1.) / wrap_zoom + 100.) / (WIDTH + 100.)).floor() as usize)
+        ((((width as f64 - 160.).max(1.) / wrap_zoom + gap) / (WIDTH + gap)).floor() as usize)
             .max(1)
             .min(max_columns)
     } else {
         max_columns
     };
-    let columns = (min_columns.max(1)..=max_columns)
+    let columns = (min_columns..=max_columns)
         .max_by(|a, b| {
             let scale = |columns: usize| {
-                let w = span(columns, WIDTH + 100.);
-                let mut h = 0.;
-                for row in layers.iter().flat_map(|layer| layer.chunks(columns)) {
-                    if h > 0. {
-                        h += 110.;
-                    }
-                    h += row_height(row);
-                }
+                let w = columns as f64 * (WIDTH + gap) - gap;
+                let h = layers
+                    .iter()
+                    .flat_map(|l| l.chunks(columns))
+                    .map(|r| row_height(r) + gap)
+                    .sum::<f64>()
+                    - gap;
                 ((width as f64 - 160.).max(1.) / w).min((height as f64 - 160.).max(1.) / h)
             };
             scale(*a).total_cmp(&scale(*b)).then_with(|| a.cmp(b))
         })
         .unwrap_or(1);
+    let mut placed = HashMap::<String, Position>::new();
     let mut result = vec![];
-    let mut y = 80.0;
-    for row in layers.iter().flat_map(|layer| layer.chunks(columns)) {
+    let mut y = 80.;
+    for row in layers.iter().flat_map(|l| l.chunks(columns)) {
+        // Translate a compact row toward its connected predecessors without
+        // inserting empty columns between adjacent cards.
+        let anchors: Vec<_> = row
+            .iter()
+            .enumerate()
+            .flat_map(|(index, node)| {
+                let placed = &placed;
+                signals
+                    .iter()
+                    .filter(move |(_, b)| b == &node.id)
+                    .filter_map(move |(a, _)| {
+                        placed.get(a).map(|p| p.x - index as f64 * (WIDTH + gap))
+                    })
+            })
+            .collect();
+        let x = if anchors.is_empty() {
+            100.
+        } else {
+            (anchors.iter().sum::<f64>() / anchors.len() as f64).max(100.)
+        };
         for (index, node) in row.iter().enumerate() {
-            result.push((
-                node.id.clone(),
-                Position {
-                    x: 100. + index as f64 * (WIDTH + 100.),
-                    y,
-                },
-            ));
+            let p = Position {
+                x: x + index as f64 * (WIDTH + gap),
+                y,
+            };
+            placed.insert(node.id.clone(), p.clone());
+            result.push((node.id.clone(), p));
         }
-        y += row_height(row) + 110.;
+        y += row_height(row) + gap;
     }
     result
+}
+
+pub fn align_selection(
+    state: &State,
+    origins: &HashMap<String, Position>,
+    horizontal: bool,
+) -> HashMap<String, Position> {
+    let mut nodes: Vec<_> = state
+        .nodes
+        .iter()
+        .filter(|n| n.workspace == state.selected_workspace && origins.contains_key(&n.id))
+        .collect();
+    nodes.sort_by(|a, b| {
+        let (p, q) = (&origins[&a.id], &origins[&b.id]);
+        let (a, b, c, d) = if horizontal {
+            (p.x, q.x, p.y, q.y)
+        } else {
+            (p.y, q.y, p.x, q.x)
+        };
+        a.total_cmp(&b).then_with(|| c.total_cmp(&d))
+    });
+    if nodes.is_empty() {
+        return HashMap::new();
+    }
+    let x = origins.values().map(|p| p.x).fold(f64::INFINITY, f64::min);
+    let y = origins.values().map(|p| p.y).fold(f64::INFINITY, f64::min);
+    let mut cursor = if horizontal { x } else { y };
+    nodes
+        .into_iter()
+        .map(|n| {
+            let p = if horizontal {
+                Position { x: cursor, y }
+            } else {
+                Position { x, y: cursor }
+            };
+            cursor += if horizontal {
+                WIDTH
+            } else {
+                super::canvas::node_height(n)
+            } + gap();
+            (n.id.clone(), p)
+        })
+        .collect()
 }
 
 fn span(count: usize, step: f64) -> f64 {
@@ -384,6 +511,73 @@ mod tests {
             state.nodes.push(node);
         }
         state
+    }
+
+    #[test]
+    fn data_only_links_are_horizontal_compact_and_keep_connected_nodes_adjacent() {
+        let mut state = State::empty("/tmp".into());
+        for (kind, x) in [
+            (NodeKind::Constant, 100.),
+            (NodeKind::Window, 2000.),
+            (NodeKind::Display, 4000.),
+        ] {
+            state.nodes.push(Node::new(
+                &state.selected_workspace,
+                kind,
+                "/tmp".into(),
+                Position { x, y: 80. },
+            ));
+        }
+        state.connections.push(crate::graph::Connection {
+            source: crate::graph::Endpoint {
+                node: state.nodes[0].id.clone(),
+                pin: "value".into(),
+            },
+            target: crate::graph::Endpoint {
+                node: state.nodes[2].id.clone(),
+                pin: "value".into(),
+            },
+        });
+        let positions: HashMap<_, _> = arrange(&state, 1800, 1000, 0.).into_iter().collect();
+        let (a, b, c) = (
+            &positions[&state.nodes[0].id],
+            &positions[&state.nodes[1].id],
+            &positions[&state.nodes[2].id],
+        );
+        assert_eq!(a.y, c.y);
+        assert_eq!(a.y, b.y);
+        assert_eq!(c.x - a.x, WIDTH + gap());
+        assert!(b.x > c.x);
+    }
+
+    #[test]
+    fn directional_alignment_uses_selected_positions_and_variable_card_heights() {
+        let mut state = scene(2, 0);
+        state.nodes.push(Node::new(
+            &state.selected_workspace,
+            NodeKind::Shell,
+            "/tmp".into(),
+            Position { x: 500., y: 1000. },
+        ));
+        let origins: HashMap<_, _> = state.nodes[..2]
+            .iter()
+            .map(|n| (n.id.clone(), n.position.clone()))
+            .collect();
+        let vertical = align_selection(&state, &origins, false);
+        assert_eq!(vertical.len(), 2);
+        let (a, b) = (&vertical[&state.nodes[0].id], &vertical[&state.nodes[1].id]);
+        assert_eq!(a.x, b.x);
+        assert_eq!(
+            b.y - a.y,
+            super::super::canvas::node_height(&state.nodes[0]) + gap()
+        );
+        let horizontal = align_selection(&state, &vertical, true);
+        let (a, b) = (
+            &horizontal[&state.nodes[0].id],
+            &horizontal[&state.nodes[1].id],
+        );
+        assert_eq!(a.y, b.y);
+        assert_eq!(b.x - a.x, WIDTH + gap());
     }
 
     #[test]

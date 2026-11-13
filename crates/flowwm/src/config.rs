@@ -36,7 +36,9 @@ pub fn flow() -> &'static niri_config::flow::Flow {
     static FLOW: OnceLock<niri_config::flow::Flow> = OnceLock::new();
     FLOW.get_or_init(|| match load() {
         Ok(config) => {
-            let mut flow = config.flow;
+            use niri_config::utils::MergeWith;
+            let mut flow = defaults().flow;
+            flow.merge_with(&config.flow);
             let scale = if config.animations.off {
                 0.
             } else {
@@ -123,14 +125,10 @@ pub fn shortcuts() -> Vec<Shortcut> {
             })
         })
         .collect();
-    let defaults = defaults().flow;
-    for bind in config
-        .flow
-        .binds
-        .or(defaults.binds)
-        .unwrap_or_default()
-        .bindings
-    {
+    use niri_config::utils::MergeWith;
+    let mut flow = defaults().flow;
+    flow.merge_with(&config.flow);
+    for bind in flow.binds.unwrap_or_default().bindings {
         result.push(Shortcut {
             keys: vec![bind.key],
             action: bind.action,

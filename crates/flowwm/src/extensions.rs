@@ -85,15 +85,6 @@ pub fn builtins() -> Vec<Macro> {
         Macro {
             settings: None,
             flow: Default::default(),
-            id: "human".into(),
-            name: "My work".into(),
-            description: "Your work, in parallel with the agents".into(),
-            kind: NodeKind::Human,
-            command: "What are you working on?".into(),
-        },
-        Macro {
-            settings: None,
-            flow: Default::default(),
             id: "window".into(),
             name: "Application window".into(),
             description: "Choose an application to launch from the graph".into(),

@@ -25,6 +25,12 @@ pub struct Flow {
     #[knuffel(child, unwrap(argument))]
     pub arrange_wrap_zoom: Option<f64>,
     #[knuffel(child, unwrap(argument))]
+    pub arrange_gap: Option<f64>,
+    #[knuffel(child, unwrap(argument))]
+    pub arrange_drag: Option<bool>,
+    #[knuffel(child, unwrap(argument))]
+    pub undo_limit: Option<u32>,
+    #[knuffel(child, unwrap(argument))]
     pub running_color: Option<String>,
     #[knuffel(child, unwrap(argument))]
     pub running_opacity: Option<f64>,
@@ -65,6 +71,9 @@ impl crate::utils::MergeWith<Flow> for Flow {
             removal_ms,
             inertia_decay,
             arrange_wrap_zoom,
+            arrange_gap,
+            arrange_drag,
+            undo_limit,
             running_color,
             running_opacity,
             running_width
@@ -94,6 +103,9 @@ impl Flow {
             .is_some_and(|v| !v.is_finite() || !(0. ..=1.).contains(&v))
         {
             return Err("flow arrange-wrap-zoom must be between 0 and 1".into());
+        }
+        if self.arrange_gap.is_some_and(|v| !v.is_finite() || v < 0.) {
+            return Err("flow arrange-gap must be finite and nonnegative".into());
         }
         if self
             .inertia_decay
@@ -143,6 +155,9 @@ impl Flow {
                     | "search"
                     | "help"
                     | "arrange"
+                    | "macros"
+                    | "undo"
+                    | "redo"
                     | "copy"
                     | "cut"
                     | "paste"
@@ -212,6 +227,7 @@ mod tests {
             r#"flow { running-color "green"; }"#,
             r#"flow { running-opacity -0.1; }"#,
             r#"flow { running-opacity 1.1; }"#,
+            r#"flow { arrange-gap -1.0; }"#,
             r#"flow { arrange-wrap-zoom -0.1; }"#,
             r#"flow { arrange-wrap-zoom 1.1; }"#,
             r#"flow { binds { r action="typo"; }; }"#,

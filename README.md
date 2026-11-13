@@ -81,7 +81,9 @@ See the [user guide](docs/guide.md) for configuration, updates, rollback, and CL
 | Win+T, Win+K | Open a terminal |
 | Win+V / Win+P | Clipboard / power menu |
 | Tab | Connect the selected node to another node or a new step |
-| Ctrl+P | Arrange and frame the graph |
+| Ctrl+P | Compact, align and frame the graph |
+| Ctrl+Shift+P | Search workflow macros |
+| Ctrl+Z / Ctrl+Shift+Z | Undo / redo graph edits |
 | Win+Enter / Win+Q | Run / stop selected nodes (terminal / close in Windows) |
 | R | Run the selected node |
 | Win+- / Win+= | Zoom out / in in Nodes |

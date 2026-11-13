@@ -80,7 +80,7 @@ enum Cmd {
     New,
     /// Find nodes in DMS Spotlight, or choose a node type to create.
     Search {
-        #[arg(default_value = "nodes", value_parser = ["nodes", "create", "recipes"])]
+        #[arg(default_value = "nodes", value_parser = ["nodes", "create", "recipes", "macros"])]
         mode: String,
     },
     /// Open DMS Spotlight, yielding graph keyboard focus first.
