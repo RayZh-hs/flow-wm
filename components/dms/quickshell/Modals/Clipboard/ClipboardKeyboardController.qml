@@ -1,6 +1,7 @@
 import QtQuick
 import qs.Common
 import qs.Services
+import "../../Common/KeyUtils.js" as KeyUtils
 
 QtObject {
     id: keyboardController
@@ -129,6 +130,14 @@ QtObject {
         event.accepted = true;
     }
 
+    function extractSelectedText() {
+        const entries = modal.activeTab === "saved" ? ClipboardService.pinnedEntries : ClipboardService.unpinnedEntries;
+        if (!entries || entries.length === 0)
+            return;
+        const index = ClipboardService.selectedIndex >= 0 && ClipboardService.selectedIndex < entries.length ? ClipboardService.selectedIndex : 0;
+        ClipboardService.extractText(entries[index]);
+    }
+
     function handleKey(event) {
         if (modal.mode === "preview") {
             handlePreviewKey(event);
@@ -146,6 +155,12 @@ QtObject {
         if (modal.contextMenuActive) {
             if (event.key === Qt.Key_Escape)
                 modal.closeContextMenu();
+            event.accepted = true;
+            return;
+        }
+
+        if (SettingsData.clipboardOcrEnabled && KeyUtils.eventMatchesCombo(event, SettingsData.clipboardOcrShortcut)) {
+            extractSelectedText();
             event.accepted = true;
             return;
         }

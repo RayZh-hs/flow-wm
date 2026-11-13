@@ -1,5 +1,8 @@
 # Dux Modular Shell
 
+FlowWM's bundled fork includes local English and Simplified Chinese text
+extraction for clipboard images. See [clipboard OCR setup and usage](docs/clipboard-ocr.md).
+
 <div align="center">
   <a href="https://duxlabs.dev">
     <img src="assets/danklogo.svg" alt="Dux Modular Shell" width="200">

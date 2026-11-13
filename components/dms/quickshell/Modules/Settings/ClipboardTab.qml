@@ -503,6 +503,26 @@ Item {
                 onToggled: checked => SettingsData.set("clipboardUseOverlayLayer", checked)
             }
 
+            SettingsToggleRow {
+                tab: "clipboard"
+                tags: ["clipboard", "ocr", "image", "text"]
+                settingKey: "clipboardOcrEnabled"
+                text: I18n.tr("Extract text (OCR)")
+                checked: SettingsData.clipboardOcrEnabled
+                onToggled: checked => SettingsData.set("clipboardOcrEnabled", checked)
+            }
+
+            SettingsTextFieldRow {
+                tab: "clipboard"
+                tags: ["clipboard", "ocr", "shortcut", "keybind"]
+                settingKey: "clipboardOcrShortcut"
+                text: I18n.tr("OCR shortcut")
+                description: I18n.tr("Use Ctrl+key or Ctrl+Shift+key. Leave empty to disable the shortcut.")
+                visible: SettingsData.clipboardOcrEnabled
+                value: SettingsData.clipboardOcrShortcut
+                onEditingFinished: value => SettingsData.set("clipboardOcrShortcut", value.trim())
+            }
+
             SettingsButtonGroupRow {
                 tab: "clipboard"
                 tags: ["clipboard", "actions", "buttons", "hide", "density", "copy", "paste", "pin", "edit", "delete"]

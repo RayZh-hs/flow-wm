@@ -49,7 +49,10 @@ python3 scripts/dev.py nested --smoke
 ```
 
 `test` runs FlowWM's tests and strict Clippy, the native node-row and existing
-layer-shell compositor tests, the IPC crate tests, and DMS's FlowWM catalog tests.
+layer-shell compositor tests, the IPC crate tests, and DMS's FlowWM catalog and
+clipboard OCR tests. The OCR tests require Pillow, Tesseract, the English and
+Simplified Chinese models, Qt 6 qmltestrunner, Fontconfig, and Noto Sans CJK;
+see [OCR setup](../components/dms/docs/clipboard-ocr.md).
 `cargo build --workspace --locked` followed by `cargo test --workspace --locked` runs the core/provider/host/WM tests. Build first: WM integration fixtures launch the workspace host and desktop-provider binaries. Session isolation
 regressions run with `python3 -m unittest discover -s scripts -p 'test_install.py'`;
 DMS service routing is covered by `go test ./cmd/dms` from `components/dms/core`. For a complete

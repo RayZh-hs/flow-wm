@@ -12,6 +12,41 @@ Singleton {
     id: root
     readonly property var log: Log.scoped("ClipboardService")
 
+    property ClipboardOCRJob _ocrJob: null
+    readonly property int ocrEntryId: _ocrJob ? _ocrJob.entryId : -1
+    readonly property bool ocrBusy: _ocrJob !== null
+
+    function extractText(entry) {
+        if (!SettingsData.clipboardOcrEnabled || !entry?.isImage || entry.id <= 0)
+            return;
+        if (ocrBusy) {
+            ToastService.showInfo(I18n.tr("Text extraction is already running"));
+            return;
+        }
+        _ocrJob = ocrJobComponent.createObject(root, {entryId: entry.id});
+        _ocrJob.start();
+        ToastService.showInfo(I18n.tr("Extracting text from image…"));
+    }
+
+    Component {
+        id: ocrJobComponent
+        ClipboardOCRJob {
+            id: job
+            onFinished: result => {
+                if (root._ocrJob !== job)
+                    return;
+                root._ocrJob = null;
+                if (!result.ok) {
+                    ToastService.showError(result.error || I18n.tr("Text extraction failed"));
+                    return;
+                }
+                ToastService.showInfo(I18n.tr("Extracted text copied to clipboard"));
+                root.historyCopied();
+                root.refresh();
+            }
+        }
+    }
+
     readonly property int longTextThreshold: 200
 
     readonly property bool clipboardAvailable: DMSService.isConnected && (DMSService.capabilities.length === 0 || DMSService.capabilities.includes("clipboard"))

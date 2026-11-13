@@ -1722,6 +1722,12 @@ var LOCAL_SPEC = {
     clipboardEnterToPaste: {
         def: false
     },
+    clipboardOcrEnabled: {
+        def: true
+    },
+    clipboardOcrShortcut: {
+        def: "Ctrl+O"
+    },
     clipboardRememberTypeFilter: {
         def: false
     },

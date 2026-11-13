@@ -31,6 +31,12 @@ Rectangle {
                     label: I18n.tr("Paste")
                 }
             ] : [];
+            const ocrHints = SettingsData.clipboardOcrEnabled && SettingsData.clipboardOcrShortcut ? [
+                {
+                    keys: [SettingsData.clipboardOcrShortcut],
+                    label: I18n.tr("Extract text (OCR)")
+                }
+            ] : [];
             return [
                 {
                     keys: ["Up", "Down"],
@@ -40,7 +46,7 @@ Rectangle {
                     keys: keyboardHints.enterPastes ? ["Ctrl+C", "Shift+Return"] : ["Return", "Ctrl+C"],
                     label: I18n.tr("Copy")
                 }
-            ].concat(pasteHints, [
+            ].concat(pasteHints, ocrHints, [
                 {
                     keys: ["Ctrl+Space"],
                     label: I18n.tr("Preview", "verb, clipboard entry action button tooltip", true)

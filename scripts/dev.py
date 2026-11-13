@@ -60,6 +60,7 @@ def main():
                 run(*cargo(name, "test", "-p", "niri-ipc"))
             else:
                 run("node", "--test", "components/dms/quickshell/PLUGINS/FlowWM/FlowCatalog.test.cjs")
+                run("python3", "-m", "unittest", "discover", "-s", "components/dms/tests/clipboard-ocr", "-v")
         return
     profile = "release" if args.release else "debug"
     compositor = (args.compositor or ROOT / f"target/niri/{profile}/niri").resolve()
