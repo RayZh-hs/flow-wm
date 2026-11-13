@@ -11,7 +11,7 @@ use std::{
 #[derive(Default)]
 pub struct Cache {
     graph: Option<(u64, gsk::RenderNode)>,
-    metadata: HashMap<(String, String), gsk::RenderNode>,
+    metadata: HashMap<String, (u64, gsk::RenderNode)>,
     signatures: HashMap<String, Vec<u8>>,
     revision: Option<u64>,
     cards: HashMap<String, (Node, Rect)>,
@@ -102,6 +102,74 @@ impl Cache {
 fn bounds(r: Rect) -> graphene::Rect {
     graphene::Rect::new(r.x as f32, r.y as f32, r.width as f32, r.height as f32)
 }
+
+/// Scissor individual drawing nodes instead of compositing the entire canvas
+/// through an offscreen alpha mask. Distributing clips over containers keeps
+/// each card local: a preview hole elsewhere does not replay that card.
+fn append_in_region(snapshot: &gtk::Snapshot, node: &gsk::RenderNode, region: &gtk::cairo::Region) {
+    if let Some(container) = node.downcast_ref::<gsk::ContainerNode>() {
+        for i in 0..container.n_children() {
+            append_in_region(snapshot, &container.child(i), region);
+        }
+        return;
+    }
+    let b = node.bounds();
+    let rect = Rect {
+        x: b.x() as f64,
+        y: b.y() as f64,
+        width: b.width() as f64,
+        height: b.height() as f64,
+    }
+    .integer();
+    match region.contains_rectangle(&rect) {
+        gtk::cairo::RegionOverlap::In => snapshot.append_node(node),
+        gtk::cairo::RegionOverlap::Out => (),
+        gtk::cairo::RegionOverlap::Part => {
+            let clips = region.copy();
+            let _ = clips.intersect_rectangle(&rect);
+            for i in 0..clips.num_rectangles() {
+                let r = clips.rectangle(i);
+                snapshot.push_clip(&graphene::Rect::new(
+                    r.x() as f32,
+                    r.y() as f32,
+                    r.width() as f32,
+                    r.height() as f32,
+                ));
+                snapshot.append_node(node);
+                snapshot.pop();
+            }
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn grid(snapshot: &gtk::Snapshot, width: i32, height: i32, view: &View) {
+    let spacing = canvas::GRID * view.zoom;
+    if !spacing.is_finite() || spacing < 3.0 {
+        return;
+    }
+    let x = view.pan_x.rem_euclid(spacing) as f32;
+    let y = view.pan_y.rem_euclid(spacing) as f32;
+    let spacing = spacing as f32;
+    snapshot.push_opacity(0.32 * view.chrome);
+    snapshot.push_repeat(
+        &graphene::Rect::new(0., 0., width as f32, height as f32),
+        Some(&graphene::Rect::new(
+            x - spacing / 2.,
+            y - spacing / 2.,
+            spacing,
+            spacing,
+        )),
+    );
+    let dot = graphene::Rect::new(x - 0.75, y - 0.75, 1.5, 1.5);
+    snapshot.push_rounded_clip(&gsk::RoundedRect::from_rect(dot, 0.75));
+    let mut ink = color(view.theme.outline);
+    ink.set_alpha(0.3);
+    snapshot.append_color(&ink, &dot);
+    snapshot.pop();
+    snapshot.pop();
+    snapshot.pop();
+}
 fn color(c: super::theme::Color) -> gdk::RGBA {
     gdk::RGBA::new(c.0 as f32, c.1 as f32, c.2 as f32, 1.0)
 }
@@ -140,80 +208,115 @@ fn metadata<'a>(
     node: &Node,
     index: usize,
     view: &View,
+    scale: f64,
 ) -> &'a gsk::RenderNode {
-    let key = format!(
-        "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
-        node.id,
+    // A CairoNode is a recording: GSK replays it as its transform changes.
+    // Rasterize local card contents once per resolution tier instead. Rounding
+    // up keeps text sharp throughout a zoom without allocating on every frame.
+    let scale = (scale * view.output_scale).max(0.125).log2().ceil().exp2();
+    let mut hash = DefaultHasher::new();
+    (
         view.numbers,
-        index,
-        view.theme.primary.hex(),
-        view.theme.font,
-        view.theme.text.hex(),
-        view.theme.muted.hex(),
-        view.theme.surface_high.hex(),
-        view.theme.outline.hex(),
-        view.theme.running.hex(),
-        view.theme.running_opacity.to_bits(),
-        view.theme.radius.to_bits(),
+        if view.numbers { index } else { 0 },
+        theme_key(view),
         node_height(node).to_bits(),
-    );
-    cache
-        .metadata
-        .entry((node.id.clone(), key))
-        .or_insert_with(|| {
-            let meta = gtk::Snapshot::new();
+        scale.to_bits(),
+    )
+        .hash(&mut hash);
+    let key = hash.finish();
+    let build = || {
+        let meta = gtk::Snapshot::new();
+        let c = meta.append_cairo(&graphene::Rect::new(
+            -8.0,
+            -16.0,
+            WIDTH as f32 + 16.0,
+            node_height(node) as f32 + 32.0,
+        ));
+        c.select_font_face(
+            &view.theme.font,
+            gtk::cairo::FontSlant::Normal,
+            gtk::cairo::FontWeight::Normal,
+        );
+        if !node.closed_window() && (node.window_id.is_some() || node.desktop_window) {
+            c.rectangle(-8.0, -8.0, WIDTH + 16.0, 77.0);
+            c.rectangle(-8.0, node_height(node) - 39.0, WIDTH + 16.0, 48.0);
+            c.clip();
+        }
+        canvas::draw_node(&c, node, &Position::default(), false, &view.theme);
+        drop(c);
+        if !node.closed_window() {
             let c = meta.append_cairo(&graphene::Rect::new(
-                -8.0,
-                -16.0,
-                WIDTH as f32 + 16.0,
-                node_height(node) as f32 + 32.0,
+                -8.,
+                -8.,
+                WIDTH as f32 + 16.,
+                node_height(node) as f32 + 16.,
             ));
-            c.select_font_face(
-                &view.theme.font,
-                gtk::cairo::FontSlant::Normal,
-                gtk::cairo::FontWeight::Normal,
+            canvas::draw_pin_markers(&c, state, node, &Position::default(), &view.theme);
+        }
+        if view.numbers && index < 10 {
+            let c = meta.append_cairo(&graphene::Rect::new(WIDTH as f32 - 34.0, -14.0, 32.0, 28.0));
+            canvas::rounded(&c, WIDTH - 32.0, -13.0, 28.0, 26.0, 8.0);
+            view.theme.primary.source(&c);
+            let _ = c.fill();
+            canvas::text(
+                &c,
+                WIDTH - 22.0,
+                5.0,
+                &((index + 1) % 10).to_string(),
+                14.0,
+                view.theme.on_primary.rgb(),
+                true,
             );
-            if !node.closed_window() {
-                c.rectangle(-8.0, -8.0, WIDTH + 16.0, 77.0);
-                c.rectangle(-8.0, node_height(node) - 39.0, WIDTH + 16.0, 48.0);
-                c.clip();
-            }
-            canvas::draw_node(&c, node, &Position::default(), false, &view.theme);
-            drop(c);
-            if !node.closed_window() {
-                let c = meta.append_cairo(&graphene::Rect::new(
-                    -8.,
-                    -8.,
-                    WIDTH as f32 + 16.,
-                    node_height(node) as f32 + 16.,
-                ));
-                canvas::draw_pin_markers(&c, state, node, &Position::default(), &view.theme);
-            }
-            if view.numbers && index < 10 {
-                let c =
-                    meta.append_cairo(&graphene::Rect::new(WIDTH as f32 - 34.0, -14.0, 32.0, 28.0));
-                canvas::rounded(&c, WIDTH - 32.0, -13.0, 28.0, 26.0, 8.0);
-                view.theme.primary.source(&c);
-                let _ = c.fill();
-                canvas::text(
-                    &c,
-                    WIDTH - 22.0,
-                    5.0,
-                    &((index + 1) % 10).to_string(),
-                    14.0,
-                    view.theme.on_primary.rgb(),
-                    true,
-                );
-            }
-            meta.to_node().unwrap()
-        })
+        }
+        let node = meta.to_node().unwrap();
+        let b = node.bounds();
+        let width = (b.width() as f64 * scale).ceil() as i32;
+        let height = (b.height() as f64 * scale).ceil() as i32;
+        let Ok(mut image) =
+            gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, width, height)
+        else {
+            return node;
+        };
+        let stride = image.stride() as usize;
+        {
+            let Ok(c) = gtk::cairo::Context::new(&image) else {
+                return node;
+            };
+            c.scale(scale, scale);
+            c.translate(-b.x() as f64, -b.y() as f64);
+            node.draw(&c);
+        }
+        let Ok(data) = image.data() else { return node };
+        let bytes = gtk::glib::Bytes::from_owned(data.to_vec());
+        let format = if cfg!(target_endian = "little") {
+            gdk::MemoryFormat::B8g8r8a8Premultiplied
+        } else {
+            gdk::MemoryFormat::A8r8g8b8Premultiplied
+        };
+        let texture = gdk::MemoryTexture::new(width, height, format, &bytes, stride);
+        // Account for rounding the texture dimensions to whole device pixels.
+        gsk::TextureNode::new(
+            &texture,
+            &graphene::Rect::new(
+                b.x(),
+                b.y(),
+                width as f32 / scale as f32,
+                height as f32 / scale as f32,
+            ),
+        )
+        .upcast()
+    };
+    let entry = cache
+        .metadata
+        .entry(node.id.clone())
+        .or_insert_with(|| (key, build()));
+    if entry.0 != key {
+        *entry = (key, build());
+    }
+    &entry.1
 }
-fn graph_key(width: i32, height: i32, state: &State, revision: u64, view: &View) -> u64 {
+fn theme_key(view: &View) -> u64 {
     let mut h = DefaultHasher::new();
-    (width, height, revision).hash(&mut h);
-    view.selected.hash(&mut h);
-    view.query.hash(&mut h);
-    view.numbers.hash(&mut h);
     view.theme.font.hash(&mut h);
     for c in [
         view.theme.primary,
@@ -227,11 +330,20 @@ fn graph_key(width: i32, height: i32, state: &State, revision: u64, view: &View)
         view.theme.muted,
         view.theme.outline,
         view.theme.running,
+        view.theme.error,
     ] {
-        c.hex().hash(&mut h);
+        (c.0.to_bits(), c.1.to_bits(), c.2.to_bits()).hash(&mut h);
     }
     view.theme.radius.to_bits().hash(&mut h);
     view.theme.running_opacity.to_bits().hash(&mut h);
+    h.finish()
+}
+fn graph_key(width: i32, height: i32, state: &State, revision: u64, view: &View) -> u64 {
+    let mut h = DefaultHasher::new();
+    (width, height, revision, theme_key(view)).hash(&mut h);
+    view.selected.hash(&mut h);
+    view.query.hash(&mut h);
+    view.numbers.hash(&mut h);
     (
         view.zoom.to_bits(),
         view.pan_x.to_bits(),
@@ -249,8 +361,8 @@ fn graph_key(width: i32, height: i32, state: &State, revision: u64, view: &View)
         .iter()
         .filter(|n| n.workspace == state.selected_workspace)
     {
-        // Live card transforms are GSK nodes, and do not invalidate the Cairo
-        // grid unless an edge actually depends on their moving position.
+        // Live card transforms do not invalidate the Cairo graph unless an edge
+        // depends on their moving position.
         if (node.window_id.is_some() || node.desktop_window) && !linked.contains(node.id.as_str()) {
             continue;
         }
@@ -406,24 +518,7 @@ pub fn render(
         render_inner(&scene, width, height, state, revision, view, cache);
         if let Some(scene) = scene.to_node() {
             let region = native_canvas_region(state, view, width, height);
-            // One mask and one scene traversal. Replaying the whole scene once per
-            // hole fragment made rendering quadratic in the number of windows.
-            snapshot.push_mask(gsk::MaskMode::Alpha);
-            for i in 0..region.num_rectangles() {
-                let r = region.rectangle(i);
-                snapshot.append_color(
-                    &gdk::RGBA::WHITE,
-                    &graphene::Rect::new(
-                        r.x() as f32,
-                        r.y() as f32,
-                        r.width() as f32,
-                        r.height() as f32,
-                    ),
-                );
-            }
-            snapshot.pop();
-            snapshot.append_node(&scene);
-            snapshot.pop();
+            append_in_region(snapshot, &scene, &region);
         }
         if canvas::has_foreground(view) {
             let c =
@@ -473,8 +568,11 @@ fn render_inner(
             &graphene::Rect::new(0.0, 0.0, width as f32, height as f32),
         );
     }
+    grid(&backdrop, width, height, view);
     let key = graph_key(width, height, state, revision, view);
-    if cache.graph.as_ref().is_none_or(|(old, _)| *old != key) {
+    if !canvas::has_graph_layer(state, view) {
+        cache.graph = None;
+    } else if cache.graph.as_ref().is_none_or(|(old, _)| *old != key) {
         let layer = gtk::Snapshot::new();
         let c = layer.append_cairo(&graphene::Rect::new(0.0, 0.0, width as f32, height as f32));
         let mut graph = view.clone();
@@ -518,6 +616,8 @@ fn render_inner(
                     n.status,
                     &n.metric,
                     &n.command,
+                    &n.cwd,
+                    n.writable,
                     n.window_id,
                     n.desktop_window,
                     &n.flow,
@@ -528,13 +628,107 @@ fn render_inner(
                 (n.id.clone(), signature)
             })
             .collect();
-        cache.metadata.retain(|(id, _), _| {
+        cache.metadata.retain(|id, _| {
             signatures
                 .get(id)
                 .is_some_and(|s| cache.signatures.get(id) == Some(s))
         });
         cache.signatures = signatures;
         cache.revision = Some(revision);
+    }
+    // Workflow cards keep their local Cairo drawing across camera motion, just
+    // like window labels. Only their GSK transform and selection change per frame.
+    let indices: HashMap<_, _> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id.as_str(), i))
+        .collect();
+    for node in state
+        .nodes
+        .iter()
+        .filter(|n| n.workspace == state.selected_workspace)
+    {
+        if node.window_id.is_some() || node.desktop_window {
+            continue;
+        }
+        let p = view.position(node);
+        let rect = Rect {
+            x: view.pan_x + p.x * view.zoom,
+            y: view.pan_y + p.y * view.zoom,
+            width: WIDTH * view.zoom,
+            height: node_height(node) * view.zoom,
+        };
+        if rect.x > width as f64 + 12.
+            || rect.x + rect.width < -12.
+            || rect.y > height as f64 + 16.
+            || rect.y + rect.height < -12.
+        {
+            continue;
+        }
+        let matching = canvas::matches_query(node, &view.query);
+        snapshot.push_opacity(
+            view.chrome
+                * if !view.query.is_empty() && !matching {
+                    0.25
+                } else {
+                    1.
+                },
+        );
+        let selected = border_opacity(node, view);
+        if selected > 0. {
+            let (r, g, b) = if node.kind == NodeKind::Constant {
+                canvas::type_color(&crate::graph::constant_type(node), &view.theme)
+            } else {
+                view.theme.primary.rgb()
+            };
+            let glow = Rect {
+                x: rect.x - 4. * view.zoom,
+                y: rect.y - 4. * view.zoom,
+                width: rect.width + 8. * view.zoom,
+                height: rect.height + 8. * view.zoom,
+            };
+            snapshot.push_rounded_clip(&gsk::RoundedRect::from_rect(
+                bounds(glow),
+                13. * view.zoom as f32,
+            ));
+            snapshot.append_color(
+                &gdk::RGBA::new(r as f32, g as f32, b as f32, (0.09 * selected) as f32),
+                &bounds(glow),
+            );
+            snapshot.pop();
+        }
+        snapshot.save();
+        snapshot.translate(&graphene::Point::new(rect.x as f32, rect.y as f32));
+        snapshot.scale(view.zoom as f32, view.zoom as f32);
+        let index = indices[node.id.as_str()];
+        snapshot.append_node(metadata(cache, state, node, index, view, view.zoom));
+        snapshot.restore();
+        if selected > 0. {
+            let mut ink = color(view.theme.primary);
+            ink.set_alpha(selected as f32);
+            snapshot.append_border(
+                &gsk::RoundedRect::from_rect(bounds(rect), (view.theme.radius * view.zoom) as f32),
+                &[2. * view.zoom as f32; 4],
+                &[ink; 4],
+            );
+        }
+        if !view.query.is_empty() && matching {
+            let highlight = Rect {
+                x: rect.x - 5. * view.zoom,
+                y: rect.y - 5. * view.zoom,
+                width: rect.width + 10. * view.zoom,
+                height: rect.height + 10. * view.zoom,
+            };
+            snapshot.append_border(
+                &gsk::RoundedRect::from_rect(
+                    bounds(highlight),
+                    ((view.theme.radius + 5.) * view.zoom) as f32,
+                ),
+                &[2.; 4],
+                &[color(view.theme.primary); 4],
+            );
+        }
+        snapshot.pop();
     }
     for (index, node) in nodes.iter().enumerate() {
         if node.window_id.is_none() && !node.desktop_window {
@@ -574,7 +768,7 @@ fn render_inner(
             snapshot.save();
             snapshot.translate(&graphene::Point::new(rect.x as f32, rect.y as f32));
             snapshot.scale(view.zoom as f32, view.zoom as f32);
-            snapshot.append_node(metadata(cache, state, node, index, view));
+            snapshot.append_node(metadata(cache, state, node, index, view, view.zoom));
             snapshot.restore();
             let border_alpha = border_opacity(node, view);
             if border_alpha > 0. {
@@ -642,7 +836,14 @@ fn render_inner(
                 (rect.height / node_height(node)) as f32,
             );
             snapshot.push_opacity(((t - 0.6) / 0.4).clamp(0.0, 1.0));
-            snapshot.append_node(metadata(cache, state, node, index, view));
+            snapshot.append_node(metadata(
+                cache,
+                state,
+                node,
+                index,
+                view,
+                (rect.width / WIDTH).max(rect.height / node_height(node)),
+            ));
             snapshot.pop();
             snapshot.restore();
         }
@@ -666,6 +867,152 @@ fn render_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pixels(node: &gsk::RenderNode, width: i32, height: i32) -> Vec<u8> {
+        let mut image =
+            gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, width, height).unwrap();
+        let context = gtk::cairo::Context::new(&image).unwrap();
+        node.draw(&context);
+        drop(context);
+        image.data().unwrap().to_vec()
+    }
+
+    #[test]
+    #[ignore = "requires a GTK display; run explicitly inside Niri or Xvfb"]
+    fn native_clips_match_mask_pixels_for_overlapping_translucent_cards() {
+        gtk::init().unwrap();
+        let window = gtk::Window::new();
+        gtk::prelude::WidgetExt::realize(&window);
+        let renderer = window.renderer().unwrap();
+        let render_pixels = |node: &gsk::RenderNode| {
+            let texture =
+                renderer.render_texture(node, Some(&graphene::Rect::new(0., 0., 1000., 600.)));
+            let mut download = gdk::TextureDownloader::new(&texture);
+            download.set_format(gdk::MemoryFormat::B8g8r8a8Premultiplied);
+            download.download_bytes().0.to_vec()
+        };
+        for opacity in [0., 0.1, 0.5, 1.] {
+            let (state, mut view) = expanded_window_with_fading_peers(opacity);
+            for t in [0., 0.25, 0.75, 1.] {
+                view.chrome = t;
+                view.presentations.insert(state.nodes[0].id.clone(), t);
+                let scene = gtk::Snapshot::new();
+                render_inner(&scene, 1000, 600, &state, 1, &view, &mut Cache::default());
+                let scene = scene.to_node().unwrap();
+                let region = native_canvas_region(&state, &view, 1000, 600);
+                let masked = gtk::Snapshot::new();
+                masked.push_mask(gsk::MaskMode::Alpha);
+                for i in 0..region.num_rectangles() {
+                    let r = region.rectangle(i);
+                    masked.append_color(
+                        &gdk::RGBA::WHITE,
+                        &graphene::Rect::new(
+                            r.x() as f32,
+                            r.y() as f32,
+                            r.width() as f32,
+                            r.height() as f32,
+                        ),
+                    );
+                }
+                masked.pop();
+                masked.append_node(&scene);
+                masked.pop();
+                let clipped = gtk::Snapshot::new();
+                append_in_region(&clipped, &scene, &region);
+                let actual = render_pixels(&clipped.to_node().unwrap());
+                let expected = render_pixels(&masked.to_node().unwrap());
+                // The reference quantizes an extra offscreen alpha group.
+                let delta = actual
+                    .iter()
+                    .zip(&expected)
+                    .map(|(a, b)| a.abs_diff(*b))
+                    .max()
+                    .unwrap();
+                assert!(
+                    delta <= 1,
+                    "maximum channel difference {delta}, opacity {opacity}, presentation {t}"
+                );
+            }
+        }
+        window.destroy();
+    }
+
+    #[test]
+    #[ignore = "requires a GTK display; run explicitly inside Niri or Xvfb"]
+    #[allow(clippy::field_reassign_with_default)]
+    fn workflow_cards_retain_drawing_during_motion_and_refresh_changed_content() {
+        gtk::init().unwrap();
+        let mut state = State::empty("/tmp".into());
+        let mut node = Node::new(
+            &state.selected_workspace,
+            NodeKind::Constant,
+            "/tmp".into(),
+            Position { x: 80., y: 100. },
+        );
+        node.flow.properties.insert("value".into(), 42.into());
+        state.nodes.push(node);
+        let mut view = View::default();
+        view.zoom = 1.;
+        view.pan_x = 0.;
+        view.pan_y = 0.;
+        view.theme = super::super::theme::Theme::default();
+        let mut cache = Cache::default();
+        let frame = |state: &State, view: &View, revision, cache: &mut Cache| {
+            let snapshot = gtk::Snapshot::new();
+            render(&snapshot, 500, 400, state, revision, view, cache);
+            pixels(&snapshot.to_node().unwrap(), 500, 400)
+        };
+        let initial = frame(&state, &view, 1, &mut cache);
+        let drawing = cache.metadata[&state.nodes[0].id].1.clone();
+        view.pan_x = 44.;
+        view.pan_y = -19.;
+        view.zoom = 0.7;
+        view.selected = Some(state.nodes[0].id.clone());
+        assert!(
+            frame(&state, &view, 1, &mut cache) == frame(&state, &view, 1, &mut Cache::default())
+        );
+        assert_eq!(
+            drawing.as_ptr(),
+            cache.metadata[&state.nodes[0].id].1.as_ptr(),
+            "camera and selection must reuse the card drawing"
+        );
+        view.selected = None;
+        view.pan_x = 0.;
+        view.pan_y = 0.;
+        view.zoom = 1.;
+        assert!(initial == frame(&state, &view, 1, &mut cache));
+        state.nodes[0]
+            .flow
+            .properties
+            .insert("value".into(), 123456.into());
+        let edited = frame(&state, &view, 2, &mut cache);
+        assert!(
+            initial != edited,
+            "editing must refresh the displayed value"
+        );
+        assert!(edited == frame(&state, &view, 2, &mut Cache::default()));
+        for i in 0..8 {
+            view.numbers = i % 2 == 0;
+            view.theme.primary = super::super::theme::Color(i as f64 / 8., 0., 1.);
+            let themed = frame(&state, &view, 2, &mut cache);
+            assert!(themed == frame(&state, &view, 2, &mut Cache::default()));
+            assert_eq!(
+                cache.metadata.len(),
+                1,
+                "style changes must replace old rasterizations"
+            );
+        }
+        let drawing = cache.metadata[&state.nodes[0].id].1.clone();
+        view.output_scale = 2.;
+        assert!(
+            frame(&state, &view, 2, &mut cache) == frame(&state, &view, 2, &mut Cache::default())
+        );
+        assert_ne!(
+            drawing.as_ptr(),
+            cache.metadata[&state.nodes[0].id].1.as_ptr(),
+            "moving to a denser output must refresh the card resolution"
+        );
+    }
 
     #[allow(clippy::field_reassign_with_default)]
     fn expanded_window_with_fading_peers(opacity: f64) -> (State, View) {

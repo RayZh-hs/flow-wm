@@ -201,9 +201,14 @@ subtree exports preserve niri's and DMS's original repository structure.
 
 ## View performance and input checks
 
+The [node view profiling report](node-view-performance.md) records the measured
+bottlenecks, renderer changes, and release-build comparisons.
+
 ```sh
 python3 scripts/benchmark_views.py --windows 100 --samples 5 --output artifacts/view-benchmark/timing.json
 python3 scripts/benchmark_views.py --windows 6 --samples 2 --verify --output artifacts/view-benchmark/verification.json
+python3 scripts/benchmark_views.py --windows 6 --nodes 40 --samples 5 --camera --output artifacts/view-benchmark/mixed.json
+python3 scripts/benchmark_views.py --windows 40 --samples 5 --camera --profile --output artifacts/view-benchmark/profile.json
 ```
 
 This starts a private Xvfb/niri desktop with static GTK application windows,
@@ -212,6 +217,20 @@ interrupted morphs, Ctrl+P wrapping, and Win+Q removal in both views and peeks.
 The test windows share a process, so closing a window must remove its node while
 leaving the other windows alive. The report separates scene publication from GSK scene
 construction. Captures and JSON are saved in `artifacts/view-benchmark/`.
+`--camera` adds repeated zoom and keyboard navigation, and `--nodes` adds
+workflow cards to the window fixture. `canvas_render` measures scene construction;
+`gtk_paint` includes GTK/GSK's drawing and submission work. `camera_frame_gap` and
+`transition_frame_gap` measure client frame cadence, including rendering stalls.
+These are client timings, not physical display presentation measurements. Means
+cover the complete run; percentiles and maxima cover the most recent 120 samples.
+`--profile` records user-space CPU stacks for the shell in a sibling
+`.shell.perf.data` file; inspect it with `perf report -i <file>`. Profiling is
+optional and requires `perf` and permission to sample the launched process.
+It adds overhead, so collect comparison timings without `--profile`.
+The default Xvfb compositor uses software rendering. `--backend wayland` opens a
+nested desktop using the host's GPU; keep that window visible throughout the
+measurement, since the host throttles hidden windows. This backend does not
+support `--verify`, which sends input only into the private Xvfb display.
 `--flowwm` and `--compositor` can select saved builds for a comparison. Requires
 Python GTK 4 and Pillow, Xvfb, xdotool, and grim. Physical trackpad feel still needs
 a hardware check; camera math is covered by Rust regression tests.

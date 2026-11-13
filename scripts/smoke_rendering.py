@@ -15,6 +15,8 @@ TESTS = (
     "ui::canvas::rendering_tests::constant_clicks_and_drags_release_input_and_commit_positions",
     "ui::canvas::rendering_tests::gpu_window_cards_keep_full_selection_outlines_and_foreground_gestures",
     "ui::gpu::tests::native_morphs_do_not_paint_opaque_boxes_behind_stationary_previews",
+    "ui::gpu::tests::native_clips_match_mask_pixels_for_overlapping_translucent_cards",
+    "ui::gpu::tests::workflow_cards_retain_drawing_during_motion_and_refresh_changed_content",
 )
 
 

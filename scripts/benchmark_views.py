@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Measure many-window view changes in a private Xvfb/niri desktop.
+"""Measure view changes and camera motion in a private nested niri desktop.
 
-Requires Python GTK 4 and Xvfb; verification uses Pillow, grim and xdotool.
-Never touches the live desktop.
+Defaults to an isolated Xvfb session. The optional Wayland backend opens a
+window on the host desktop and requires it to remain visible for valid timings.
+Requires Python GTK 4; verification also uses Pillow, grim and xdotool.
 """
 import argparse
 import json
 import os
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -49,21 +51,37 @@ def run(args):
     with tempfile.TemporaryDirectory(prefix="flowwm-views-", dir=os.environ.get("XDG_RUNTIME_DIR")) as temporary, (args.output.with_suffix(".log")).open("w") as log:
         runtime = Path(temporary)
         env = os.environ.copy()
-        env.pop("WAYLAND_DISPLAY", None)
+        if args.backend == "x11":
+            env.pop("WAYLAND_DISPLAY", None)
         env.pop("NIRI_SOCKET", None)
         env.update(XDG_RUNTIME_DIR=temporary, FLOWWM_CONFIG_DIR=str(runtime / "config"), GTK_A11Y="none")
         env["PATH"] = str(args.flowwm.resolve().parent) + os.pathsep + env["PATH"]
+        profiled = set()
+        def launch(command, name):
+            profile = args.profile and name == "shell"
+            if profile:
+                command = ["perf", "record", "--event", "cycles:u", "--call-graph", "dwarf", "--user-callchains", "--freq", "199", "--mmap-pages", "64",
+                           "--output", str(args.output.with_suffix(f".{name}.perf.data")), "--", *command]
+            child = subprocess.Popen(command, env=env, stdout=log, stderr=log, start_new_session=profile)
+            children.append(child)
+            if profile:
+                profiled.add(child.pid)
+            return child
         try:
-            xvfb = subprocess.Popen(["Xvfb", "-displayfd", "1", "-screen", "0", "1600x1000x24", "-nolisten", "tcp", "-ac"], stdout=subprocess.PIPE, stderr=log)
-            children.append(xvfb)
-            env["DISPLAY"] = ":" + xvfb.stdout.readline().decode().strip()
-            compositor = subprocess.Popen([str(args.compositor.resolve()), "--config", str(ROOT / "config/nested.kdl")], env=env, stdout=log, stderr=log)
-            children.append(compositor)
+            if args.backend == "x11":
+                xvfb = subprocess.Popen(["Xvfb", "-displayfd", "1", "-screen", "0", "1600x1000x24", "-nolisten", "tcp", "-ac"], stdout=subprocess.PIPE, stderr=log)
+                children.append(xvfb)
+                env["DISPLAY"] = ":" + xvfb.stdout.readline().decode().strip()
+            else:
+                # The host socket must stay absolute when changing XDG_RUNTIME_DIR.
+                env["WAYLAND_DISPLAY"] = str(Path(os.environ["XDG_RUNTIME_DIR"]) / os.environ["WAYLAND_DISPLAY"])
+                env.pop("DISPLAY", None)
+            compositor = launch([str(args.compositor.resolve()), "--config", str(ROOT / "config/nested.kdl")], "compositor")
             niri = wait(lambda: next(runtime.glob("niri.*.sock"), None), compositor)
             env.update(NIRI_SOCKET=str(niri), WAYLAND_DISPLAY=niri.name.split(".")[1], GDK_BACKEND="wayland")
             from runtime import start as start_runtime
             start_runtime(args.flowwm.resolve(), runtime, env, children, log)
-            children.append(subprocess.Popen([str(args.flowwm.resolve()), "--data-dir", str(runtime / "data"), "start", "--dms", "--background"], env=env, stdout=log, stderr=log))
+            launch([str(args.flowwm.resolve()), "--data-dir", str(runtime / "data"), "start", "--dms", "--background"], "shell")
             flow = runtime / "flowwm.sock"
             wait(lambda: request(flow, {"action": "catalog"}), compositor)
             def ui(action, **kw):
@@ -77,10 +95,18 @@ def run(args):
             children.append(subprocess.Popen([sys.executable, __file__, "--clients", str(args.windows)], env=env, stdout=log, stderr=log))
             wait(lambda: len(request(niri, "Windows")["Windows"]) == args.windows, compositor)
             wait(lambda: len(request(flow, {"action": "catalog"})["nodes"]) >= args.windows, compositor)
+            for index in range(args.nodes):
+                subprocess.run([str(args.flowwm.resolve()), "add", "constant", f"Graph probe {index:03}"], env=env, stdout=log, stderr=log, check=True)
+            if args.nodes:
+                wait(lambda: len(request(flow, {"action": "catalog"})["nodes"]) >= args.windows + args.nodes, compositor)
             time.sleep(0.4)
             # Warm both render paths and retained card metadata.
             ui("nodes")
             wait(lambda: count("transition_open") > 0, compositor)
+            if args.backend == "wayland" and perf()["transition_open"]["mean_ms"] > 500:
+                raise RuntimeError("The host is throttling the nested desktop. Keep its window visible while benchmarking, or use --backend x11.")
+            if args.nodes:
+                ui("arrange")
             ui("fit")
             time.sleep(0.4)
             ui("windows")
@@ -93,7 +119,21 @@ def run(args):
                 completed = count("transition_close")
                 ui("windows")
                 wait(lambda: count("transition_close") > completed and not rows(), compositor)
-            result = {"windows": args.windows, "samples": args.samples, "view_changes": perf()}
+            result = {"windows": args.windows, "nodes": args.nodes, "samples": args.samples, "backend": args.backend, "view_changes": perf()}
+            if args.camera:
+                ui("nodes")
+                wait(lambda: rows(), compositor)
+                time.sleep(0.4)
+                request(flow, {"action": "performance", "reset": True})
+                for _ in range(args.samples):
+                    ui("zoom_in")
+                    time.sleep(0.3)
+                    ui("zoom_out")
+                    time.sleep(0.3)
+                    for direction in ("left", "right"):
+                        ui("navigate", direction=direction)
+                        time.sleep(0.3)
+                result["camera_motion"] = perf()
             args.output.write_text(json.dumps(result, indent=2) + "\n")
             if args.verify:
                 ui("nodes")
@@ -333,9 +373,12 @@ def run(args):
         finally:
             for child in reversed(children):
                 if child.poll() is None:
-                    child.terminate()
+                    if child.pid in profiled:
+                        os.killpg(child.pid, signal.SIGINT)
+                    else:
+                        child.terminate()
                     try:
-                        child.wait(timeout=5)
+                        child.wait(timeout=15 if child.pid in profiled else 5)
                     except subprocess.TimeoutExpired:
                         child.kill()
                         child.wait(timeout=5)
@@ -345,15 +388,27 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--clients", type=int)
     parser.add_argument("--windows", type=int, default=40)
+    parser.add_argument("--nodes", type=int, default=0, help="add workflow cards to the window fixture")
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--flowwm", type=Path, default=ROOT / "target/debug/flowwm")
     parser.add_argument("--compositor", type=Path, default=ROOT / "target/niri/debug/niri")
     parser.add_argument("--verify", action="store_true")
+    parser.add_argument("--backend", choices=("x11", "wayland"), default="x11", help="Wayland uses the host GPU; Xvfb provides isolated software rendering")
+    parser.add_argument("--camera", action="store_true", help="also measure animated zoom and navigation")
+    parser.add_argument("--profile", action="store_true", help="sample shell CPU stacks with perf")
     parser.add_argument("--output", type=Path, default=ROOT / "artifacts/view-benchmark/report.json")
     args = parser.parse_args()
     if args.clients:
         clients(args.clients)
     else:
+        if args.backend == "wayland" and not all(os.environ.get(key) for key in ("WAYLAND_DISPLAY", "XDG_RUNTIME_DIR")):
+            parser.error("--backend wayland requires a host Wayland session")
+        if args.verify and args.backend != "x11":
+            parser.error("--verify requires --backend x11 for isolated pointer/keyboard input")
+        if args.verify and args.nodes:
+            parser.error("--verify requires --nodes 0 for its window arrangement assertions")
+        if not 0 <= args.nodes <= 200:
+            parser.error("--nodes must be 0..200")
         if not 1 <= args.windows <= 200 or not 1 <= args.samples <= 30:
             parser.error("--windows must be 1..200 and --samples 1..30")
         run(args)

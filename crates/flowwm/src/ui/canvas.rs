@@ -184,6 +184,8 @@ pub struct View {
     pub chrome: f64,
     pub insets: [i32; 4],
     pub output_size: (f64, f64),
+    /// Device pixels per logical pixel on the canvas's current output.
+    pub output_scale: f64,
     pub transparent: bool,
     pub morphing: bool,
     pub previews: HashMap<String, Position>,
@@ -230,6 +232,7 @@ impl Default for View {
             chrome: 1.0,
             insets: [0; 4],
             output_size: (1920.0, 1080.0),
+            output_scale: 1.,
             transparent: false,
             morphing: false,
             previews: HashMap::new(),
@@ -778,11 +781,24 @@ fn make_scoped(
     let publisher = super::native::Publisher::default();
     let on_map = publisher.clone();
     let scoped = RefCell::new(None::<(u64, State)>);
+    let camera_frame = Cell::new(None::<(u64, std::time::Instant)>);
     let area = super::surface::Surface::new(move |area, snapshot, width, height| {
         let started = std::time::Instant::now();
         let state = e.snapshot();
         let revision = state.revision;
         let render = |state: &State, view: &mut View| {
+            view.output_scale = area.scale_factor() as f64;
+            let now = std::time::Instant::now();
+            if view.camera_target.is_some() && !view.morphing {
+                if let Some((serial, previous)) =
+                    camera_frame.replace(Some((view.motion_serial, now)))
+                    && serial == view.motion_serial
+                {
+                    e.performance.record("camera_frame_gap", now - previous);
+                }
+            } else {
+                camera_frame.set(None);
+            }
             if view.animate_borders(state, std::time::Instant::now()) {
                 area.animate();
             }
@@ -855,6 +871,30 @@ fn make_scoped(
         e.performance.record("canvas_draw", started.elapsed());
     });
     area.connect_map(move |_| on_map.invalidate());
+    let monitored = Cell::new(false);
+    let performance = engine.performance.clone();
+    area.connect_map(move |area| {
+        if monitored.replace(true) {
+            return;
+        }
+        let Some(clock) = area.frame_clock() else {
+            return;
+        };
+        let started = Rc::new(Cell::new(None::<std::time::Instant>));
+        let before = started.clone();
+        let weak = area.downgrade();
+        clock.connect_before_paint(move |_| {
+            if weak.upgrade().is_some_and(|area| area.is_mapped()) {
+                before.set(Some(std::time::Instant::now()));
+            }
+        });
+        let performance = performance.clone();
+        clock.connect_after_paint(move |_| {
+            if let Some(started) = started.take() {
+                performance.record("gtk_paint", started.elapsed());
+            }
+        });
+    });
     area.set_cursor_from_name(Some("default"));
     let click = gtk::GestureClick::new();
     click.set_button(1);
@@ -1700,12 +1740,14 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
         let _ = c.paint();
     }
     let _ = c.restore();
-    let _ = c.save();
-    c.push_group();
-    draw_grid(c, view);
-    let _ = c.pop_group_to_source();
-    let _ = c.paint_with_alpha(0.32 * view.chrome);
-    let _ = c.restore();
+    if !view.gpu {
+        let _ = c.save();
+        c.push_group();
+        draw_grid(c, view);
+        let _ = c.pop_group_to_source();
+        let _ = c.paint_with_alpha(0.32 * view.chrome);
+        let _ = c.restore();
+    }
     let _ = c.save();
     c.translate(view.pan_x, view.pan_y);
     c.scale(view.zoom, view.zoom);
@@ -1776,7 +1818,7 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
     let _ = c.paint_with_alpha(view.chrome);
     let ordered = ordered_nodes(state);
     for node in &nodes {
-        if view.gpu && (node.window_id.is_some() || node.desktop_window) {
+        if view.gpu {
             continue;
         }
         let p = view.position(node);
@@ -1919,6 +1961,13 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
 
 pub(super) fn has_foreground(view: &View) -> bool {
     matches!(view.drag, Some(Drag::Box { .. } | Drag::Cut { .. }))
+}
+
+pub(super) fn has_graph_layer(state: &State, view: &View) -> bool {
+    !state.connections.is_empty()
+        || !super::regions::layout(state, view).is_empty()
+        || workspace_empty(state)
+        || matches!(view.drag, Some(Drag::Pin { .. }))
 }
 
 pub(super) fn draw_foreground(c: &Context, view: &View) {
@@ -2344,7 +2393,7 @@ pub(super) fn draw_pin_markers(
     }
 }
 
-fn type_color(ty: &crate::graph::Type, theme: &Theme) -> (f64, f64, f64) {
+pub(super) fn type_color(ty: &crate::graph::Type, theme: &Theme) -> (f64, f64, f64) {
     use crate::graph::Type;
     match ty {
         Type::Bool => (0.92, 0.66, 0.42),
