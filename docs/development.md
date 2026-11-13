@@ -34,8 +34,9 @@ interfaces](runtime.md) for the current native contracts.
 Vox is vendored at the validated fixed-width integer revision; no sibling checkout
 is required.
 
-Port hovers follow the editor-hover layout: a monospace signature with highlighted
-types and record fields, a separate description, and a muted endpoint footer.
+Port hovers show a JetBrains Mono signature with highlighted types and record
+fields directly on the tooltip surface, a separate description, and a muted
+JetBrains Mono endpoint footer. Systems without that font use monospace.
 The canvas prepares lexer tokens and Pango attributes with each changed port's
 documentation, using the same vendored Vox lexer as Vox LSP's semantic tokens.
 Unchanged documentation survives runtime value updates and camera movement;

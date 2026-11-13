@@ -70,9 +70,9 @@ dropdown button { border: 1px solid @flow_outline; background: @flow_surface_hig
 .graph-surface { background: transparent; }
 tooltip { background: @flow_surface_high; color: @flow_text; border: 1px solid alpha(@flow_outline, 0.8); border-radius: 8px; padding: 0; box-shadow: 0 4px 16px alpha(black, 0.2); }
 .port-tooltip label { padding: 10px 12px; }
-.port-tooltip .port-tooltip-signature { font-family: monospace; font-size: 13px; background: @flow_surface_low; border-radius: 7px 7px 0 0; border-bottom: 1px solid alpha(@flow_outline, 0.55); }
+.port-tooltip .port-tooltip-signature { font-family: "JetBrains Mono", monospace; font-size: 13px; font-weight: 400; }
 .port-tooltip .port-tooltip-description { font-size: 13px; color: @flow_text; }
-.port-tooltip .port-tooltip-context { font-family: monospace; font-size: 11px; color: alpha(@flow_muted, 0.8); padding-top: 0; }
+.port-tooltip .port-tooltip-context { font-family: "JetBrains Mono", monospace; font-size: 11px; color: alpha(@flow_muted, 0.8); padding-top: 0; }
 .flow-chat, .flow-search { border-radius: 22px; }
 .chat-body { padding: 16px 20px; border-radius: 22px; background: @flow_surface_low; }
 .chat-entry { border-radius: 18px; padding: 10px 14px; background: @flow_surface; }
