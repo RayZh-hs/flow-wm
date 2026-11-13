@@ -1,31 +1,6 @@
 use super::collapse::Rect;
-use gtk::prelude::*;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
-
-pub fn fade_in(widget: &impl IsA<gtk::Widget>, duration_ms: u32) {
-    if duration_ms == 0 {
-        widget.set_opacity(1.);
-        return;
-    }
-    widget.set_opacity(0.);
-    let started = std::cell::Cell::new(None);
-    // Start on the first frame: mapping and cold font loading can outlast a short fade.
-    widget.add_tick_callback(move |widget, clock| {
-        let now = clock.frame_time();
-        let start = started.get().unwrap_or_else(|| {
-            started.set(Some(now));
-            now
-        });
-        let progress = (now - start) as f64 / (duration_ms as f64 * 1000.);
-        widget.set_opacity(ease_out(progress));
-        if progress >= 1. {
-            gtk::glib::ControlFlow::Break
-        } else {
-            gtk::glib::ControlFlow::Continue
-        }
-    });
-}
 
 /// A retargetable fade always starts at its currently displayed value.
 #[derive(Clone)]

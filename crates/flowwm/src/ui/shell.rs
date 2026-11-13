@@ -3649,6 +3649,9 @@ impl Shell {
             .into_iter()
             .find(|w| w.has_css_class("row-settings-window"))
         {
+            if let Some(popup) = dialog.child().and_downcast::<super::popup::Popup>() {
+                popup.reopen();
+            }
             dialog.present();
             return;
         }
@@ -3676,7 +3679,7 @@ impl Shell {
         let dialog = self.dialog("Row settings", 520, 560);
         dialog.add_css_class("row-settings-window");
         dialog.set_resizable(false);
-        let root = column(16);
+        let root = column(12);
         root.add_css_class("row-settings-body");
         let heading = gtk::CenterBox::new();
         let icon = gtk::Image::from_icon_name("emblem-system-symbolic");
@@ -3701,6 +3704,8 @@ impl Shell {
         close.connect_clicked(move |_| d.close());
         heading.set_end_widget(Some(&close));
         root.append(&heading);
+        let sections = column(2);
+        root.append(&sections);
         let mut workspaces: Vec<_> = runtime
             .workspaces
             .definitions()
@@ -3734,8 +3739,9 @@ impl Shell {
         }
         let section = column(8);
         section.add_css_class("row-settings-section");
+        section.add_css_class("first");
         field(&section, "Owning workspace", &workspace);
-        root.append(&section);
+        sections.append(&section);
         let pwd = entry(overrides.get("pwd").map(String::as_str).unwrap_or(""));
         pwd.set_placeholder_text(value["definitions"]["pwd"]["default"].as_str());
         pwd.set_hexpand(true);
@@ -3750,7 +3756,7 @@ impl Shell {
         let section = column(8);
         section.add_css_class("row-settings-section");
         field(&section, "Working directory", &directory);
-        root.append(&section);
+        sections.append(&section);
         let custom: Env = overrides
             .iter()
             .filter(|(k, _)| k.as_str() != "pwd")
@@ -3765,6 +3771,7 @@ impl Shell {
             .build();
         let section = column(8);
         section.add_css_class("row-settings-section");
+        section.add_css_class("last");
         field(&section, "Row variables", &variables_scroll);
         let hint = label(
             "New nodes receive FLOWWM_ROWSET_<NAME>. Running nodes keep their environment.",
@@ -3773,7 +3780,7 @@ impl Shell {
         hint.set_wrap(true);
         hint.set_max_width_chars(50);
         section.append(&hint);
-        root.append(&section);
+        sections.append(&section);
         let error = label("", "row-settings-error");
         error.set_wrap(true);
         error.set_visible(false);
@@ -3841,16 +3848,13 @@ impl Shell {
             }
         });
         dialog.set_default_widget(Some(&save));
-        dialog.set_child(Some(&root));
         let (_, natural_height, _, _) = root.measure(gtk::Orientation::Vertical, 520);
         dialog.set_default_size(520, natural_height);
-        let weak = self.weak.clone();
-        root.connect_map(move |body| {
-            let duration = weak
-                .upgrade()
-                .map_or(0, |s| s.view.borrow().theme.popup_open_ms);
-            super::motion::fade_in(body, duration);
-        });
+        let (open_ms, close_ms) = {
+            let view = self.view.borrow();
+            (view.theme.popup_open_ms, view.theme.popup_close_ms)
+        };
+        super::popup::Popup::attach(&dialog, &root, open_ms, close_ms);
         dialog.present();
         focus.grab_focus();
     }

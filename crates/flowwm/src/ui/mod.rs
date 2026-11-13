@@ -9,6 +9,7 @@ mod layout;
 mod motion;
 mod native;
 mod parameters;
+mod popup;
 mod shell;
 mod surface;
 pub mod theme;

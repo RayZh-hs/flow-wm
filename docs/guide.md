@@ -174,16 +174,20 @@ and add row variables, then save. Running nodes keep their existing environment.
 The older `flowwm workflows` manager remains available for creating workflows,
 references, and ownership changes.
 
-Row settings uses Dux's popup shape, typography, surface colors, and transparency.
+Row settings uses Dux's popup shape, typography, surface colors, and grouped rows.
+Its background is opaque by default so windows and workspace lines stay hidden.
 Clipboard history opens above the editor and returns keyboard focus when dismissed.
 Pressing Win+L again keeps the existing editor and its unsaved changes.
 
-Row settings fades in over 50 ms, starting with its first rendered frame even
-after a fresh login. The fade follows FlowWM's motion preferences independently
-of GTK's session animation setting.
-Set `flow { popup-open-ms 100; }` in `config.kdl` to change the duration, or use
-zero to open it immediately. Niri's animation off/slowdown settings and Dux's
-reduced-motion setting apply to the fade.
+Row settings fades and scales in over 180 ms and out over 140 ms. Closing with
+Escape, Cancel, Save, or the close button keeps the surface mapped until the exit
+finishes. Win+L during closing reverses the transition and preserves the editor.
+The transitions start with the first rendered frame after a fresh login and
+follow FlowWM's motion preferences independently of GTK's session animation setting.
+Set `popup-open-ms` and `popup-close-ms` inside `flow` in `config.kdl` to change
+their durations; zero disables the corresponding transition. `popup-opacity`
+controls the native panel background, from 0 to 1. Niri's animation off/slowdown
+settings and Dux's reduced-motion setting apply to both transitions.
 
 Row variables become `FLOWWM_ROWSET_<NAME>` on top of the session environment.
 The builtin `pwd` setting defaults to home and sets supported terminals' startup
@@ -230,7 +234,9 @@ Global `binds` use native niri actions and properties such as `repeat`, `allow-w
 flow {
     terminal "alacritty"
     motion-ms 220
-    popup-open-ms 50
+    popup-open-ms 180
+    popup-close-ms 140
+    popup-opacity 1.0
     removal-ms 180
     inertia-decay 10.0
     arrange-wrap-zoom 0.4

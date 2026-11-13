@@ -14,6 +14,10 @@ pub struct Flow {
     #[knuffel(child, unwrap(argument))]
     pub popup_open_ms: Option<u32>,
     #[knuffel(child, unwrap(argument))]
+    pub popup_close_ms: Option<u32>,
+    #[knuffel(child, unwrap(argument))]
+    pub popup_opacity: Option<f64>,
+    #[knuffel(child, unwrap(argument))]
     pub removal_ms: Option<u32>,
     #[knuffel(child, unwrap(argument))]
     pub inertia_decay: Option<f64>,
@@ -56,6 +60,8 @@ impl crate::utils::MergeWith<Flow> for Flow {
             desktop_save_interval_ms,
             motion_ms,
             popup_open_ms,
+            popup_close_ms,
+            popup_opacity,
             removal_ms,
             inertia_decay,
             arrange_wrap_zoom,
@@ -77,6 +83,12 @@ impl crate::utils::MergeWith<Flow> for Flow {
 
 impl Flow {
     pub fn validate(&self) -> Result<(), String> {
+        if self
+            .popup_opacity
+            .is_some_and(|v| !v.is_finite() || !(0. ..=1.).contains(&v))
+        {
+            return Err("flow popup-opacity must be between 0 and 1".into());
+        }
         if self
             .arrange_wrap_zoom
             .is_some_and(|v| !v.is_finite() || !(0. ..=1.).contains(&v))
@@ -176,7 +188,7 @@ mod tests {
         use crate::utils::MergeWith;
         let mut flow = crate::Config::parse_mem(r##"flow { motion-ms 200; running-color "#71c68c"; running-opacity 0.17; running-width 0.0; binds { r action="run"; Ctrl+r action="stop"; }; }"##).unwrap().flow;
         let override_flow = crate::Config::parse_mem(
-            r#"flow { removal-ms 140; popup-open-ms 70; running-opacity 0.25; arrange-wrap-zoom 0.4; desktop-save-interval-ms 500; binds { r action="none"; }; }"#,
+            r#"flow { removal-ms 140; popup-open-ms 70; popup-close-ms 60; popup-opacity 0.9; running-opacity 0.25; arrange-wrap-zoom 0.4; desktop-save-interval-ms 500; binds { r action="none"; }; }"#,
         )
         .unwrap()
         .flow;
@@ -184,6 +196,8 @@ mod tests {
         assert_eq!(flow.motion_ms, Some(200));
         assert_eq!(flow.removal_ms, Some(140));
         assert_eq!(flow.popup_open_ms, Some(70));
+        assert_eq!(flow.popup_close_ms, Some(60));
+        assert_eq!(flow.popup_opacity, Some(0.9));
         assert_eq!(flow.running_opacity, Some(0.25));
         assert_eq!(flow.running_width, Some(0.0));
         assert_eq!(flow.arrange_wrap_zoom, Some(0.4));
@@ -192,6 +206,8 @@ mod tests {
         assert_eq!(binds.len(), 2);
         assert!(binds.iter().any(|b| b.key == "r" && b.action == "none"));
         for text in [
+            r#"flow { popup-opacity -0.1; }"#,
+            r#"flow { popup-opacity 1.1; }"#,
             r#"flow { inertia-decay 0.0; }"#,
             r#"flow { running-color "green"; }"#,
             r#"flow { running-opacity -0.1; }"#,

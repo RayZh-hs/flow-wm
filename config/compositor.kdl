@@ -202,7 +202,9 @@ binds {
 flow {
     terminal "alacritty"
     motion-ms 220
-    popup-open-ms 50
+    popup-open-ms 180
+    popup-close-ms 140
+    popup-opacity 1.0
     removal-ms 180
     inertia-decay 10.0
     arrange-wrap-zoom 0.4

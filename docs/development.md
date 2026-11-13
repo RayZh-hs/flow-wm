@@ -115,9 +115,10 @@ and its graph data are untouched.
 
 `python3 scripts/smoke_row_settings.py` checks the top-bar and Win+L entry points,
 row settings and Env editors, and command/application environment inheritance.
-It also captures intermediate popup frames before and after a shell restart with
-GTK animations disabled, checks clipboard stacking and keyboard focus using the
-real Dux modal, and verifies that repeated Win+L preserves the existing editor.
+It also captures intermediate enter and exit frames at the production durations
+before and after a shell restart with GTK animations disabled, checks opacity
+against translucent Dux preferences, tests reopening during exit, and checks
+clipboard stacking and keyboard focus using the real Dux modal.
 It requires the debug builds, Quickshell, Xvfb, xdotool, grim, gsettings, and Pillow.
 Its private settings backend and sockets leave the live session untouched;
 captures and logs go under `artifacts/row-settings`.

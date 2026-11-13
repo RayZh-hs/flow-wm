@@ -79,7 +79,10 @@ def main():
             environment.pop(name, None)
         config = runtime / "config"
         config.mkdir()
-        (config / "config.kdl").write_text('flow { popup-open-ms 400; }\n')
+        # Exercise the production durations, including an existing profile without popup keys.
+        (config / "config.kdl").write_text('')
+        (config / "dms").mkdir()
+        (config / "dms/settings.json").write_text(json.dumps({"currentThemeName":"dynamic", "popupTransparency":0.34, "radiusStrength":38, "fontScale":1.04}))
         # The shell's configured motion must survive toolkit settings restored at login.
         (config / "gtk-4.0").mkdir()
         (config / "gtk-4.0/settings.ini").write_text('[Settings]\ngtk-enable-animations=false\n')
@@ -100,6 +103,7 @@ def main():
             niri = wait(lambda: next(runtime.glob("niri.*.sock"), None), compositor)
             environment.update(NIRI_SOCKET=str(niri), WAYLAND_DISPLAY=niri.name.split(".")[1])
             host = start(ROOT / "target/debug/flowwm", runtime, environment, children, log)
+            wait(lambda: request(runtime / "flowwm-desktop.sock", {"desktop_protocol":1,"command":"bindings"}).get("rows"), compositor)
             def start_shell():
                 child = subprocess.Popen([str(ROOT / "target/debug/flowwm"), "start", "--dms", "--background", "--host-socket", str(host)], env=environment, stdout=log, stderr=log)
                 children.append(child)
@@ -141,19 +145,35 @@ def main():
                     return same
                 wait(settled,compositor)
 
-            def open_with_fade(name):
+            def transition(name, opening, trigger):
                 frames = []
-                input("key", "super+l")
-                started = time.monotonic()
-                while time.monotonic() - started < 0.65:
+                for path in artifacts.glob(f"{name}-*.png"):
+                    path.unlink()
+                def frame():
                     path = artifacts / f"{name}-{len(frames):02}.png"
                     subprocess.run(["grim", "-o", "winit", str(path)], env=environment, check=True)
                     with Image.open(path) as screenshot:
                         frames.append(screenshot.convert("RGB"))
+                frame()
+                trigger()
+                if not opening:
+                    assert any(layer["namespace"] == "flowwm-dialog" for layer in layers()), "Popup disappeared before its exit animation"
+                started = time.monotonic()
+                while time.monotonic() - started < 0.55:
+                    frame()
                 sample = (frames[-1].width // 2, frames[-1].height // 2)
                 levels = [frame.getpixel(sample) for frame in frames]
-                assert len(set(levels)) >= 3, f"Popup did not fade after {name}: {levels}"
-                assert any(layer["namespace"] == "flowwm-dialog" and layer["layer"] == "Top" for layer in layers()), layers()
+                assert len(set(levels)) >= 3, f"Popup did not animate during {name}: {levels}"
+                if opening:
+                    assert any(layer["namespace"] == "flowwm-dialog" and layer["layer"] == "Top" for layer in layers()), layers()
+                else:
+                    assert not any(layer["namespace"] == "flowwm-dialog" for layer in layers()), "Popup stayed mapped after its exit animation"
+
+            def open_with_fade(name):
+                transition(name, True, lambda: input("key", "super+l"))
+
+            def close_with_fade(name, trigger=None):
+                transition(name, False, trigger or (lambda: input("key", "Escape")))
 
             assert catalog()["owning_workspace"] == "local:desktop"
             shell = runtime / "shell"
@@ -181,6 +201,10 @@ def main():
             wait(lambda: any(layer["namespace"] == "flowwm-dialog" for layer in layers()), compositor)
             capture("row-settings.png")
             ui("capture",path=str(artifacts / "row-settings-widget.png"))
+            def opaque_popup():
+                with Image.open(artifacts / "row-settings-widget.png") as screenshot:
+                    return screenshot.convert("RGBA").getpixel((screenshot.width // 2, 4))[3] == 255
+            wait(opaque_popup, compositor)
             # A second invocation preserves the current editor instead of stacking another one.
             input("key", "super+l")
             assert sum(layer["namespace"] == "flowwm-dialog" for layer in layers()) == 1
@@ -193,16 +217,33 @@ def main():
             input("key", "Escape")
             wait(lambda: not inspect_bar().get("clipboardOpen"), compositor)
             assert any(layer["namespace"] == "flowwm-dialog" for layer in layers())
-            input("key", "Escape")
-            wait(lambda: not any(layer["namespace"] == "flowwm-dialog" for layer in layers()), compositor)
+            close_with_fade("escape-exit")
             # Restart the shell against the same profile, as a new login would do.
             flowwm.terminate()
             flowwm.wait(timeout=5)
             flowwm = start_shell()
             wait(lambda: catalog().get("owning_workspace") == "local:desktop", flowwm)
             open_with_fade("after-restart")
-            input("key", "Escape")
-            wait(lambda: not any(layer["namespace"] == "flowwm-dialog" for layer in layers()), compositor)
+            close_with_fade("after-restart-exit")
+            # Reverse a closing popup without creating a duplicate or losing its editor.
+            ui("row_settings")
+            capture("before-reversal.png")
+            input("key", "Tab")
+            input("type", temporary)
+            input("key", "Escape", "super+l")
+            wait(lambda: any(layer["namespace"] == "flowwm-dialog" for layer in layers()), compositor)
+            capture("reopened-during-exit.png")
+            assert sum(layer["namespace"] == "flowwm-dialog" for layer in layers()) == 1
+            with Image.open(artifacts / "row-settings-widget.png") as popup, Image.open(artifacts / "row-settings.png") as screen:
+                right = (screen.width + popup.width) / 2
+                top = (screen.height - popup.height) / 2
+                bottom = top + popup.height
+            close_with_fade("reversal-save-exit", lambda: input("mousemove", round(right - 44), round(bottom - 31), "click", "--delay", 0, 1))
+            assert command("row_settings", workflow=current)["settings"]["pwd"] == temporary
+            for name, x, y in [("cancel", right - 110, bottom - 31), ("close-button", right - 34, top + 29)]:
+                ui("row_settings")
+                capture(f"{name}-before.png")
+                close_with_fade(f"{name}-exit", lambda: input("mousemove", round(x), round(y), "click", "--delay", 0, 1))
             command("set_row_settings", workflow=current, settings={"pwd":temporary,"project":"smoke"})
             ui("row_settings")
             wait(lambda: any(layer["namespace"] == "flowwm-dialog" for layer in layers()), compositor)
@@ -246,7 +287,7 @@ def main():
             inherited = json.loads(recorded.read_text())
             assert inherited["MODE"] == "development" and inherited["FLOWWM_ROWSET_PROJECT"] == "smoke"
             assert "FLOWWM_ARG_COUNT" not in inherited
-            print("PASS: Win+L fades before/after restart with GTK animations off, clipboard stacking/focus, top-bar click, command/app Env launches and all Env editors")
+            print("PASS: default enter/exit animations before/after restart with GTK animations off, opaque surface, reopening during exit, clipboard stacking/focus, top-bar click, command/app Env launches and all Env editors")
             print("Screenshots:", artifacts)
         finally:
             for child in reversed(children):

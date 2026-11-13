@@ -59,6 +59,7 @@ pub struct Theme {
     pub font: String,
     pub motion_ms: u32,
     pub popup_open_ms: u32,
+    pub popup_close_ms: u32,
     pub removal_ms: u32,
     pub running: Color,
     pub running_opacity: f64,
@@ -81,11 +82,12 @@ impl Default for Theme {
             error: Color::parse("#f2b8b5").unwrap(),
             radius: 12.0,
             window_radius: 16.0,
-            popup_opacity: 1.0,
+            popup_opacity: flow.popup_opacity.unwrap_or(1.0),
             font_scale: 1.0,
             font: "sans-serif".into(),
             motion_ms: flow.motion_ms.unwrap_or(220),
-            popup_open_ms: flow.popup_open_ms.unwrap_or(50),
+            popup_open_ms: flow.popup_open_ms.unwrap_or(180),
+            popup_close_ms: flow.popup_close_ms.unwrap_or(140),
             removal_ms: flow.removal_ms.unwrap_or(180),
             running: flow
                 .running_color
@@ -171,6 +173,7 @@ impl Theme {
         {
             theme.motion_ms = 0;
             theme.popup_open_ms = 0;
+            theme.popup_close_ms = 0;
             theme.removal_ms = 0;
         }
         if let Some(font) = settings["fontFamily"].as_str().filter(|s| {
@@ -207,12 +210,6 @@ impl Theme {
             / 50.;
         self.radius = fixed.unwrap_or((12. * scale).round());
         self.window_radius = fixed.unwrap_or((16. * scale).round());
-        let opacity = if settings["floatingWindowSyncGlobal"].as_bool() == Some(false) {
-            &settings["floatingWindowTransparency"]
-        } else {
-            &settings["popupTransparency"]
-        };
-        self.popup_opacity = opacity.as_f64().unwrap_or(1.).clamp(0., 1.);
         self.font_scale = settings["fontScale"].as_f64().unwrap_or(1.).clamp(0.5, 3.);
     }
     pub fn desktop_insets() -> [i32; 4] {
@@ -280,6 +277,10 @@ impl Theme {
             &include_str!("style.css")
                 .replace("__RADIUS__", &format!("{}px", self.radius))
                 .replace("__WINDOW_RADIUS__", &format!("{}px", self.window_radius))
+                .replace(
+                    "__GROUP_INNER_RADIUS__",
+                    &format!("{}px", (self.radius / 3.).round()),
+                )
                 .replace("__POPUP_OPACITY__", &self.popup_opacity.to_string())
                 .replace(
                     "__FONT_SCALE__",
@@ -318,14 +319,17 @@ mod tests {
     }
 
     #[test]
-    fn popup_uses_dms_typography_and_floating_surface_preferences() {
-        let mut theme = Theme::default();
+    fn popup_uses_dms_typography_without_inheriting_an_unblurred_transparent_surface() {
+        let mut theme = Theme {
+            popup_opacity: 0.9,
+            ..Theme::default()
+        };
         let mut settings = serde_json::json!({"popupTransparency":0.34,"floatingWindowTransparency":0.8,"fontScale":1.04});
         theme.apply_popup_settings(&settings);
-        assert_eq!(theme.popup_opacity, 0.34);
+        assert_eq!(theme.popup_opacity, 0.9);
         settings["floatingWindowSyncGlobal"] = false.into();
         theme.apply_popup_settings(&settings);
-        assert_eq!(theme.popup_opacity, 0.8);
+        assert_eq!(theme.popup_opacity, 0.9);
         theme.font = "Google Sans Flex".into();
         let css = theme.css();
         assert!(css.contains("font-family: \"Google Sans Flex\""));
