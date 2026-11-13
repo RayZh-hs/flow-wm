@@ -23,6 +23,20 @@ DesktopWidgetInstanceSettings {
         onToggled: checked => root.updateConfig("showMediaPlayer", checked)
     }
 
+    SettingsToggleRow {
+        visible: !root.greeterInstance
+        text: I18n.tr("Volume")
+        checked: root.cfg.showVolume ?? true
+        onToggled: checked => root.updateConfig("showVolume", checked)
+    }
+
+    SettingsToggleRow {
+        visible: !root.greeterInstance
+        text: I18n.tr("Brightness")
+        checked: root.cfg.showBrightness ?? true
+        onToggled: checked => root.updateConfig("showBrightness", checked)
+    }
+
     SettingsSplitRow {
         title: I18n.tr("Weather")
         checked: root.cfg.showWeather ?? true

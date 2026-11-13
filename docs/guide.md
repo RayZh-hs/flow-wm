@@ -256,6 +256,8 @@ The extension observer discovers already running or explicitly addressed executa
 
 XDG directory overrides are respected. `FLOWWM_CONFIG_DIR` selects an explicit FlowWM configuration directory. Edit `config.kdl` directly: niri validates and reloads compositor settings and global bindings. Restart the graph service for graph bindings and motion changes. Reinstalling preserves this file; no binding generation step is needed.
 
+The lock screen's Status widget includes volume and brightness sliders. Its widget options let you toggle **Volume** and **Brightness** independently; these are stored as `showVolume` and `showBrightness` in the status instance's config under `dms/settings.json`. Volume controls use the default audio output and support mute, and brightness follows the display's pinned devices or the default brightness device. Controls appear when the corresponding hardware is available. The lock-screen layout preview keeps them inactive. Fresh profiles also allow volume and brightness keys while locked. For an existing profile, add `allow-when-locked=true` to the `XF86MonBrightnessUp` and `XF86MonBrightnessDown` bindings in `config.kdl` to enable the brightness keys while locked.
+
 Global `binds` use native niri actions and properties such as `repeat`, `allow-when-locked`, `allow-inhibiting`, and `cooldown-ms`. Set `scope="nodes"` on a keyboard binding to activate it only while the native node canvas has keyboard focus; window peeks and shell dialogs keep their application shortcuts. Bindings default to `scope="global"`. The `flow` section configures the canvas:
 
 ```kdl

@@ -193,8 +193,8 @@ binds {
     XF86AudioStop hotkey-overlay-title="Stop media" repeat=false allow-when-locked=true { spawn-sh "playerctl stop"; }
     XF86AudioPrev hotkey-overlay-title="Previous track" repeat=false allow-when-locked=true { spawn-sh "playerctl previous"; }
     XF86AudioNext hotkey-overlay-title="Next track" repeat=false allow-when-locked=true { spawn-sh "playerctl next"; }
-    XF86MonBrightnessUp hotkey-overlay-title="Increase brightness" repeat=true { spawn "brightnessctl" "--class=backlight" "set" "+10%"; }
-    XF86MonBrightnessDown hotkey-overlay-title="Decrease brightness" repeat=true { spawn "brightnessctl" "--class=backlight" "set" "10%-"; }
+    XF86MonBrightnessUp hotkey-overlay-title="Increase brightness" repeat=true allow-when-locked=true { spawn "brightnessctl" "--class=backlight" "set" "+10%"; }
+    XF86MonBrightnessDown hotkey-overlay-title="Decrease brightness" repeat=true allow-when-locked=true { spawn "brightnessctl" "--class=backlight" "set" "10%-"; }
     Mod+Return repeat=false allow-inhibiting=false hotkey-overlay-title="Run selection / open terminal" { spawn "flowwm" "send" "{\"action\":\"ui\",\"command\":{\"action\":\"run_selected\"}}"; }
     Mod+Q repeat=false allow-inhibiting=false hotkey-overlay-title="Stop selection / close window" { spawn "flowwm" "send" "{\"action\":\"ui\",\"command\":{\"action\":\"stop_selected\"}}"; }
 }
