@@ -339,5 +339,64 @@ mod tests {
         assert!(content.signature.wraps());
         assert_eq!(content.signature.wrap_mode(), pango::WrapMode::WordChar);
         tooltip.set_custom(gtk::Widget::NONE);
+
+        // Some desktop themes shadow tooltip text. Pango foreground spans can
+        // recolor those shadows, making Regular glyphs look doubled and bold.
+        let theme_shadow = gtk::CssProvider::new();
+        theme_shadow.load_from_string(".tooltip-shadow-fixture { text-shadow: 0 1px black; }");
+        gtk::style_context_add_provider_for_display(
+            &gtk::gdk::Display::default().unwrap(),
+            &theme_shadow,
+            gtk::STYLE_PROVIDER_PRIORITY_THEME + 1,
+        );
+        let fixture = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        fixture.add_css_class("tooltip-shadow-fixture");
+        fixture.append(&content.root);
+        let window = gtk::Window::new();
+        window.set_child(Some(&fixture));
+        window.present();
+        let paintable = gtk::WidgetPaintable::new(Some(&content.root));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let scene = loop {
+            while glib::MainContext::default().pending() {
+                glib::MainContext::default().iteration(false);
+            }
+            let snapshot = gtk::Snapshot::new();
+            paintable.snapshot(
+                &snapshot,
+                content.root.width() as f64,
+                content.root.height() as f64,
+            );
+            if let Some(scene) = snapshot.to_node() {
+                break scene;
+            }
+            assert!(std::time::Instant::now() < deadline, "tooltip must render");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        let serialized = scene.serialize();
+        assert!(
+            !String::from_utf8_lossy(serialized.as_ref()).contains("shadow"),
+            "port text must suppress inherited theme shadows"
+        );
+        let has_jetbrains = content
+            .signature
+            .pango_context()
+            .list_families()
+            .iter()
+            .any(|family| family.name() == "JetBrains Mono");
+        let mut runs = content.signature.layout().iter();
+        loop {
+            if let Some(run) = runs.run_readonly() {
+                let font = run.item().analysis().font().describe();
+                assert_eq!(font.weight(), pango::Weight::Normal);
+                if has_jetbrains {
+                    assert_eq!(font.family().as_deref(), Some("JetBrains Mono"));
+                }
+            }
+            if !runs.next_run() {
+                break;
+            }
+        }
+        window.destroy();
     }
 }

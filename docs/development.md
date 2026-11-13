@@ -37,6 +37,8 @@ is required.
 Port hovers show a JetBrains Mono signature with highlighted types and record
 fields directly on the tooltip surface, a separate description, and a muted
 JetBrains Mono endpoint footer. Systems without that font use monospace.
+Port labels disable inherited theme text shadows, which can render in the syntax
+span's foreground color and make regular glyphs appear doubled.
 The canvas prepares lexer tokens and Pango attributes with each changed port's
 documentation, using the same vendored Vox lexer as Vox LSP's semantic tokens.
 Unchanged documentation survives runtime value updates and camera movement;
