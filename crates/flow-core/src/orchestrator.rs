@@ -911,10 +911,7 @@ impl Orchestrator {
             .context("Node not found")?;
         let definition = self.registry.definition(&spec.type_id)?;
         ensure!(
-            !matches!(
-                definition.behavior,
-                Behavior::Source | Behavior::Application
-            ),
+            !matches!(definition.behavior, Behavior::Source),
             "This provider does not support manual invocation"
         );
         let workspace_def = self.state.workspaces.definition(workspace)?;
@@ -959,6 +956,17 @@ impl Orchestrator {
             .and_then(Value::as_object_mut)
         {
             inputs.remove("env");
+        }
+        if properties
+            .get("cwd")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+            && let Some(pwd) = self
+                .registry
+                .row_environment(&w.row_settings)?
+                .get("FLOWWM_ROWSET_PWD")
+        {
+            properties.insert("cwd".into(), json!(pwd));
         }
         let request = Invocation {
             environment,

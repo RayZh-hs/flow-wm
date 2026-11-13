@@ -639,9 +639,6 @@ impl DesktopClient {
     }
     fn run(&self, state: &State, id: &str, args: Value) -> Result<Value> {
         let node = state.node(id).context("Node not found")?;
-        if node.kind == NodeKind::Window {
-            return self.application_operation(id, "open");
-        }
         self.inner.host.command(Command::Run {
             workflow: node.workspace.clone().into(),
             node: id.into(),
@@ -851,7 +848,6 @@ impl DesktopClient {
                                 && matches!(
                                     d.behavior,
                                     flow_core::providers::Behavior::Source
-                                        | flow_core::providers::Behavior::Application
                                         | flow_core::providers::Behavior::Join
                                 )
                         })

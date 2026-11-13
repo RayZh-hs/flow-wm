@@ -123,6 +123,7 @@ pub fn fixture_with_provider_setup(
         .arg("--data-dir")
         .arg(&data)
         .env("FLOWWM_CONFIG_DIR", path.join("config"))
+        .env("FLOWWM_DESKTOP_SOCKET", &provider_socket)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .spawn()
@@ -206,6 +207,7 @@ pub fn fixture_with_provider_setup(
         .env("FLOWWM_HOST_SOCKET", &socket)
         .env("FLOWWM_DESKTOP_SOCKET", &provider_socket)
         .env("FLOWWM_CONFIG_DIR", path.join("config"))
+        .env("XDG_DATA_HOME", &data)
         .env_remove("NIRI_SOCKET")
         .stdin(Stdio::null())
         .stdout(Stdio::null());

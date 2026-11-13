@@ -110,6 +110,9 @@ impl Host {
                 control_socket: Some(socket),
                 cli: Some(worker.with_file_name("flowwm")),
                 messaging: Some(Arc::new(Mailbox(tx.clone()))),
+                applications: Some(Arc::new(crate::applications::Desktop(
+                    crate::applications::socket(),
+                ))),
             },
         )?;
         let node_types = Arc::new(

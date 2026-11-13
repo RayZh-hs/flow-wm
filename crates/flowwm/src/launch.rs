@@ -20,18 +20,22 @@ pub fn row_environment(host: &Client, workflow: &WorkflowId) -> Result<Env> {
     // Only desktop connections come from this process: keep the host's application
     // environment (including XDG paths outside Dux's private profile) and row settings.
     // Do this before evaluating a node's env input so explicit overrides still win.
+    refresh_desktop_environment(&mut env);
+    Ok(env)
+}
+
+pub fn refresh_desktop_environment(env: &mut Env) {
     let session = std::env::vars_os()
         .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
         .collect();
     refresh_session_environment(
-        &mut env,
+        env,
         &session,
         crate::config::flow()
             .session_environment
             .as_deref()
             .unwrap_or_default(),
     );
-    Ok(env)
 }
 
 fn refresh_session_environment(env: &mut Env, session: &Env, names: &[String]) {
@@ -109,6 +113,10 @@ pub fn command(arguments: &[String], env: &Env) -> Result<()> {
 }
 
 pub fn application(id: &str, env: &Env) -> Result<()> {
+    application_in(id, env, None)
+}
+
+pub fn application_in(id: &str, env: &Env, directory: Option<&std::path::Path>) -> Result<()> {
     let id = if id.ends_with(".desktop") {
         id.to_owned()
     } else {
@@ -123,10 +131,22 @@ pub fn application(id: &str, env: &Env) -> Result<()> {
     keyfile.load_from_file(filename, glib::KeyFileFlags::NONE)?;
     // D-Bus activation cannot supply a different environment for each launch.
     keyfile.set_boolean("Desktop Entry", "DBusActivatable", false);
+    let directory = directory
+        .map(std::fs::canonicalize)
+        .transpose()
+        .context("Working directory no longer exists")?;
+    let mut terminal_env = env.clone();
+    if let Some(directory) = &directory {
+        keyfile.set_string("Desktop Entry", "Path", &directory.to_string_lossy());
+        terminal_env.insert(
+            "FLOWWM_ROWSET_PWD".into(),
+            directory.to_string_lossy().into_owned(),
+        );
+    }
     let executable = entry.executable();
     let args = flow_host::config::load()?
         .row_settings
-        .terminal_arguments(&executable.to_string_lossy(), env);
+        .terminal_arguments(&executable.to_string_lossy(), &terminal_env);
     if !args.is_empty() {
         let commandline = format!(
             "{} {}",

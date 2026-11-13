@@ -17,6 +17,10 @@ pub fn is_session(type_id: &str) -> bool {
     matches!(type_id, TYPE_ID | TERMINAL_TYPE | "local.agent")
 }
 
+pub fn is_interactive(type_id: &str) -> bool {
+    type_id == TERMINAL_TYPE
+}
+
 const SCHEMA: &str = r#"{"type":"object","properties":{"outcome":{"type":"string","enum":["success","issue"]},"summary":{"type":"string"},"artifacts":{"type":"array","items":{"type":"string"}}},"required":["outcome","summary","artifacts"],"additionalProperties":false}"#;
 #[derive(Deserialize)]
 pub struct Config {
@@ -255,6 +259,12 @@ pub fn install(
     }
     impl ExecutionProvider for Sessions {
         fn resources(&self, invocation: &Invocation) -> Result<Vec<ResourceClaim>> {
+            if is_interactive(&invocation.type_id) {
+                return Ok(vec![ResourceClaim {
+                    key: format!("application:{}:{}", invocation.workflow, invocation.node),
+                    exclusive: true,
+                }]);
+            }
             Ok(vec![
                 ResourceClaim {
                     key: directory(invocation)
@@ -285,6 +295,9 @@ pub fn install(
             events: EventSink,
             output: Option<OutputSink>,
         ) -> Result<String> {
+            if is_interactive(&invocation.type_id) {
+                return crate::applications::invoke(invocation, &self.environment, events);
+            }
             let settings = harness::Harnesses::load(self.environment.config_directory.as_deref())?;
             let harness = settings
                 .select(text(&invocation.properties, "harness"))?
@@ -379,7 +392,13 @@ pub fn install(
                 owner: "agent_sessions".into(),
                 behavior: Behavior::Application,
                 capabilities: ["application".into()].into(),
-                inputs: vec![],
+                inputs: vec![
+                    Pin::new("in", event.clone()),
+                    Pin {
+                        default: Some(json!({})),
+                        ..Pin::new("env", Type::Env)
+                    },
+                ],
                 outputs: vec![
                     Pin::new(
                         "on_session_finish",
@@ -432,7 +451,13 @@ pub fn install(
                 owner: "agent_sessions".into(),
                 behavior: Behavior::Invoked,
                 capabilities: ["shell".into()].into(),
-                inputs: vec![Pin::new("in", event.clone())],
+                inputs: vec![
+                    Pin::new("in", event.clone()),
+                    Pin {
+                        default: Some(json!({})),
+                        ..Pin::new("env", Type::Env)
+                    },
+                ],
                 outputs: vec![
                     Pin::new("out", event.clone()),
                     Pin::new("failed", event),

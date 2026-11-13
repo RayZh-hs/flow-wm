@@ -143,6 +143,15 @@ restart.
 
 ## Application windows
 
+Applications created in Nodes view stay idle until Run is invoked manually or a
+signal reaches their Run input (`in`). Creating, loading, copying, or reading an
+application node never starts its application. Run opens a closed application and
+focuses its existing window when it is already open. Each launch uses the resolved
+Env input and inherits the owning row's **pwd** directory unless the node has an
+explicit working directory override. This applies to agent sessions as well.
+Recipes retain the application definition and directory settings, so their app
+nodes remain reusable in other rows.
+
 Window nodes have one built-in output: `on_exit(exit_code: UInt8)`, represented as
 `Signal[{exit_code: UInt8}]`. They do not inherit the workflow outputs Completed,
 Failed, or Output text. The exit payload contains exactly one field, `exit_code`;

@@ -46,7 +46,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::OpenOptions,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     os::{
         fd::AsRawFd,
         unix::{fs::OpenOptionsExt, net::UnixListener},
@@ -78,9 +78,7 @@ pub struct Binding {
     pub title: String,
 }
 pub fn socket() -> PathBuf {
-    std::env::var_os("FLOWWM_DESKTOP_SOCKET")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| crate::ipc::default_socket().with_file_name("flowwm-desktop.sock"))
+    flow_host::applications::socket()
 }
 pub fn bindings() -> Result<Bindings> {
     bindings_at(&socket())
@@ -233,8 +231,13 @@ pub fn run() -> Result<()> {
                 let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
                 let mut line = String::new();
                 let response = (|| -> Result<serde_json::Value> {
-                    BufReader::new(stream.try_clone()?).read_line(&mut line)?;
-                    ensure!(line.len() < 4096, "Provider request too large");
+                    BufReader::new(stream.try_clone()?)
+                        .take(1024 * 1024 + 1)
+                        .read_line(&mut line)?;
+                    ensure!(
+                        line.len() <= 1024 * 1024 && line.ends_with('\n'),
+                        "Provider request too large or incomplete"
+                    );
                     let request: serde_json::Value = serde_json::from_str(&line)?;
                     ensure!(
                         request["desktop_protocol"] == 1,
@@ -292,6 +295,59 @@ pub fn run() -> Result<()> {
                             .as_str()
                             .ok_or_else(|| anyhow::anyhow!("Application node is required"))?;
                         let bindings = shared.0.lock().unwrap().1.clone();
+                        if request["command"] == "launch" {
+                            let invocation: flow_core::providers::Invocation =
+                                serde_json::from_value(request["invocation"].clone())?;
+                            ensure!(invocation.node.0 == node, "Application node mismatch");
+                            let host = Client::new(flow_host::ipc::host_socket());
+                            let runtime = host.snapshot_as(Some(invocation.workflow.clone()))?;
+                            let workflow =
+                                runtime.lookup(&invocation.workflow, Some(&invocation.workflow))?;
+                            let spec = workflow.graph.node(node).ok_or_else(|| {
+                                anyhow::anyhow!("Application node is unavailable")
+                            })?;
+                            ensure!(
+                                spec.type_id == invocation.type_id,
+                                "Application type changed"
+                            );
+                            if let Some(binding) = bindings.applications.get(node) {
+                                DesktopApplications.open(&binding.window.to_string())?;
+                                return Ok(serde_json::Value::Null);
+                            }
+                            let mut env = invocation.environment.clone().unwrap_or_default();
+                            if !workflow
+                                .graph
+                                .connections
+                                .iter()
+                                .any(|edge| edge.target.node == node && edge.target.pin == "env")
+                            {
+                                crate::launch::refresh_desktop_environment(&mut env);
+                            }
+                            let mut spec = spec.clone();
+                            spec.flow.properties = invocation.properties;
+                            if flow_builtins::agent::is_interactive(&spec.type_id) {
+                                flow_builtins::agent::terminal::open_native(
+                                    Some(&crate::config::directory()),
+                                    &spec,
+                                    &env,
+                                )?;
+                            } else {
+                                let application = spec
+                                    .flow
+                                    .properties
+                                    .get("application")
+                                    .and_then(|v| v.as_str())
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!("Choose an application first")
+                                    })?;
+                                let cwd = flow_builtins::row_settings::directory(
+                                    &spec.flow.properties,
+                                    &env,
+                                );
+                                crate::launch::application_in(application, &env, Some(&cwd))?;
+                            }
+                            return Ok(serde_json::Value::Null);
+                        }
                         if let Some(binding) = bindings.applications.get(node) {
                             ensure!(
                                 request["token"] == binding.token
@@ -334,7 +390,7 @@ pub fn run() -> Result<()> {
                                     anyhow::anyhow!("Application node is unavailable")
                                 })?;
                             let spec = workflow.graph.node(node).unwrap();
-                            if spec.type_id == flow_builtins::agent::TERMINAL_TYPE {
+                            if flow_builtins::agent::is_interactive(&spec.type_id) {
                                 let env =
                                     crate::launch::node_environment(&host, &workflow.id, node)?;
                                 flow_builtins::agent::terminal::open_native(
@@ -347,12 +403,10 @@ pub fn run() -> Result<()> {
                             if flow_builtins::agent::is_session(&spec.type_id) {
                                 let env =
                                     crate::launch::node_environment(&host, &workflow.id, node)?;
-                                let cwd = spec
-                                    .flow
-                                    .properties
-                                    .get("cwd")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or(".");
+                                let cwd = flow_builtins::row_settings::directory(
+                                    &spec.flow.properties,
+                                    &env,
+                                );
                                 let title = spec
                                     .flow
                                     .properties
@@ -363,7 +417,7 @@ pub fn run() -> Result<()> {
                                     Some(&crate::config::directory()),
                                     node,
                                     title,
-                                    std::path::Path::new(cwd),
+                                    &cwd,
                                     &env,
                                 )?;
                                 return Ok(serde_json::Value::Null);
@@ -375,7 +429,9 @@ pub fn run() -> Result<()> {
                                 .and_then(|v| v.as_str())
                                 .ok_or_else(|| anyhow::anyhow!("Choose an application first"))?;
                             let env = crate::launch::node_environment(&host, &workflow.id, node)?;
-                            crate::launch::application(application, &env)?;
+                            let cwd =
+                                flow_builtins::row_settings::directory(&spec.flow.properties, &env);
+                            crate::launch::application_in(application, &env, Some(&cwd))?;
                         }
                         return Ok(serde_json::Value::Null);
                     }

@@ -18,8 +18,11 @@ impl Node {
         flow.properties.remove("_alert");
         flow.properties
             .insert("command".into(), serde_json::json!(self.command));
-        flow.properties
-            .insert("cwd".into(), serde_json::json!(self.cwd));
+        flow.properties.remove("cwd");
+        if !self.cwd.as_os_str().is_empty() {
+            flow.properties
+                .insert("cwd".into(), serde_json::json!(self.cwd));
+        }
         if self.kind == NodeKind::Agent {
             flow.properties
                 .entry("writable".into())

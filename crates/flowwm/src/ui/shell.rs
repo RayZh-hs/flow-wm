@@ -1863,6 +1863,9 @@ impl Shell {
         node.title = m.name.clone();
         node.command = m.command.clone();
         node.flow = m.flow.clone();
+        if node.kind == NodeKind::Window || flow_builtins::agent::is_session(&node.spec().type_id) {
+            node.cwd = PathBuf::new();
+        }
         if let Some(application) = application {
             node.title = application.name;
             node.flow
@@ -3425,6 +3428,9 @@ impl Shell {
         node.title = m.name.clone();
         node.command = m.command.clone();
         node.flow = m.flow.clone();
+        if node.kind == NodeKind::Window || flow_builtins::agent::is_session(&node.spec().type_id) {
+            node.cwd = PathBuf::new();
+        }
         if let Some((id, name, app_id)) = application {
             node.title = name;
             if !app_id.is_empty() {
@@ -3453,7 +3459,11 @@ impl Shell {
         let Some(node) = state.node(id).cloned() else {
             return;
         };
-        if node.status.active() && node.kind != NodeKind::Window && !node.desktop_window {
+        let supervised = flow_builtins::agent::is_session(&node.spec().type_id)
+            && !flow_builtins::agent::is_interactive(&node.spec().type_id);
+        if node.status.active()
+            && (supervised || (node.kind != NodeKind::Window && !node.desktop_window))
+        {
             self.show_error("Stop this node before changing its parameters.");
             return;
         }
@@ -3477,6 +3487,8 @@ impl Shell {
         root.append(&label(
             &if environment_node {
                 node.title.clone()
+            } else if flow_builtins::agent::is_session(&node.spec().type_id) {
+                "Agent session parameters".into()
             } else {
                 format!("{} parameters", node.kind.label())
             },
@@ -3486,9 +3498,28 @@ impl Shell {
         title.set_activates_default(true);
         field(&root, "Name", &title);
         let directory = entry(&node.cwd.to_string_lossy());
-        if (!node.kind.primitive() || matches!(node.kind, NodeKind::Vox | NodeKind::Python))
+        let inherit =
+            gtk::CheckButton::with_label("Inherit working directory from row settings (pwd)");
+        inherit.set_active(node.cwd.as_os_str().is_empty());
+        directory.set_sensitive(!inherit.is_active());
+        let row_pwd = self
+            .orchestrate(
+                flow_core::protocol::Command::RowSettings {
+                    workflow: node.workspace.clone().into(),
+                },
+                Some(node.workspace.clone()),
+            )
+            .ok()
+            .and_then(|value| value["effective"]["pwd"].as_str().map(str::to_owned));
+        directory.set_placeholder_text(Some(row_pwd.as_deref().unwrap_or("Workspace directory")));
+        let d = directory.clone();
+        inherit.connect_toggled(move |inherit| d.set_sensitive(!inherit.is_active()));
+        if (!node.kind.primitive()
+            || matches!(node.kind, NodeKind::Vox | NodeKind::Python)
+            || flow_builtins::agent::is_session(&node.spec().type_id))
             && !environment_node
         {
+            root.append(&inherit);
             field(&root, "Working directory", &directory);
         }
         let fields = super::parameters::Fields::new(&state, &node);
@@ -3517,12 +3548,16 @@ impl Shell {
         if has_source {
             field(
                 &root,
-                match node.kind {
-                    NodeKind::Agent => "Prompt",
-                    NodeKind::Shell | NodeKind::Metric => "Shell script",
-                    NodeKind::Vox => "Vox source",
-                    NodeKind::Python => "Python source",
-                    _ => "Instructions",
+                if flow_builtins::agent::is_session(&node.spec().type_id) {
+                    "Initial prompt"
+                } else {
+                    match node.kind {
+                        NodeKind::Agent => "Prompt",
+                        NodeKind::Shell | NodeKind::Metric => "Shell script",
+                        NodeKind::Vox => "Vox source",
+                        NodeKind::Python => "Python source",
+                        _ => "Instructions",
+                    }
                 },
                 &editor_scroll,
             );
@@ -3614,7 +3649,11 @@ impl Shell {
                 return;
             }
             node.title = title.text().to_string();
-            node.cwd = PathBuf::from(directory.text().as_str());
+            node.cwd = if inherit.is_active() {
+                PathBuf::new()
+            } else {
+                PathBuf::from(directory.text().as_str())
+            };
             let b = editor.buffer();
             node.command = b.text(&b.start_iter(), &b.end_iter(), true).to_string();
             if flow_builtins::agent::is_session(&node.spec().type_id) {

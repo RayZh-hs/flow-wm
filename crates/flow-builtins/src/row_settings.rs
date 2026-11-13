@@ -3,6 +3,23 @@ use flow_core::{environment::RowSettingDefinition, providers::Registry};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub fn directory(
+    properties: &flow_core::graph::Record,
+    env: &flow_core::environment::Env,
+) -> std::path::PathBuf {
+    properties
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            env.get("FLOWWM_ROWSET_PWD")
+                .map(String::as_str)
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or(".")
+        .into()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Extension {

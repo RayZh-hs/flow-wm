@@ -73,6 +73,28 @@ impl Fields {
                 Ok(())
             }));
         } else if flow_builtins::agent::is_session(&node.spec().type_id) {
+            let interactive = flow_builtins::agent::is_interactive(&node.spec().type_id);
+            let mode =
+                gtk::DropDown::from_strings(&["Interactive terminal", "Supervised workflow"]);
+            mode.set_selected(u32::from(!interactive));
+            field(&root, "Session mode", &mode);
+            let hint = gtk::Label::new(Some(
+                "Run manually or connect a signal to Run. Supervised sessions return a structured handoff on Completed or Failed; interactive sessions report turns on Session finished.",
+            ));
+            hint.set_xalign(0.);
+            hint.set_wrap(true);
+            hint.add_css_class("hint");
+            root.append(&hint);
+            setters.push(Rc::new(move |node| {
+                if mode.selected() == 0 {
+                    node.kind = NodeKind::Window;
+                    node.flow.node_type = flow_builtins::agent::TERMINAL_TYPE.into();
+                } else {
+                    node.kind = NodeKind::Extension;
+                    node.flow.node_type = flow_builtins::agent::TYPE_ID.into();
+                }
+                Ok(())
+            }));
             match flow_builtins::agent::harness::Harnesses::load(Some(&crate::config::directory()))
             {
                 Ok(config) => {

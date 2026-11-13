@@ -459,7 +459,6 @@ impl State {
             n.agent_session = None;
             n.flow.values.clear();
             n.flow.properties.remove("_alert");
-            n.cwd = PathBuf::from(".");
         }
         Ok(Recipe {
             connections: self
@@ -505,6 +504,11 @@ impl State {
             n.title = template.title.clone();
             n.command = template.command.clone();
             n.flow = template.flow.clone();
+            n.cwd = if template.cwd == std::path::Path::new(".") {
+                cwd.clone()
+            } else {
+                template.cwd.clone()
+            };
             n.flow.values.clear();
             n.flow.properties.remove("_alert");
             n.writable = template.writable;

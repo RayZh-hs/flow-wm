@@ -19,7 +19,8 @@ fn agent_macros_can_be_connected_before_their_first_instance_exists() {
     );
     initial.nodes.push(human.clone());
     let (engine, _) = support::fixture(initial);
-    for macro_id in ["agent", "agent_workflow"] {
+    for reverse in [true, false] {
+        let macro_id = "agent";
         let m = extensions::builtins()
             .into_iter()
             .find(|m| m.id == macro_id)
@@ -37,7 +38,7 @@ fn agent_macros_can_be_connected_before_their_first_instance_exists() {
             &engine.snapshot(),
             Presentation {
                 lookup_node: Some(human.id.clone()),
-                lookup_input: macro_id == "agent",
+                lookup_input: reverse,
                 ..Default::default()
             },
             &extensions::builtins(),
@@ -48,7 +49,7 @@ fn agent_macros_can_be_connected_before_their_first_instance_exists() {
                 .iter()
                 .any(|target| target.create && target.id == macro_id)
         }));
-        let edge = if macro_id == "agent" {
+        let edge = if reverse {
             Connection {
                 source: Endpoint {
                     node: node.id.clone(),

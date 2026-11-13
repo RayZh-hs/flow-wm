@@ -182,8 +182,8 @@ impl crate::orchestrator::Orchestrator {
         ensure!(
             frame.data
                 || !frame.pin.is_empty()
-                || !behavior.is_some_and(|b| matches!(b, Behavior::Source | Behavior::Application)),
-            "Sources and applications cannot be manually invoked"
+                || !behavior.is_some_and(|b| matches!(b, Behavior::Source)),
+            "Sources cannot be manually invoked"
         );
         validate_signal_args(&frame.args)?;
         if self.state.queue.accepted.contains_key(&frame.id)
@@ -291,7 +291,7 @@ impl crate::orchestrator::Orchestrator {
                 if self
                     .registry
                     .definition(&spec.type_id)
-                    .is_ok_and(|d| matches!(d.behavior, Behavior::Source | Behavior::Application))
+                    .is_ok_and(|d| matches!(d.behavior, Behavior::Source))
                 {
                     continue;
                 }

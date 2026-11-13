@@ -38,21 +38,9 @@ pub fn builtins() -> Vec<Macro> {
             },
             id: "agent".into(),
             name: "Agent session".into(),
-            description: "A terminal agent session using a configured harness".into(),
-            kind: NodeKind::Window,
-            command: "Inspect this project and suggest the next useful steps.".into(),
-        },
-        Macro {
-            settings: None,
-            flow: crate::graph::Flow {
-                node_type: flow_builtins::agent::TYPE_ID.into(),
-                ..Default::default()
-            },
-            id: "agent_workflow".into(),
-            name: "Agent workflow step".into(),
-            description: "Run a supervised agent turn with typed success and failure branches"
+            description: "An interactive or supervised agent session; run manually or by signal"
                 .into(),
-            kind: NodeKind::Extension,
+            kind: NodeKind::Window,
             command: "Inspect this project and suggest the next useful steps.".into(),
         },
         Macro {

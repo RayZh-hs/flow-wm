@@ -306,24 +306,20 @@ fn main() -> Result<()> {
             let selected = view["selected_workflow"]
                 .as_str()
                 .context("Selected workflow unavailable")?;
-            let row: flowwm::model::Workspace = serde_json::from_value(
-                view["workflows"]
-                    .as_array()
-                    .context("Workflow rows unavailable")?
-                    .iter()
-                    .find(|r| r["id"] == selected)
-                    .context("Selected row unavailable")?
-                    .clone(),
-            )?;
+            let agent = matches!(kind, Kind::Agent);
             let mut node = Node::new(
                 selected,
                 kind.into(),
-                cwd.unwrap_or_else(|| row.cwd.clone()),
+                cwd.unwrap_or_default(),
                 Position {
                     x: 160.0,
                     y: 80.0 + view["nodes"].as_array().map(|n| n.len()).unwrap_or(0) as f64 * 200.0,
                 },
             );
+            if agent {
+                node.kind = NodeKind::Window;
+                node.flow.node_type = flow_builtins::agent::TERMINAL_TYPE.into();
+            }
             node.title = title;
             if let Some(command) = command {
                 node.command = command;

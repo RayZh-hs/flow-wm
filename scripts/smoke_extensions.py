@@ -32,6 +32,7 @@ def main():
         for kind in ("CONFIG", "DATA", "STATE", "CACHE"):
             environment[f"XDG_{kind}_HOME"] = str(runtime / kind.lower())
         environment.update(XDG_RUNTIME_DIR=temporary, FLOWWM_CONFIG_DIR=str(config), GDK_BACKEND="wayland", GTK_A11Y="none")
+        (config / "runtime.kdl").write_text(f'row-settings {{ pwd "{runtime}"; }}\n')
         fake = runtime / "fake_lark.py"
         fake.write_text(f"""import sys, json
 from pathlib import Path
@@ -161,7 +162,6 @@ harness "fixture" {{
             # Exercise first-time creation through the launcher's connected-node path.
             for macro, type_id, source_pin, target_pin, reverse in [
                 ("agent", "agent_sessions.terminal", "in", "on_session_finish", True),
-                ("agent_workflow", "agent_sessions.session", "out", "in", False),
             ]:
                 ui("create_connected", id=macro, source={"node":lark_node["id"],"pin":source_pin}, input=target_pin, reverse=reverse)
                 created = wait(lambda: next((n for n in request(wm,{"action":"view"})["nodes"] if n["flow"]["node_type"] == type_id), None), compositor)
@@ -175,13 +175,15 @@ harness "fixture" {{
             # Add a native agent application using the same authoritative graph API.
             state = request(wm,{"action":"view"})
             node = dict(lark_node)
-            node.update(id="native-agent-fixture",kind="window",title="Native agent",cwd=str(runtime),command="Initial prompt",desktop_window=False,window_id=None,status="idle",position={"x":450,"y":100})
+            node.update(id="native-agent-fixture",kind="window",title="Native agent",cwd="",command="Initial prompt",desktop_window=False,window_id=None,status="idle",position={"x":450,"y":100})
             node["flow"]={"node_type":"agent_sessions.terminal","properties":{"harness":"fixture"}}
             request(wm,{"action":"create","node":node})
+            request(wm,{"action":"connect_pins","connection":{"source":{"node":trigger,"pin":"accepted"},"target":{"node":node["id"],"pin":"in"}}})
+            assert not (runtime / "native-started.json").exists(), "Creation must leave the session idle"
             other_row = next(w["id"] for w in catalog()["workspaces"] if w.get("row") and w["id"] != node["workspace"])
             ui("workspace", id=other_row)
             wait(lambda: catalog()["selected_workspace"] == other_row, compositor)
-            ui("open",id=node["id"])
+            request(wm,{"action":"emit","source":{"node":trigger,"pin":"accepted"},"args":{}})
             started = wait(lambda: json.loads((runtime / "native-started.json").read_text()) if (runtime / "native-started.json").exists() else None, compositor)
             assert started["tty"] is True, started
             assert started["argv"] == ["Initial prompt"], started
@@ -211,7 +213,7 @@ harness "fixture" {{
             input("key","Return")
             wait(lambda: any(n["id"]==gate["id"] and n["status"]=="review" for n in request(wm,{"action":"view"})["nodes"]),compositor)
             wait(lambda: any(n["id"]==node["id"] and n.get("window_id") is None for n in request(wm,{"action":"view"})["nodes"]), compositor)
-            print(json.dumps({"native_settings":True,"native_chat_selection":"Alice","fake_send_through_runtime":True,"first_lark_nodes_create_with_connections":True,"graph_errors_are_visible":True,"first_agent_nodes_create_with_connections":True,"agent_terminal_is_interactive":True,"session_finished_reaches_graph":True,"agent_node_retained_after_close":True,"artifacts":str(artifacts)},indent=2))
+            print(json.dumps({"native_settings":True,"native_chat_selection":"Alice","fake_send_through_runtime":True,"first_lark_nodes_create_with_connections":True,"graph_errors_are_visible":True,"first_agent_nodes_create_with_connections":True,"agent_stays_idle_until_signal":True,"agent_inherits_row_pwd":True,"agent_terminal_is_interactive":True,"session_finished_reaches_graph":True,"agent_node_retained_after_close":True,"artifacts":str(artifacts)},indent=2))
         finally:
             for child in reversed(children):
                 child.terminate()

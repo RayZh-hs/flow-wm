@@ -1,9 +1,17 @@
 # Agent sessions
 
-**Agent session** is a builtin extension. It runs the selected harness's real
-interactive CLI in Alacritty by default. Its card uses the ordinary application
+**Agent session** is a builtin extension with an **Interactive terminal** or
+**Supervised workflow** mode in node parameters. Both modes start idle and accept
+a signal on **Run** (`in`), or a manual Run. New sessions inherit their workspace
+directory from the owning row's **pwd** setting, resolved for each invocation.
+Clear **Inherit working directory from row settings (pwd)** to set an explicit
+directory. Recipes preserve both inheritance and explicit directory overrides.
+
+Interactive mode runs the selected harness's real interactive CLI in Alacritty
+by default. Its card uses the ordinary application
 window layout, preview, open/closed status, and window navigation. Run or open the
-node to launch it; double-click a running session to focus the same terminal.
+node to launch it; triggering or double-clicking a running session focuses the
+same terminal.
 Closing the terminal keeps the node and its connections. Opening it again resumes
 the saved native session when the harness reports a session ID.
 
@@ -52,12 +60,16 @@ stored privately beneath the FlowWM state directory, separated by node and
 harness. Closing a native terminal closes its CLI just as closing a terminal app
 does.
 
-**Agent workflow step** is the supervised, non-interactive variant for graph
+Choose **Supervised workflow** in the same Agent session editor for graph
 pipelines. It emits success/failure branches, requires the structured
 `outcome`/`summary`/`artifacts` handoff, and can resume a previous session across
 host restarts. Double-click it during a run to view its live transcript in the
 configured terminal. Closing this viewer leaves the workflow running. Legacy
-`local.agent` nodes and `agent.json` command overrides remain supported.
+`local.agent` nodes, saved Agent workflow steps, and `agent.json` command overrides
+remain supported. Supervised sessions can run in headless user workspaces;
+interactive sessions require a desktop workspace. Changing mode preserves the
+node's identity, prompt, directory and harness; existing connections must be
+compatible with the selected mode's pins.
 
 A custom workflow harness reads its prompt from stdin. `jsonl` accepts session
 events such as `{"type":"session","id":"…"}`, messages such as
@@ -76,7 +88,10 @@ harness "custom" {
 ```
 
 The implementation lives in `flow-builtins::agent`; it does not add agent logic
-to the portable runtime. Tests use fake CLIs and do not call models. The isolated
+to the portable runtime. Tests use fake CLIs and do not call models.
+`python3 scripts/smoke_application_workflows.py` checks idle application creation,
+manual and signal launches, directory inheritance, terminal reuse, and both
+session modes in an isolated desktop using Xvfb and xdotool. The isolated
 desktop check `python3 scripts/smoke_extensions.py` additionally uses the sibling
 `FlowWM-Lark` checkout, Xvfb, grim, xdotool, and Tesseract with English data. It
 checks connected creation before either agent or Lark node types have an instance,

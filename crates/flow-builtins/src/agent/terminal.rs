@@ -23,19 +23,14 @@ pub fn open_native(
             .get("harness")
             .and_then(serde_json::Value::as_str),
     )?;
-    let cwd = spec
-        .flow
-        .properties
-        .get("cwd")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or(".");
+    let cwd = crate::row_settings::directory(&spec.flow.properties, env);
     let title = spec
         .flow
         .properties
         .get("title")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("Agent session");
-    let cwd = Path::new(cwd).canonicalize()?;
+    let cwd = cwd.canonicalize()?;
     let node = &spec.id.0;
     ensure!(
         !node.is_empty()

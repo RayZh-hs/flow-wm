@@ -74,7 +74,7 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
                 .properties
                 .get("cwd")
                 .and_then(|v| v.as_str())
-                .unwrap_or(".");
+                .unwrap_or("");
             let existing = state
                 .nodes
                 .iter()

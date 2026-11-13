@@ -79,6 +79,7 @@ pub struct Environment {
     pub control_socket: Option<PathBuf>,
     pub cli: Option<PathBuf>,
     pub messaging: Option<Arc<dyn Messaging>>,
+    pub applications: Option<Arc<dyn crate::applications::Launcher>>,
 }
 type Factory = fn(&Invocation, &Environment, &Limits) -> Result<Process>;
 pub struct Local {
@@ -158,6 +159,12 @@ impl ExecutionProvider for Local {
     }
 
     fn resources(&self, invocation: &Invocation) -> Result<Vec<ResourceClaim>> {
+        if invocation.type_id == "local.window" {
+            return Ok(vec![ResourceClaim {
+                key: format!("application:{}:{}", invocation.workflow, invocation.node),
+                exclusive: true,
+            }]);
+        }
         if matches!(
             invocation.type_id.as_str(),
             "local.shell" | "local.agent" | "local.metric_sample"
@@ -215,6 +222,9 @@ impl ExecutionProvider for Local {
         events: EventSink,
         output: Option<OutputSink>,
     ) -> Result<String> {
+        if invocation.type_id == "local.window" {
+            return crate::applications::invoke(invocation, &self.environment, events);
+        }
         if matches!(invocation.type_id.as_str(), "local.human" | "local.gate") {
             let handle = invocation.id.0.clone();
             let mut decisions = self.decisions.lock().unwrap();
