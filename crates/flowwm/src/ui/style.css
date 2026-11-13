@@ -40,8 +40,6 @@ separator { background: @flow_outline; margin: 12px 8px; min-width: 1px; min-hei
 textview, textview text { background: @flow_surface_low; color: @flow_muted; }
 .output-view { padding: 20px; font-family: monospace; font-size: 11px; line-height: 1.7; }
 .flow-dialog { background: @flow_surface; border-radius: 28px; border: 1px solid alpha(@flow_outline, 0.5); }
-@keyframes flow-popup-enter { from { opacity: 0; } to { opacity: 1; } }
-.flow-popup-enter { animation: flow-popup-enter __POPUP_OPEN_MS__ms cubic-bezier(0, 0, 0.2, 1) both; }
 .dialog-body { padding: 28px; background: @flow_surface; border-radius: 28px; }
 .dialog-title { font-size: 22px; font-weight: 550; color: @flow_text; margin-bottom: 5px; }
 .field-label { font-size: 11px; color: @flow_muted; }
@@ -88,3 +86,17 @@ entry.error { border-color: @flow_error; }
 .env-key { font-family: monospace; }
 .row-settings-error { color: @flow_error; font-size: 12px; }
 .row-settings-hint { color: @flow_muted; font-size: 11px; }
+
+window.row-settings-window { background: transparent; border: none; border-radius: 0; }
+.row-settings-body { background: alpha(@flow_surface, __POPUP_OPACITY__); border: 1px solid alpha(@flow_outline, 0.5); border-radius: __WINDOW_RADIUS__; padding: 16px; }
+.row-settings-body * { font-size: __FONT_SCALE__; }
+.row-settings-body .dialog-title { font-size: __FONT_SCALE__; font-weight: 500; margin: 0; }
+.row-settings-body .muted, .row-settings-body .field-label, .row-settings-body .row-settings-hint { font-size: __SMALL_FONT__; }
+.row-settings-body .field-label { color: @flow_primary; }
+.row-settings-section { background: @flow_surface_container; border-radius: __RADIUS__; padding: 16px; }
+.row-settings-body entry, .row-settings-body dropdown > button { background: @flow_surface_high; border: 1px solid transparent; min-height: 24px; padding: 8px 12px; }
+.row-settings-body entry:focus-within, .row-settings-body dropdown > button:focus-visible { border-color: @flow_primary; outline: none; }
+.row-settings-body entry.error { border-color: @flow_error; }
+.row-settings-body button.flat { border-radius: __RADIUS__; }
+.row-settings-body button.accent { border-radius: __RADIUS__; }
+.row-settings-body .row-settings-actions { padding-top: 4px; }

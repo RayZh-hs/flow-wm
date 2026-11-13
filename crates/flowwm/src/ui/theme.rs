@@ -45,6 +45,7 @@ pub struct Theme {
     pub primary_container: Color,
     pub surface: Color,
     pub surface_low: Color,
+    pub surface_container: Color,
     pub surface_high: Color,
     pub surface_highest: Color,
     pub text: Color,
@@ -52,6 +53,9 @@ pub struct Theme {
     pub outline: Color,
     pub error: Color,
     pub radius: f64,
+    pub window_radius: f64,
+    pub popup_opacity: f64,
+    pub font_scale: f64,
     pub font: String,
     pub motion_ms: u32,
     pub popup_open_ms: u32,
@@ -68,6 +72,7 @@ impl Default for Theme {
             primary_container: Color::parse("#4f378b").unwrap(),
             surface: Color::parse("#141218").unwrap(),
             surface_low: Color::parse("#1d1b20").unwrap(),
+            surface_container: Color::parse("#211f26").unwrap(),
             surface_high: Color::parse("#2b2930").unwrap(),
             surface_highest: Color::parse("#36343b").unwrap(),
             text: Color::parse("#e6e0e9").unwrap(),
@@ -75,6 +80,9 @@ impl Default for Theme {
             outline: Color::parse("#49454f").unwrap(),
             error: Color::parse("#f2b8b5").unwrap(),
             radius: 12.0,
+            window_radius: 16.0,
+            popup_opacity: 1.0,
+            font_scale: 1.0,
             font: "sans-serif".into(),
             motion_ms: flow.motion_ms.unwrap_or(220),
             popup_open_ms: flow.popup_open_ms.unwrap_or(50),
@@ -139,23 +147,25 @@ impl Theme {
             .and_then(|v| serde_json::from_slice::<Value>(&v).ok())
             .unwrap_or_default();
         let mut theme = Self::default();
+        let mode = colors["mode"]
+            .as_str()
+            .filter(|m| matches!(*m, "light" | "dark"))
+            .unwrap_or("dark");
         if settings["currentThemeName"]
             .as_str()
             .is_none_or(|s| s == "dynamic")
         {
-            theme.apply_material(&colors["colors"]["dark"]);
+            theme.apply_material(&colors["colors"][mode]);
         } else if settings["currentThemeName"].as_str() == Some("custom")
             && let Some(path) = settings["customThemeFile"].as_str()
             && let Ok(bytes) = std::fs::read(path)
             && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
         {
-            let dark = &value["dark"];
-            let map = serde_json::json!({"primary":dark["primary"],"on_primary":dark["primaryText"],"primary_container":dark["primaryContainer"],"surface":dark["surface"],"surface_container_low":dark["surfaceContainerLow"],"surface_container_high":dark["surfaceContainerHigh"],"surface_container_highest":dark["surfaceContainerHighest"],"on_surface":dark["surfaceText"],"on_surface_variant":dark["surfaceVariantText"],"outline_variant":dark["outlineVariant"],"error":dark["error"]});
+            let palette = value.get(mode).unwrap_or(&value);
+            let map = serde_json::json!({"primary":palette["primary"],"on_primary":palette["primaryText"],"primary_container":palette["primaryContainer"],"surface":palette["surface"],"surface_container_low":palette["surfaceContainerLow"],"surface_container":palette["surfaceContainer"],"surface_container_high":palette["surfaceContainerHigh"],"surface_container_highest":palette["surfaceContainerHighest"],"on_surface":palette["surfaceText"],"on_surface_variant":palette["surfaceVariantText"],"outline_variant":palette["outlineVariant"],"error":palette["error"]});
             theme.apply_material(&map);
         }
-        if let Some(radius) = settings["cornerRadius"].as_f64() {
-            theme.radius = radius.clamp(0.0, 32.0);
-        }
+        theme.apply_popup_settings(&settings);
         if settings["animationsEnabled"].as_bool() == Some(false)
             || settings["reduceMotion"].as_bool() == Some(true)
         {
@@ -168,7 +178,42 @@ impl Theme {
         }) {
             theme.font = font.into();
         }
+        // DMS publishes the resolved font, including its portable default family.
+        let typography = paths[0].with_file_name("dms-typography.json");
+        if let Ok(bytes) = std::fs::read(typography)
+            && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+            && let Some(font) = value["fontFamily"].as_str().filter(|s| {
+                !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || " -_".contains(c))
+            })
+        {
+            theme.font = font.into();
+        }
         theme
+    }
+    fn apply_popup_settings(&mut self, settings: &Value) {
+        // Match DMS Shape.radius(), including profiles migrated from cornerRadius.
+        let fixed = (settings["radiusMode"].as_str() == Some("fixed")).then(|| {
+            settings["fixedRadius"]
+                .as_f64()
+                .unwrap_or(16.0)
+                .clamp(0., 32.)
+                .round()
+        });
+        let scale = settings["radiusStrength"]
+            .as_f64()
+            .unwrap_or_else(|| settings["cornerRadius"].as_f64().unwrap_or(12.) * 50. / 12.)
+            .clamp(0., 100.)
+            .round()
+            / 50.;
+        self.radius = fixed.unwrap_or((12. * scale).round());
+        self.window_radius = fixed.unwrap_or((16. * scale).round());
+        let opacity = if settings["floatingWindowSyncGlobal"].as_bool() == Some(false) {
+            &settings["floatingWindowTransparency"]
+        } else {
+            &settings["popupTransparency"]
+        };
+        self.popup_opacity = opacity.as_f64().unwrap_or(1.).clamp(0., 1.);
+        self.font_scale = settings["fontScale"].as_f64().unwrap_or(1.).clamp(0.5, 3.);
     }
     pub fn desktop_insets() -> [i32; 4] {
         let settings = std::fs::read(&Self::paths()[1])
@@ -200,6 +245,7 @@ impl Theme {
             ("primary_container", &mut self.primary_container),
             ("surface", &mut self.surface),
             ("surface_container_low", &mut self.surface_low),
+            ("surface_container", &mut self.surface_container),
             ("surface_container_high", &mut self.surface_high),
             ("surface_container_highest", &mut self.surface_highest),
             ("on_surface", &mut self.text),
@@ -220,6 +266,7 @@ impl Theme {
             ("primary_container", self.primary_container),
             ("surface", self.surface),
             ("surface_low", self.surface_low),
+            ("surface_container", self.surface_container),
             ("surface_high", self.surface_high),
             ("surface_highest", self.surface_highest),
             ("text", self.text),
@@ -232,9 +279,57 @@ impl Theme {
         css.push_str(
             &include_str!("style.css")
                 .replace("__RADIUS__", &format!("{}px", self.radius))
-                .replace("__POPUP_OPEN_MS__", &self.popup_open_ms.to_string())
-                .replace("__FONT__", &self.font),
+                .replace("__WINDOW_RADIUS__", &format!("{}px", self.window_radius))
+                .replace("__POPUP_OPACITY__", &self.popup_opacity.to_string())
+                .replace(
+                    "__FONT_SCALE__",
+                    &format!("{}px", (14. * self.font_scale).round()),
+                )
+                .replace(
+                    "__SMALL_FONT__",
+                    &format!("{}px", (12. * self.font_scale).round()),
+                )
+                .replace("__FONT__", &format!("\"{}\"", self.font)),
         );
         css
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn popup_shape_tracks_dms_strength_fixed_and_legacy_profiles() {
+        for (settings, radius, window_radius) in [
+            (serde_json::json!({"radiusStrength":38}), 9., 12.),
+            (
+                serde_json::json!({"radiusMode":"fixed","fixedRadius":7}),
+                7.,
+                7.,
+            ),
+            (serde_json::json!({"radiusStrength":0}), 0., 0.),
+            (serde_json::json!({"cornerRadius":24}), 24., 32.),
+        ] {
+            let mut theme = Theme::default();
+            theme.apply_popup_settings(&settings);
+            assert_eq!((theme.radius, theme.window_radius), (radius, window_radius));
+        }
+    }
+
+    #[test]
+    fn popup_uses_dms_typography_and_floating_surface_preferences() {
+        let mut theme = Theme::default();
+        let mut settings = serde_json::json!({"popupTransparency":0.34,"floatingWindowTransparency":0.8,"fontScale":1.04});
+        theme.apply_popup_settings(&settings);
+        assert_eq!(theme.popup_opacity, 0.34);
+        settings["floatingWindowSyncGlobal"] = false.into();
+        theme.apply_popup_settings(&settings);
+        assert_eq!(theme.popup_opacity, 0.8);
+        theme.font = "Google Sans Flex".into();
+        let css = theme.css();
+        assert!(css.contains("font-family: \"Google Sans Flex\""));
+        assert!(css.contains("font-size: 15px"));
+        assert!(!css.contains("__"));
     }
 }

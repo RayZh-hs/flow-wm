@@ -57,7 +57,7 @@ pub fn run(
                 if let Ok(monitor) = directory.monitor_directory(gio::FileMonitorFlags::NONE, None::<&gio::Cancellable>) {
                     let w = shell.weak.clone(); let provider = provider.clone();
                     monitor.connect_changed(move |_, file, _, _| {
-                        if file.basename().is_some_and(|name| name.as_os_str() == "dms-colors.json" || name.as_os_str() == "settings.json" || name.as_os_str() == "session.json") && let Some(shell) = w.upgrade() {
+                        if file.basename().is_some_and(|name| name.as_os_str() == "dms-colors.json" || name.as_os_str() == "dms-typography.json" || name.as_os_str() == "settings.json" || name.as_os_str() == "session.json") && let Some(shell) = w.upgrade() {
                             let theme = Theme::load(); provider.load_from_string(&theme.css()); shell.view.borrow_mut().theme = theme; shell.ensure_row_surfaces(&shell.engine.snapshot().state); shell.apply_insets(); shell.request_captures(false); shell.canvas().queue_draw();
                         }
                     });
@@ -3643,6 +3643,15 @@ impl Shell {
     fn row_settings(&self) {
         use flow_core::environment::Env;
         use flow_core::{domain::WorkflowId, protocol::Command};
+        if let Some(dialog) = self
+            .app
+            .windows()
+            .into_iter()
+            .find(|w| w.has_css_class("row-settings-window"))
+        {
+            dialog.present();
+            return;
+        }
         let state = self.engine.snapshot().state;
         let current = WorkflowId(state.selected_workspace.clone());
         let Some(runtime) = state.orchestration.as_ref() else {
@@ -3665,23 +3674,32 @@ impl Shell {
         };
         let overrides: Env = serde_json::from_value(value["settings"].clone()).unwrap_or_default();
         let dialog = self.dialog("Row settings", 520, 560);
-        dialog.connect_map(|dialog| dialog.add_css_class("flow-popup-enter"));
+        dialog.add_css_class("row-settings-window");
         dialog.set_resizable(false);
-        let root = column(12);
-        root.add_css_class("dialog-body");
-        let heading = row(12);
+        let root = column(16);
+        root.add_css_class("row-settings-body");
+        let heading = gtk::CenterBox::new();
+        let icon = gtk::Image::from_icon_name("emblem-system-symbolic");
+        icon.set_pixel_size(20);
+        icon.set_margin_start(8);
+        heading.set_start_widget(Some(&icon));
         let titles = column(3);
-        titles.set_hexpand(true);
-        titles.append(&label("Row settings", "dialog-title"));
-        titles.append(&label(&workflow.name, "muted"));
-        heading.append(&titles);
+        let title = label("Row settings", "dialog-title");
+        title.set_xalign(0.5);
+        titles.append(&title);
+        let subtitle = label(&workflow.name, "muted");
+        subtitle.set_xalign(0.5);
+        subtitle.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        subtitle.set_max_width_chars(42);
+        titles.append(&subtitle);
+        heading.set_center_widget(Some(&titles));
         let close = gtk::Button::from_icon_name("window-close-symbolic");
         close.add_css_class("flat");
         close.set_valign(gtk::Align::Start);
         close.set_tooltip_text(Some("Close · Escape"));
         let d = dialog.clone();
         close.connect_clicked(move |_| d.close());
-        heading.append(&close);
+        heading.set_end_widget(Some(&close));
         root.append(&heading);
         let mut workspaces: Vec<_> = runtime
             .workspaces
@@ -3714,7 +3732,10 @@ impl Shell {
         {
             workspace.set_selected(index as u32);
         }
-        field(&root, "Owning workspace", &workspace);
+        let section = column(8);
+        section.add_css_class("row-settings-section");
+        field(&section, "Owning workspace", &workspace);
+        root.append(&section);
         let pwd = entry(overrides.get("pwd").map(String::as_str).unwrap_or(""));
         pwd.set_placeholder_text(value["definitions"]["pwd"]["default"].as_str());
         pwd.set_hexpand(true);
@@ -3726,7 +3747,10 @@ impl Shell {
         let p = pwd.clone();
         reset.connect_clicked(move |_| p.set_text(""));
         directory.append(&reset);
-        field(&root, "Working directory", &directory);
+        let section = column(8);
+        section.add_css_class("row-settings-section");
+        field(&section, "Working directory", &directory);
+        root.append(&section);
         let custom: Env = overrides
             .iter()
             .filter(|(k, _)| k.as_str() != "pwd")
@@ -3739,19 +3763,23 @@ impl Shell {
             .propagate_natural_height(true)
             .child(&variables.widget)
             .build();
-        field(&root, "Row variables", &variables_scroll);
+        let section = column(8);
+        section.add_css_class("row-settings-section");
+        field(&section, "Row variables", &variables_scroll);
         let hint = label(
             "New nodes receive FLOWWM_ROWSET_<NAME>. Running nodes keep their environment.",
             "row-settings-hint",
         );
         hint.set_wrap(true);
         hint.set_max_width_chars(50);
-        root.append(&hint);
+        section.append(&hint);
+        root.append(&section);
         let error = label("", "row-settings-error");
         error.set_wrap(true);
         error.set_visible(false);
         root.append(&error);
         let actions = row(8);
+        actions.add_css_class("row-settings-actions");
         actions.set_halign(gtk::Align::End);
         let cancel = gtk::Button::with_label("Cancel");
         cancel.add_css_class("flat");
@@ -3816,6 +3844,13 @@ impl Shell {
         dialog.set_child(Some(&root));
         let (_, natural_height, _, _) = root.measure(gtk::Orientation::Vertical, 520);
         dialog.set_default_size(520, natural_height);
+        let weak = self.weak.clone();
+        root.connect_map(move |body| {
+            let duration = weak
+                .upgrade()
+                .map_or(0, |s| s.view.borrow().theme.popup_open_ms);
+            super::motion::fade_in(body, duration);
+        });
         dialog.present();
         focus.grab_focus();
     }
@@ -4156,7 +4191,12 @@ impl Shell {
         if !self.windowed {
             dialog.init_layer_shell();
             dialog.set_namespace(Some("flowwm-dialog"));
-            dialog.set_layer(Layer::Overlay);
+            // Share DMS's modal layer so a newly opened clipboard can cover the editor.
+            dialog.set_layer(if self.native_nodes {
+                Layer::Top
+            } else {
+                Layer::Overlay
+            });
             dialog.set_exclusive_zone(-1);
             dialog.set_keyboard_mode(KeyboardMode::Exclusive);
         }

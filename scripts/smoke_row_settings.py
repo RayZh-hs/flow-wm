@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 
 from smoke_native import request, wait
 from runtime import start
@@ -20,6 +21,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Common
 import qs.Services
+import qs.Modals.Clipboard
 import qs.DCommon.Common as DC
 import "PLUGINS/FlowWM"
 
@@ -35,6 +37,7 @@ ShellRoot {
         DC.Host.files = FilesService;
     }
     FlowBridge { id: bridge }
+    ClipboardHistoryModal { id: clipboard }
     QtObject { id: plugins; property var pluginDaemonInstances: ({flowwm: bridge}) }
     PanelWindow {
         id: bar
@@ -54,8 +57,11 @@ ShellRoot {
     IpcHandler {
         target: "row-bar-test"
         function inspect(): string {
-            return JSON.stringify({online: bridge.online, workspace: widget.owningWorkspace, clickX: widget.x + widget.width - 30});
+            return JSON.stringify({online: bridge.online, workspace: widget.owningWorkspace, clickX: widget.x + widget.width - 30,
+                clipboardOpen: clipboard.shouldBeVisible, clipboardFocused: clipboard.contentLoader.item?.searchField?.getActiveFocus() ?? false,
+                clipboardText: clipboard.contentLoader.item?.searchField?.text ?? ""});
         }
+        function openClipboard(): void { clipboard.show(); }
     }
 }
 """
@@ -73,10 +79,18 @@ def main():
             environment.pop(name, None)
         config = runtime / "config"
         config.mkdir()
+        (config / "config.kdl").write_text('flow { popup-open-ms 400; }\n')
+        # The shell's configured motion must survive toolkit settings restored at login.
+        (config / "gtk-4.0").mkdir()
+        (config / "gtk-4.0/settings.ini").write_text('[Settings]\ngtk-enable-animations=false\n')
         for kind in ("CONFIG", "DATA", "STATE", "CACHE"):
             environment[f"XDG_{kind}_HOME"] = str(runtime / kind.lower())
         environment.update(XDG_RUNTIME_DIR=temporary, FLOWWM_CONFIG_DIR=str(config), GDK_BACKEND="wayland", GTK_A11Y="none",
+                           FLOWWM_CACHE_DIR=str(runtime / "cache"), FLOWWM_STATE_DIR=str(runtime / "state"),
+                           DMS_DISABLE_MATUGEN="1", DMS_SOCKET="", DMS_DISABLE_HOT_RELOAD="1",
+                           GSETTINGS_BACKEND="keyfile", GDK_DEBUG="no-portals",
                            PATH=str(ROOT / "target/debug") + os.pathsep + environment.get("PATH", ""))
+        subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "enable-animations", "false"], env=environment, check=True)
         try:
             xvfb = subprocess.Popen(["Xvfb", "-displayfd", "1", "-screen", "0", "1400x1000x24", "-nolisten", "tcp", "-ac"], stdout=subprocess.PIPE, stderr=log)
             children.append(xvfb)
@@ -86,7 +100,11 @@ def main():
             niri = wait(lambda: next(runtime.glob("niri.*.sock"), None), compositor)
             environment.update(NIRI_SOCKET=str(niri), WAYLAND_DISPLAY=niri.name.split(".")[1])
             host = start(ROOT / "target/debug/flowwm", runtime, environment, children, log)
-            children.append(subprocess.Popen([str(ROOT / "target/debug/flowwm"), "start", "--dms", "--background", "--host-socket", str(host)], env=environment, stdout=log, stderr=log))
+            def start_shell():
+                child = subprocess.Popen([str(ROOT / "target/debug/flowwm"), "start", "--dms", "--background", "--host-socket", str(host)], env=environment, stdout=log, stderr=log)
+                children.append(child)
+                return child
+            flowwm = start_shell()
             wm = runtime / "flowwm.sock"
             catalog = lambda: request(wm, {"action":"catalog"})
             wait(lambda: catalog().get("owning_workspace") == "local:desktop", compositor)
@@ -123,6 +141,20 @@ def main():
                     return same
                 wait(settled,compositor)
 
+            def open_with_fade(name):
+                frames = []
+                input("key", "super+l")
+                started = time.monotonic()
+                while time.monotonic() - started < 0.65:
+                    path = artifacts / f"{name}-{len(frames):02}.png"
+                    subprocess.run(["grim", "-o", "winit", str(path)], env=environment, check=True)
+                    with Image.open(path) as screenshot:
+                        frames.append(screenshot.convert("RGB"))
+                sample = (frames[-1].width // 2, frames[-1].height // 2)
+                levels = [frame.getpixel(sample) for frame in frames]
+                assert len(set(levels)) >= 3, f"Popup did not fade after {name}: {levels}"
+                assert any(layer["namespace"] == "flowwm-dialog" and layer["layer"] == "Top" for layer in layers()), layers()
+
             assert catalog()["owning_workspace"] == "local:desktop"
             shell = runtime / "shell"
             shell.mkdir()
@@ -145,10 +177,30 @@ def main():
             input("key","Escape")
             wait(lambda: not any(layer["namespace"] == "flowwm-dialog" for layer in layers()),compositor)
             # Exercise the actual global binding, including Windows-view dialog focus.
-            input("key", "super+l")
+            open_with_fade("cold-open")
             wait(lambda: any(layer["namespace"] == "flowwm-dialog" for layer in layers()), compositor)
-            ui("capture",path=str(artifacts / "row-settings-widget.png"))
             capture("row-settings.png")
+            ui("capture",path=str(artifacts / "row-settings-widget.png"))
+            # A second invocation preserves the current editor instead of stacking another one.
+            input("key", "super+l")
+            assert sum(layer["namespace"] == "flowwm-dialog" for layer in layers()) == 1
+            subprocess.check_output(["qs", "ipc", "-p", str(shell), "call", "row-bar-test", "openClipboard"], env=environment)
+            wait(lambda: inspect_bar().get("clipboardFocused"), compositor)
+            assert any(layer["namespace"] == "dms:clipboard" and layer["layer"] == "Top" for layer in layers()), layers()
+            input("type", "clipboard above row settings")
+            wait(lambda: inspect_bar().get("clipboardText") == "clipboard above row settings", compositor)
+            capture("clipboard-above-row-settings.png")
+            input("key", "Escape")
+            wait(lambda: not inspect_bar().get("clipboardOpen"), compositor)
+            assert any(layer["namespace"] == "flowwm-dialog" for layer in layers())
+            input("key", "Escape")
+            wait(lambda: not any(layer["namespace"] == "flowwm-dialog" for layer in layers()), compositor)
+            # Restart the shell against the same profile, as a new login would do.
+            flowwm.terminate()
+            flowwm.wait(timeout=5)
+            flowwm = start_shell()
+            wait(lambda: catalog().get("owning_workspace") == "local:desktop", flowwm)
+            open_with_fade("after-restart")
             input("key", "Escape")
             wait(lambda: not any(layer["namespace"] == "flowwm-dialog" for layer in layers()), compositor)
             command("set_row_settings", workflow=current, settings={"pwd":temporary,"project":"smoke"})
@@ -194,7 +246,7 @@ def main():
             inherited = json.loads(recorded.read_text())
             assert inherited["MODE"] == "development" and inherited["FLOWWM_ROWSET_PROJECT"] == "smoke"
             assert "FLOWWM_ARG_COUNT" not in inherited
-            print("PASS: top-bar workspace click, Win+L, command/app Env launches and all Env editors")
+            print("PASS: Win+L fades before/after restart with GTK animations off, clipboard stacking/focus, top-bar click, command/app Env launches and all Env editors")
             print("Screenshots:", artifacts)
         finally:
             for child in reversed(children):

@@ -174,7 +174,13 @@ and add row variables, then save. Running nodes keep their existing environment.
 The older `flowwm workflows` manager remains available for creating workflows,
 references, and ownership changes.
 
-Row Settings fades in with the same 50 ms easing as the Spotlight launcher.
+Row settings uses Dux's popup shape, typography, surface colors, and transparency.
+Clipboard history opens above the editor and returns keyboard focus when dismissed.
+Pressing Win+L again keeps the existing editor and its unsaved changes.
+
+Row settings fades in over 50 ms, starting with its first rendered frame even
+after a fresh login. The fade follows FlowWM's motion preferences independently
+of GTK's session animation setting.
 Set `flow { popup-open-ms 100; }` in `config.kdl` to change the duration, or use
 zero to open it immediately. Niri's animation off/slowdown settings and Dux's
 reduced-motion setting apply to the fade.
