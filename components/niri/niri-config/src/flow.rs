@@ -3,6 +3,9 @@
 pub struct Flow {
     #[knuffel(child, unwrap(arguments))]
     pub terminal: Option<Vec<String>>,
+    /// Connection variables taken from the desktop launching an application.
+    #[knuffel(child, unwrap(arguments))]
+    pub session_environment: Option<Vec<String>>,
     /// Notification command prefix; an empty list disables desktop popups.
     #[knuffel(child, unwrap(arguments))]
     pub notification_command: Option<Vec<String>>,
@@ -62,6 +65,7 @@ impl crate::utils::MergeWith<Flow> for Flow {
         merge_clone_opt!(
             (self, part),
             terminal,
+            session_environment,
             notification_command,
             desktop_save_interval_ms,
             motion_ms,
@@ -137,6 +141,14 @@ impl Flow {
         {
             return Err("flow terminal needs an executable".into());
         }
+        if self
+            .session_environment
+            .iter()
+            .flatten()
+            .any(|name| name.is_empty() || name.contains(['=', '\0']))
+        {
+            return Err("flow session-environment needs valid environment variable names".into());
+        }
         let mut seen = std::collections::HashSet::new();
         for bind in self.binds.iter().flat_map(|v| &v.bindings) {
             let key: crate::Key = bind
@@ -198,6 +210,36 @@ impl Flow {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn session_environment_can_be_replaced_or_disabled() {
+        use crate::utils::MergeWith;
+        let mut flow = crate::Config::parse_mem(
+            r#"flow { session-environment "WAYLAND_DISPLAY" "DISPLAY"; }"#,
+        )
+        .unwrap()
+        .flow;
+        assert_eq!(
+            flow.session_environment.as_deref().unwrap(),
+            ["WAYLAND_DISPLAY", "DISPLAY"]
+        );
+        for (text, expected) in [
+            (
+                r#"flow { session-environment "CUSTOM_DISPLAY"; }"#,
+                vec!["CUSTOM_DISPLAY"],
+            ),
+            ("flow { session-environment; }", vec![]),
+        ] {
+            flow.merge_with(&crate::Config::parse_mem(text).unwrap().flow);
+            assert_eq!(flow.session_environment.as_deref().unwrap(), expected);
+        }
+        for text in [
+            r#"flow { session-environment ""; }"#,
+            r#"flow { session-environment "BAD=NAME"; }"#,
+        ] {
+            assert!(crate::Config::parse_mem(text).is_err(), "{text}");
+        }
+    }
+
     #[test]
     fn includes_merge_graph_overrides_and_reject_invalid_settings() {
         use crate::utils::MergeWith;

@@ -10,12 +10,38 @@ use std::{
 };
 
 pub fn row_environment(host: &Client, workflow: &WorkflowId) -> Result<Env> {
-    Ok(serde_json::from_value(host.command_as(
+    let mut env = serde_json::from_value(host.command_as(
         Command::RowEnvironment {
             workflow: workflow.clone(),
         },
         Some(workflow.clone()),
-    )?)?)
+    )?)?;
+    // The independent host can start before the compositor, or outlive a login.
+    // Only desktop connections come from this process: keep the host's application
+    // environment (including XDG paths outside Dux's private profile) and row settings.
+    // Do this before evaluating a node's env input so explicit overrides still win.
+    let session = std::env::vars_os()
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+        .collect();
+    refresh_session_environment(
+        &mut env,
+        &session,
+        crate::config::flow()
+            .session_environment
+            .as_deref()
+            .unwrap_or_default(),
+    );
+    Ok(env)
+}
+
+fn refresh_session_environment(env: &mut Env, session: &Env, names: &[String]) {
+    for name in names {
+        if let Some(value) = session.get(name) {
+            env.insert(name.clone(), value.clone());
+        } else {
+            env.remove(name);
+        }
+    }
 }
 
 pub fn selected_environment(socket: &std::path::Path) -> Result<Env> {

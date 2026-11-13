@@ -87,6 +87,15 @@ Bindings that require a newer compositor are activated at the next login, after 
 
 In Windows view, Win+arrows navigates the normal niri layout and Win+Ctrl+arrows moves windows/columns. Win+Shift+arrows focuses another monitor; Win+Ctrl+Shift+arrows moves a column to that monitor. Win+T, Win+K, and Win+Return open the terminal selected during installation (Alacritty is preferred when available). Win+E opens Dolphin, Win+B opens the default browser, Win+V opens the clipboard, Win+P opens the power menu, Win+Shift+Period opens the notepad, and Win+Alt+L locks the screen. These application bindings require their corresponding programs; customize them in `config.kdl`.
 
+Desktop launches refresh display and session connections from the launching desktop,
+so a runtime started before the compositor can still open terminals and applications.
+The host's other environment values and the current row settings are preserved.
+The `flow { session-environment "WAYLAND_DISPLAY" "DISPLAY" "XAUTHORITY" "XDG_RUNTIME_DIR" "DBUS_SESSION_BUS_ADDRESS" "XDG_SESSION_TYPE" "XDG_CURRENT_DESKTOP" "NIRI_SOCKET"; }`
+setting controls which variables are refreshed; an empty `session-environment;` disables
+this behavior. A listed variable absent from the launching session is removed from
+the launch environment. Connected node Env inputs are evaluated afterward, so
+explicit Set Env, Unset Env, and Empty Env nodes still control the final environment.
+
 Win+Page Up/Down or Win+I/U changes workspaces; add Ctrl to move a column or Shift to reorder the workspace. Win+1…9 selects a workspace and Win+Ctrl+1…9 moves a column there. Media, volume, brightness, screenshots, floating windows, column sizing, fullscreen, close-window, and logout bindings are also in `config.kdl` and shortcut help.
 
 | Mouse gesture | Action |

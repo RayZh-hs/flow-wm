@@ -202,6 +202,9 @@ binds {
 // Native graph settings. Keys use niri syntax; action="none" disables a graph key.
 flow {
     terminal "alacritty"
+    // Refresh desktop connections when the independent host predates this session.
+    // An empty list keeps the host environment unchanged.
+    session-environment "WAYLAND_DISPLAY" "DISPLAY" "XAUTHORITY" "XDG_RUNTIME_DIR" "DBUS_SESSION_BUS_ADDRESS" "XDG_SESSION_TYPE" "XDG_CURRENT_DESKTOP" "NIRI_SOCKET"
     motion-ms 220
     popup-open-ms 180
     popup-close-ms 140
