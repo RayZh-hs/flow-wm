@@ -1,6 +1,6 @@
 //! A popup stays mapped through its exit transition and can reverse while closing.
 use super::theme::Theme;
-use gtk::{gdk, glib, graphene, prelude::*, subclass::prelude::*};
+use gtk::{gdk, glib, graphene, gsk, prelude::*, subclass::prelude::*};
 use gtk4_layer_shell::{Edge, LayerShell};
 use std::cell::{Cell, RefCell};
 
@@ -15,6 +15,8 @@ mod imp {
         pub close_ms: Cell<u32>,
         pub tick: RefCell<Option<gtk::TickCallbackId>>,
         pub body: glib::WeakRef<gtk::Widget>,
+        pub content: glib::WeakRef<gtk::Widget>,
+        pub blur: glib::WeakRef<gtk::Widget>,
         pub backdrop: RefCell<Option<gdk::RGBA>>,
         pub escaping_popover: Cell<bool>,
     }
@@ -23,22 +25,44 @@ mod imp {
     impl ObjectSubclass for Popup {
         const NAME: &'static str = "FlowPopup";
         type Type = super::Popup;
-        type ParentType = gtk::Box;
+        type ParentType = gtk::Widget;
     }
     impl ObjectImpl for Popup {
         fn dispose(&self) {
             if let Some(tick) = self.tick.borrow_mut().take() {
                 tick.remove();
             }
+            while let Some(child) = self.obj().first_child() {
+                child.unparent();
+            }
         }
     }
-    impl BoxImpl for Popup {}
     impl WidgetImpl for Popup {
+        fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
+            self.content.upgrade().map_or((0, 0, -1, -1), |content| {
+                content.measure(orientation, for_size)
+            })
+        }
         fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
             if let Some(body) = self.body.upgrade() {
                 body.set_width_request((width - 24).clamp(1, 520));
             }
-            self.parent_size_allocate(width, height, baseline);
+            if let Some(content) = self.content.upgrade() {
+                content.allocate(width, height, baseline, None);
+            }
+            if let (Some(body), Some(blur)) = (self.body.upgrade(), self.blur.upgrade())
+                && let Some(bounds) = body.compute_bounds(&*self.obj())
+            {
+                blur.allocate(
+                    bounds.width().round() as i32,
+                    bounds.height().round() as i32,
+                    -1,
+                    Some(
+                        gsk::Transform::new()
+                            .translate(&graphene::Point::new(bounds.x(), bounds.y())),
+                    ),
+                );
+            }
         }
         fn snapshot(&self, snapshot: &gtk::Snapshot) {
             let obj = self.obj();
@@ -58,24 +82,35 @@ mod imp {
                 obj.height() as f32 * (1. - scale) / 2.,
             ));
             snapshot.scale(scale, scale);
-            snapshot.push_opacity(progress);
-            self.parent_snapshot(snapshot);
-            snapshot.pop();
+            // Keep the backdrop outside opacity isolation so GDK can request
+            // compositor blur throughout the panel's enter and exit transitions.
+            if progress > 0.
+                && let Some(blur) = self.blur.upgrade()
+            {
+                obj.snapshot_child(&blur, snapshot);
+            }
+            if progress < 1. {
+                snapshot.push_opacity(progress);
+            }
+            if let Some(content) = self.content.upgrade() {
+                obj.snapshot_child(&content, snapshot);
+            }
+            if progress < 1. {
+                snapshot.pop();
+            }
             snapshot.restore();
         }
     }
 }
 
 glib::wrapper! {
-    pub struct Popup(ObjectSubclass<imp::Popup>) @extends gtk::Widget, gtk::Box,
-    @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget, gtk::Orientable;
+    pub struct Popup(ObjectSubclass<imp::Popup>) @extends gtk::Widget,
+    @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget;
 }
 
 impl Popup {
     pub fn attach(window: &gtk::Window, body: &impl IsA<gtk::Widget>, theme: &Theme) {
-        let popup: Self = glib::Object::builder()
-            .property("orientation", gtk::Orientation::Vertical)
-            .build();
+        let popup: Self = glib::Object::new();
         popup.imp().open_ms.set(theme.popup_open_ms);
         popup.imp().close_ms.set(theme.popup_close_ms);
         popup.imp().body.set(Some(body.as_ref()));
@@ -96,7 +131,13 @@ impl Popup {
         body.set_margin_bottom(12);
         overlay.add_overlay(body);
         overlay.set_measure_overlay(body, true);
-        popup.append(&overlay);
+        let blur = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        blur.add_css_class("popup-blur");
+        blur.set_can_target(false);
+        blur.set_parent(&popup);
+        popup.imp().blur.set(Some(blur.upcast_ref()));
+        overlay.set_parent(&popup);
+        popup.imp().content.set(Some(overlay.upcast_ref()));
         let click = gtk::GestureClick::new();
         click.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak = popup.downgrade();
@@ -181,6 +222,10 @@ impl Popup {
 
     pub fn body(&self) -> Option<gtk::Widget> {
         self.imp().body.upgrade()
+    }
+
+    pub fn progress(&self) -> f64 {
+        self.imp().progress.get()
     }
 
     pub fn escape(&self, window: &gtk::Window) {

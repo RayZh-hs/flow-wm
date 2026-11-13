@@ -55,6 +55,10 @@ pub struct Theme {
     pub radius: f64,
     pub window_radius: f64,
     pub popup_opacity: f64,
+    pub blur_enabled: bool,
+    pub floating_opacity: f64,
+    pub tooltip_opacity: f64,
+    pub foreground_opacity: f64,
     pub backdrop: Color,
     pub backdrop_opacity: f64,
     pub font_scale: f64,
@@ -85,6 +89,10 @@ impl Default for Theme {
             radius: 12.0,
             window_radius: 16.0,
             popup_opacity: flow.popup_opacity.unwrap_or(1.0),
+            blur_enabled: false,
+            floating_opacity: 1.,
+            tooltip_opacity: 1.,
+            foreground_opacity: 1.,
             backdrop: Color(0., 0., 0.),
             backdrop_opacity: 0.55,
             font_scale: 1.0,
@@ -198,6 +206,28 @@ impl Theme {
         theme
     }
     fn apply_popup_settings(&mut self, settings: &Value) {
+        self.blur_enabled = settings["blurEnabled"].as_bool() == Some(true);
+        let opacity = |name: &str| settings[name].as_f64().unwrap_or(1.).clamp(0., 1.);
+        self.tooltip_opacity = opacity("popupTransparency");
+        let synced = settings["floatingWindowSyncGlobal"].as_bool() != Some(false);
+        self.floating_opacity = if synced {
+            self.tooltip_opacity
+        } else {
+            opacity("floatingWindowTransparency")
+        };
+        let (foreground, transparency) = if synced {
+            ("blurForegroundLayers", "foregroundLayerTransparency")
+        } else {
+            (
+                "floatingWindowForegroundLayers",
+                "floatingWindowForegroundTransparency",
+            )
+        };
+        self.foreground_opacity = if settings[foreground].as_bool() == Some(false) {
+            0.
+        } else {
+            opacity(transparency)
+        };
         // Match DMS Shape.radius(), including profiles migrated from cornerRadius.
         let fixed = (settings["radiusMode"].as_str() == Some("fixed")).then(|| {
             settings["fixedRadius"]
@@ -304,7 +334,33 @@ impl Theme {
                     "__GROUP_INNER_RADIUS__",
                     &format!("{}px", (self.radius / 3.).round()),
                 )
-                .replace("__POPUP_OPACITY__", &self.popup_opacity.to_string())
+                .replace(
+                    "__POPUP_OPACITY__",
+                    &if self.blur_enabled {
+                        self.popup_opacity * self.floating_opacity
+                    } else {
+                        1.
+                    }
+                    .to_string(),
+                )
+                .replace(
+                    "__TOOLTIP_OPACITY__",
+                    &if self.blur_enabled {
+                        self.popup_opacity * self.tooltip_opacity
+                    } else {
+                        1.
+                    }
+                    .to_string(),
+                )
+                .replace(
+                    "__FOREGROUND_OPACITY__",
+                    &if self.blur_enabled {
+                        self.foreground_opacity
+                    } else {
+                        1.
+                    }
+                    .to_string(),
+                )
                 .replace(
                     "__FONT_SCALE__",
                     &format!("{}px", (14. * self.font_scale).round()),
@@ -315,6 +371,12 @@ impl Theme {
                 )
                 .replace("__FONT__", &format!("\"{}\"", self.font)),
         );
+        if self.blur_enabled && super::background::gtk_blur() {
+            // GDK delegates backdrop filters of at least 20px to the compositor.
+            css.push_str(
+                "\n.flow-blur .popup-blur, tooltip.flow-blur { backdrop-filter: blur(24px); }\n",
+            );
+        }
         css
     }
 }
@@ -357,21 +419,66 @@ mod tests {
     }
 
     #[test]
-    fn popup_uses_dms_typography_without_inheriting_an_unblurred_transparent_surface() {
+    fn popup_opacity_scales_dms_surfaces_and_typography_tracks_dms() {
         let mut theme = Theme {
             popup_opacity: 0.9,
             ..Theme::default()
         };
-        let mut settings = serde_json::json!({"popupTransparency":0.34,"floatingWindowTransparency":0.8,"fontScale":1.04});
+        let mut settings = serde_json::json!({"blurEnabled":true,"popupTransparency":0.34,"floatingWindowTransparency":0.8,"fontScale":1.04});
         theme.apply_popup_settings(&settings);
         assert_eq!(theme.popup_opacity, 0.9);
+        assert!(
+            theme
+                .css()
+                .contains(&format!("background: alpha(@flow_surface, {})", 0.9 * 0.34))
+        );
         settings["floatingWindowSyncGlobal"] = false.into();
         theme.apply_popup_settings(&settings);
         assert_eq!(theme.popup_opacity, 0.9);
+        assert!(
+            theme
+                .css()
+                .contains(&format!("background: alpha(@flow_surface, {})", 0.9 * 0.8))
+        );
         theme.font = "Google Sans Flex".into();
         let css = theme.css();
         assert!(css.contains("font-family: \"Google Sans Flex\""));
         assert!(css.contains("font-size: 15px"));
         assert!(!css.contains("__"));
+    }
+
+    #[test]
+    fn blur_surfaces_follow_global_and_floating_window_preferences() {
+        let mut theme = Theme::default();
+        let mut settings = serde_json::json!({
+            "blurEnabled": true,
+            "popupTransparency": 0.34,
+            "floatingWindowTransparency": 0.8,
+            "foregroundLayerTransparency": 0.7,
+            "floatingWindowForegroundLayers": false
+        });
+        theme.apply_popup_settings(&settings);
+        assert!(theme.blur_enabled);
+        assert_eq!(
+            (theme.floating_opacity, theme.tooltip_opacity),
+            (0.34, 0.34)
+        );
+        assert_eq!(theme.foreground_opacity, 0.7);
+        settings["floatingWindowSyncGlobal"] = false.into();
+        theme.apply_popup_settings(&settings);
+        assert_eq!((theme.floating_opacity, theme.tooltip_opacity), (0.8, 0.34));
+        assert_eq!(theme.foreground_opacity, 0.);
+        settings["blurEnabled"] = false.into();
+        theme.apply_popup_settings(&settings);
+        assert!(
+            theme
+                .css()
+                .contains("tooltip.flow-blur { background: alpha(@flow_surface, 1); }")
+        );
+        assert!(
+            theme
+                .css()
+                .contains(".flow-blur .row-settings-body { background: alpha(@flow_surface, 1); }")
+        );
     }
 }

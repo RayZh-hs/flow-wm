@@ -18,6 +18,39 @@ unsafe extern "C" {
     );
 }
 
+pub(super) fn connection(display: &gdk::Display) -> Option<Connection> {
+    if !display.type_().name().contains("Wayland") {
+        return None;
+    }
+    let pointer = unsafe { gdk_wayland_display_get_wl_display(display.to_glib_none().0) };
+    if pointer.is_null() {
+        return None;
+    }
+    // The borrowed backend never owns or disconnects GTK's wl_display.
+    let backend =
+        unsafe { wayland_backend::sys::client::Backend::from_foreign_display(pointer.cast()) };
+    Some(Connection::from_backend(backend))
+}
+
+pub(super) fn surface(
+    connection: &Connection,
+    surface: &gdk::Surface,
+) -> Option<wl_surface::WlSurface> {
+    let pointer = unsafe { gdk_wayland_surface_get_wl_surface(surface.to_glib_none().0) };
+    if pointer.is_null() {
+        return None;
+    }
+    // GTK retains ownership of the foreign proxy.
+    let id = unsafe {
+        wayland_backend::client::ObjectId::from_ptr(
+            wl_surface::WlSurface::interface(),
+            pointer.cast(),
+        )
+    }
+    .ok()?;
+    wl_surface::WlSurface::from_id(connection, id).ok()
+}
+
 pub fn bind(window: &gtk::ApplicationWindow, workspace: u64) {
     let id = CString::new(niri_ipc::node_row::app_id(workspace)).unwrap();
     window.connect_local("map", true, move |values| {
@@ -99,15 +132,7 @@ struct WaylandPublisher {
 impl WaylandPublisher {
     fn new(surface: &gdk::Surface) -> Option<Self> {
         let display = surface.display();
-        // Native canvases are created only after the Wayland node-row probe.
-        // This borrowed backend never owns or disconnects GTK's wl_display.
-        let pointer = unsafe { gdk_wayland_display_get_wl_display(display.to_glib_none().0) };
-        if pointer.is_null() {
-            return None;
-        }
-        let backend =
-            unsafe { wayland_backend::sys::client::Backend::from_foreign_display(pointer.cast()) };
-        let connection = Connection::from_backend(backend);
+        let connection = connection(&display)?;
         let (globals, queue) = registry_queue_init::<WaylandState>(&connection).ok()?;
         let manager = globals.bind(&queue.handle(), 1..=1, ()).ok()?;
         Some(Self {
@@ -118,21 +143,7 @@ impl WaylandPublisher {
         })
     }
     fn publish(&mut self, surface: &gdk::Surface, scene: &NodeRowScene) -> bool {
-        let pointer = unsafe { gdk_wayland_surface_get_wl_surface(surface.to_glib_none().0) };
-        if pointer.is_null() {
-            return false;
-        }
-        // Use the foreign proxy only for this call; GTK retains surface ownership.
-        let id = unsafe {
-            wayland_backend::client::ObjectId::from_ptr(
-                wl_surface::WlSurface::interface(),
-                pointer.cast(),
-            )
-        };
-        let Some(surface) = id
-            .ok()
-            .and_then(|id| wl_surface::WlSurface::from_id(&self.connection, id).ok())
-        else {
+        let Some(surface) = self::surface(&self.connection, surface) else {
             return false;
         };
         let chunks = scene.windows.chunks(16);

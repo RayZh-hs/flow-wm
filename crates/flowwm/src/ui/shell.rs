@@ -3899,6 +3899,20 @@ impl Shell {
             let view = self.view.borrow();
             super::popup::Popup::attach(&dialog, &root, &view.theme);
         }
+        let view = self.view.clone();
+        let window = dialog.downgrade();
+        super::background::attach(&root, move || {
+            let view = view.borrow();
+            let progress = window
+                .upgrade()
+                .and_then(|window| window.child().and_downcast::<super::popup::Popup>())
+                .map_or(1., |popup| popup.progress());
+            super::background::Style {
+                enabled: view.theme.blur_enabled && progress > 0.,
+                radius: view.theme.window_radius,
+                scale: 0.96 + 0.04 * progress,
+            }
+        });
         dialog.present();
         gtk::prelude::GtkWindowExt::set_focus(&dialog, None::<&gtk::Widget>);
     }

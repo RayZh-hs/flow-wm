@@ -69,6 +69,7 @@ dropdown button { border: 1px solid @flow_outline; background: @flow_surface_hig
 .flow-shell { background: transparent; }
 .graph-surface { background: transparent; }
 tooltip { background: @flow_surface_high; color: @flow_text; border: 1px solid alpha(@flow_outline, 0.8); border-radius: 8px; padding: 0; box-shadow: 0 4px 16px alpha(black, 0.2); }
+tooltip.flow-blur { background: alpha(@flow_surface, __TOOLTIP_OPACITY__); }
 .port-tooltip label { padding: 10px 12px; text-shadow: none; }
 .port-tooltip .port-tooltip-signature { font-family: "JetBrains Mono", monospace; font-size: 13px; font-weight: 400; }
 .port-tooltip .port-tooltip-description { font-size: 13px; color: @flow_text; }
@@ -93,12 +94,15 @@ entry.error { border-color: @flow_error; }
 .row-settings-hint { color: @flow_muted; font-size: 11px; }
 
 window.row-settings-window { background: transparent; border: none; border-radius: 0; }
-.row-settings-body { background: alpha(@flow_surface, __POPUP_OPACITY__); border: 1px solid alpha(@flow_outline, 0.5); border-radius: __WINDOW_RADIUS__; padding: 12px; }
+.row-settings-body { background: @flow_surface; border: 1px solid alpha(@flow_outline, 0.5); border-radius: __WINDOW_RADIUS__; padding: 12px; }
+.flow-blur .row-settings-body { background: alpha(@flow_surface, __POPUP_OPACITY__); }
+.popup-blur { border-radius: __WINDOW_RADIUS__; }
 .row-settings-body * { font-size: __FONT_SCALE__; }
 .row-settings-body .dialog-title { font-size: __FONT_SCALE__; font-weight: 500; margin: 0; }
 .row-settings-body .muted, .row-settings-body .field-label, .row-settings-body .row-settings-hint { font-size: __SMALL_FONT__; }
 .row-settings-body .field-label { color: @flow_primary; }
 .row-settings-section { background: @flow_surface_container; border-radius: __GROUP_INNER_RADIUS__; padding: 12px 16px; }
+.flow-blur .row-settings-section { background: alpha(@flow_surface_container, __FOREGROUND_OPACITY__); }
 .row-settings-section.first { border-top-left-radius: __WINDOW_RADIUS__; border-top-right-radius: __WINDOW_RADIUS__; }
 .row-settings-section.last { border-bottom-left-radius: __WINDOW_RADIUS__; border-bottom-right-radius: __WINDOW_RADIUS__; }
 .row-settings-body entry, .row-settings-body dropdown > button { background: @flow_surface_high; border: 1px solid transparent; min-height: 24px; padding: 8px 12px; }

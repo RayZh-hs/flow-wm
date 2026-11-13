@@ -174,7 +174,8 @@ impl<W: LayoutElement> Workspace<W> {
             }
         }
         for (popup, offset) in PopupManager::popups_for_surface(canvas) {
-            let loc = geometry.loc + (offset - popup.geometry().loc).to_f64();
+            let popup_geo = popup.geometry();
+            let loc = geometry.loc + (offset - popup_geo.loc).to_f64();
             push_elements_from_surface_tree(
                 ctx.renderer,
                 popup.wl_surface(),
@@ -183,6 +184,25 @@ impl<W: LayoutElement> Workspace<W> {
                 1.,
                 Kind::Unspecified,
                 &mut |elem| push(NodeRenderElement::Canvas(elem).into()),
+            );
+            crate::render_helpers::background_effect::render_for_tile(
+                ctx.as_gles(),
+                None,
+                Rectangle::new(geometry.loc + offset.to_f64(), popup_geo.size.to_f64()),
+                scale.x,
+                false,
+                popup.wl_surface(),
+                popup_geo.loc.upscale(-1).to_f64(),
+                Scale::from(1.),
+                self.blur_config(),
+                niri_config::CornerRadius::default(),
+                niri_config::BackgroundEffect {
+                    xray: Some(false),
+                    ..Default::default()
+                },
+                false,
+                xray.offset(geometry.loc + offset.to_f64()),
+                &mut |elem| push(NodeRenderElement::Background(elem).into()),
             );
         }
         // The canvas owns the shared outline throughout the morph. Rendering the

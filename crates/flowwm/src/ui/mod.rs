@@ -1,3 +1,4 @@
+mod background;
 mod canvas;
 mod collapse;
 mod empty;

@@ -2084,6 +2084,10 @@ impl<W: LayoutElement> Workspace<W> {
         &self.scrolling
     }
 
+    pub(crate) fn blur_config(&self) -> niri_config::Blur {
+        self.options.blur
+    }
+
     pub fn scrolling_mut(&mut self) -> &mut ScrollingSpace<W> {
         &mut self.scrolling
     }

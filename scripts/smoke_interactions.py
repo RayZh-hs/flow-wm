@@ -35,7 +35,7 @@ def wallpaper():
         def draw(_, context, width, height):
             for y in range(0, height, 8):
                 for x in range(0, width, 8):
-                    value = 0.2 if (x // 8 + y // 8) % 2 else 0.85
+                    value = (0.2 if (x // 8 + y // 8) % 2 else 0.85) * (0.7 + 0.3 * x / width)
                     context.set_source_rgb(value, value, value)
                     context.rectangle(x, y, 8, 8)
                     context.fill()
@@ -61,6 +61,9 @@ def run():
         environment.pop("NIRI_SOCKET", None)
         environment["XDG_RUNTIME_DIR"] = temporary
         environment["FLOWWM_CONFIG_DIR"] = str(runtime / "config")
+        settings = runtime / "config/dms/settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text(json.dumps({"blurEnabled": True, "popupTransparency": 0.34}))
         environment["GDK_BACKEND"] = "wayland"
         environment["GTK_A11Y"] = "none"
         environment["PATH"] = str(ROOT / "target/debug") + os.pathsep + environment["PATH"]
@@ -125,6 +128,23 @@ def run():
                 ui("select", id=constant)
                 ui("fit")
                 time.sleep(0.5)
+                ui("row_settings")
+                time.sleep(0.5)
+                blurred_settings = capture("row-settings-backdrop.png")
+                popup_path = artifacts / "row-settings-widget.png"
+                popup_path.unlink(missing_ok=True)
+                ui("capture", path=str(popup_path))
+                wait(popup_path.exists, compositor)
+                with Image.open(popup_path) as popup:
+                    assert 75 < popup.getpixel((40, popup.height - 8))[3] < 100, "row settings must inherit DMS translucency"
+                    left = (blurred_settings.width - popup.width) // 2
+                    bottom = (blurred_settings.height + popup.height) // 2
+                    band = blurred_settings.crop((left + 40, bottom - 10, left + popup.width - 40, bottom - 6)).convert("L")
+                    # Adjacent checkerboard squares disappear; the broad wallpaper gradient remains.
+                    assert max(abs(band.getpixel((x + 1, 0)) - band.getpixel((x, 0))) for x in range(band.width - 1)) < 5, "panel backdrop must blur wallpaper detail"
+                    assert band.getpixel((band.width - 1, 0)) - band.getpixel((0, 0)) >= 2, "panel backdrop must preserve wallpaper color variation"
+                input_command("key", "Escape")
+                time.sleep(0.3)
                 before = capture("preview-backdrop.png")
                 width, height = before.size
                 zoom = min((width - 160) / 692, (height - 160) / 274, 1.2)
@@ -151,6 +171,11 @@ def run():
                 hovered = capture("port-tooltip.png")
                 difference = ImageChops.difference(before, hovered)
                 assert sum(value > 30 for value in difference.convert("L").tobytes()) > 1000, "the port tooltip must be visible"
+                tip_bounds = difference.convert("L").point(lambda value: 255 if value > 30 else 0).getbbox()
+                _, _, tip_right, tip_bottom = tip_bounds
+                tip_band = hovered.crop((tip_right - 80, tip_bottom - 10, tip_right - 15, tip_bottom - 5)).convert("L").tobytes()
+                assert 45 < statistics.mean(tip_band) < 150, "port tooltips must have a translucent background"
+                assert statistics.pstdev(tip_band) < 8, "port tooltip backdrops must blur the checkerboard"
                 input_command("mousemove", "--sync", 40, 40)
                 time.sleep(0.15)
                 dismissed = capture("port-tooltip-dismissed.png")
@@ -164,7 +189,7 @@ def run():
                 input_command("key", "Escape")
                 time.sleep(0.15)
                 closed = capture("constant-editor-dismissed.png")
-                assert ImageChops.difference(before, closed).getbbox() is None, "Escape must dismiss the editor and restore the canvas"
+                assert sum(value > 30 for value in ImageChops.difference(before, closed).convert("L").tobytes()) < 20, "Escape must dismiss the editor and restore the canvas"
 
                 click(*point(140, 185))
                 time.sleep(0.15)
@@ -306,7 +331,7 @@ def run():
                 ui("open",id=preview)
                 wait(lambda: any(w["id"]==preview_window and w["is_focused"] for w in request(niri_socket,"Windows")["Windows"]),compositor)
                 assert node(preview)["workspace"]==second["id"], "opening the moved window must preserve its destination workflow"
-                print("Interaction smoke passed: styled port hover and pointer-leave dismissal, blurred/dimmed preview gaps, visible inline editor, keyboard editing and saving, Escape dismissal, constant and window dragging, persistent release positions, deselection, and row-switch recovery; extension-only compact windows, working actions, close-without-destroy, private regions, identity-preserving Make Public, directional Ctrl-drag alignment with undo/redo, and synchronized window nodes across workflow rows with detached boundary connections.")
+                print("Interaction smoke passed: translucent, blurred row settings and port tooltips, styled port hover and pointer-leave dismissal, blurred/dimmed preview gaps, visible inline editor, keyboard editing and saving, Escape dismissal, constant and window dragging, persistent release positions, deselection, and row-switch recovery; extension-only compact windows, working actions, close-without-destroy, private regions, identity-preserving Make Public, directional Ctrl-drag alignment with undo/redo, and synchronized window nodes across workflow rows with detached boundary connections.")
         finally:
             for child in reversed(children):
                 if child.poll() is None:

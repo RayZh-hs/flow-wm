@@ -903,7 +903,10 @@ fn make_scoped(
     area.set_has_tooltip(true);
     let e = engine.clone();
     let v = view.clone();
-    let content = RefCell::new(super::port_tooltip::Content::new());
+    let theme = view.clone();
+    let content = RefCell::new(super::port_tooltip::Content::new(move || {
+        theme.borrow().theme.clone()
+    }));
     area.connect_query_tooltip(move |_, x, y, keyboard, tooltip| {
         let view = v.borrow();
         if keyboard || view.drag.is_some() || view.space_down {

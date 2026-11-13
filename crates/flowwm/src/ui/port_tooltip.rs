@@ -143,9 +143,17 @@ pub(super) struct Content {
 }
 
 impl Content {
-    pub fn new() -> Self {
+    pub fn new(theme: impl Fn() -> Theme + 'static) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.add_css_class("port-tooltip");
+        super::background::attach(&root, move || {
+            let theme = theme();
+            super::background::Style {
+                enabled: theme.blur_enabled,
+                radius: 8.,
+                scale: 1.,
+            }
+        });
         let label = |class: &str| {
             let label = gtk::Label::new(None);
             label.add_css_class(class);
@@ -324,7 +332,7 @@ mod tests {
         state.nodes.push(node);
         let mut cache = Cache::default();
         cache.prepare(&state, 1, &theme);
-        let mut content = Content::new();
+        let mut content = Content::new(Theme::default);
         let tooltip = glib::Object::new::<gtk::Tooltip>();
         assert!(content.show(&cache, endpoint.clone(), true, &tooltip));
         assert_eq!(content.signature.text(), format!("value: {ty}"));

@@ -208,9 +208,14 @@ finishes. Win+L during closing reverses the transition and preserves the editor.
 The transitions start with the first rendered frame after a fresh login and
 follow FlowWM's motion preferences independently of GTK's session animation setting.
 Set `popup-open-ms` and `popup-close-ms` inside `flow` in `config.kdl` to change
-their durations; zero disables the corresponding transition. `popup-opacity`
-controls the native panel background, from 0 to 1. Niri's animation off/slowdown
-settings and Dux's reduced-motion setting apply to both transitions.
+their durations; zero disables the corresponding transition. Row settings and
+node port tooltips share Dux's blurred backdrop when blur is enabled and the
+compositor supports it. Row settings follows the floating-window transparency
+and foreground-layer preferences; tooltips follow the global popup transparency.
+`popup-opacity` scales these background opacities from 0 to 1 (1 follows Dux).
+Both surfaces use opaque backgrounds when blur is disabled or unsupported.
+Niri's animation off/slowdown settings and Dux's reduced-motion setting apply to
+both transitions.
 
 Row variables become `FLOWWM_ROWSET_<NAME>` on top of the session environment.
 The builtin `pwd` setting defaults to home and sets supported terminals' startup
