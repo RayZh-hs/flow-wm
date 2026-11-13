@@ -175,6 +175,44 @@ def run():
                     (artifacts / "results.json").write_text(json.dumps(samples, indent=2) + "\n")
                     keys("Escape")
                     wait(lambda: not inspect().get("open"), compositor)
+            key_log = runtime / "application-keys.jsonl"
+            fixture = subprocess.Popen([sys.executable, str(ROOT / "scripts/preview_fixture.py"),
+                                        "Shortcut forwarding", "--key-log", str(key_log)],
+                                       env=environment, stdout=log, stderr=log)
+            children.append(fixture)
+            application = wait(lambda: next((window for window in request(niri_socket, "Windows")["Windows"]
+                                             if window["title"] == "Shortcut forwarding"), None), compositor)
+            node = wait(lambda: next((node for node in request(runtime / "flowwm.sock", {"action": "catalog"})["nodes"]
+                                     if node["window_id"] == application["id"]), None), compositor)
+
+            def forwarded_keys():
+                events = [json.loads(line) for line in key_log.read_text().splitlines()]
+                return events if any(event["key"] == "F8" for event in events) else None
+
+            for connected in (True, False):
+                call("style", str(connected).lower())
+                for view in ("windows", "peek"):
+                    request(runtime / "flowwm.sock", {"action": "ui", "command": {"action": "windows" if view == "windows" else "nodes"}})
+                    wait(lambda: request(runtime / "flowwm.sock", {"action": "catalog"})["presentation"]["graph_visible"] == (view == "peek"), compositor)
+                    if view == "peek":
+                        request(runtime / "flowwm.sock", {"action": "ui", "command": {"action": "open", "id": node["id"]}})
+                    else:
+                        request(niri_socket, {"Action": {"FocusWindow": {"id": application["id"]}}})
+                    wait(lambda: any(window["id"] == application["id"] and window["is_focused"]
+                                     for window in request(niri_socket, "Windows")["Windows"]), compositor)
+                    key_log.write_text("")
+                    keys("ctrl+shift+p", "F8")
+                    try:
+                        received = wait(forwarded_keys, compositor)
+                    except TimeoutError as error:
+                        raise AssertionError(f"{connected=} {view=}: keys={key_log.read_text()}, launcher={inspect()}, windows={request(niri_socket, 'Windows')}") from error
+                    assert any(event["key"].lower() == "p" and event["ctrl"] and event["shift"] for event in received), f"{view=}: {received}"
+                    assert not inspect().get("open"), f"Macro search intercepted Ctrl+Shift+P in {view}"
+                    samples.append({"connected": connected, "view": view, "shortcut": "ctrl+shift+p", "forwarded": True})
+                    (artifacts / "results.json").write_text(json.dumps(samples, indent=2) + "\n")
+                    if view == "peek":
+                        request(runtime / "flowwm.sock", {"action": "ui", "command": {"action": "toggle"}})
+                        wait(lambda: not any(window["is_focused"] for window in request(niri_socket, "Windows")["Windows"]), compositor)
             (artifacts / "results.json").write_text(json.dumps(samples, indent=2) + "\n")
             print(json.dumps(samples, indent=2))
         finally:

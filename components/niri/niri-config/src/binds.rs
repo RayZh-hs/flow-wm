@@ -27,7 +27,15 @@ pub struct Bind {
     pub cooldown: Option<Duration>,
     pub allow_when_locked: bool,
     pub allow_inhibiting: bool,
+    pub scope: BindScope,
     pub hotkey_overlay_title: Option<Option<String>>,
+}
+
+#[derive(knuffel::DecodeScalar, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum BindScope {
+    #[default]
+    Global,
+    Nodes,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
@@ -862,6 +870,7 @@ where
         let mut allow_when_locked = false;
         let mut allow_when_locked_node = None;
         let mut allow_inhibiting = true;
+        let mut scope = BindScope::default();
         let mut hotkey_overlay_title = None;
         for (name, val) in &node.properties {
             match &***name {
@@ -882,6 +891,16 @@ where
                 }
                 "hotkey-overlay-title" => {
                     hotkey_overlay_title = Some(knuffel::traits::DecodeScalar::decode(val, ctx)?);
+                }
+                "scope" => {
+                    scope = knuffel::traits::DecodeScalar::decode(val, ctx)?;
+                    if scope == BindScope::Nodes && !matches!(key.trigger, Trigger::Keysym(_)) {
+                        ctx.emit_error(DecodeError::unexpected(
+                            name,
+                            "property",
+                            "scope=\"nodes\" is only supported on keyboard bindings",
+                        ));
+                    }
                 }
                 name_str => {
                     ctx.emit_error(DecodeError::unexpected(
@@ -905,6 +924,7 @@ where
             cooldown: None,
             allow_when_locked: false,
             allow_inhibiting: true,
+            scope: BindScope::default(),
             hotkey_overlay_title: None,
         };
 
@@ -941,6 +961,7 @@ where
                         cooldown,
                         allow_when_locked,
                         allow_inhibiting,
+                        scope,
                         hotkey_overlay_title,
                     })
                 }
@@ -1067,6 +1088,23 @@ impl FromStr for Key {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binding_scopes_are_explicit_and_default_to_global() {
+        for (property, expected) in [
+            ("", BindScope::Global),
+            (r#"scope="global""#, BindScope::Global),
+            (r#"scope="nodes""#, BindScope::Nodes),
+        ] {
+            let config = crate::Config::parse_mem(&format!(
+                "binds {{ Ctrl+Shift+P {property} {{ spawn; }}; }}"
+            ))
+            .unwrap();
+            assert_eq!(config.binds.0[0].scope, expected);
+        }
+        assert!(crate::Config::parse_mem(r#"binds { P scope="typo" { spawn; }; }"#).is_err());
+        assert!(crate::Config::parse_mem(r#"binds { Mod+WheelScrollUp scope="nodes" { spawn; }; }"#).is_err());
+    }
 
     #[test]
     fn parse_xf86_screensaver() {

@@ -143,7 +143,9 @@ class ProfileIsolation(unittest.TestCase):
     Mod+F3 { spawn "flowwm" "search"; }
     Mod+F4 { spawn "custom-launcher" "new"; }
     Mod+F5 { spawn "flowwm" "search" "--custom"; }
+    Ctrl+Shift+P hotkey-overlay-title="Search workflow macros" repeat=false allow-inhibiting=false { spawn-with-keyboard-focus "flowwm" "search" "macros" namespace="dms:spotlight" wait-for-ready=true; }
 }
+flow { binds { Ctrl+Shift+p action="macros" title="Search workflow macros"; }; }
 '''
             main.write_text(original)
             main.chmod(0o600)
@@ -154,10 +156,12 @@ class ProfileIsolation(unittest.TestCase):
                 self.assertTrue(activate_launcher_bindings(config, state, args[-1], compositor))
             self.assertEqual(validate.call_args.args[0][:3], [str(compositor), 'validate', '--config'])
             updated = main.read_text()
-            self.assertEqual(updated.count('spawn-with-keyboard-focus'), 3)
+            self.assertEqual(updated.count('spawn-with-keyboard-focus'), 4)
             self.assertIn('Mod+F1 { spawn-with-keyboard-focus "flowwm" "new" namespace="dms:spotlight" wait-for-ready=true;', updated)
             self.assertIn('spawn "custom-launcher" "new"', updated)
             self.assertIn('spawn "flowwm" "search" "--custom"', updated)
+            self.assertIn('Ctrl+Shift+P scope="nodes"', updated)
+            self.assertIn('Ctrl+Shift+p action="macros"', updated)
             self.assertEqual(main.stat().st_mode & 0o777, 0o600)
             self.assertEqual((state / 'config-backups/before-launcher-input/config.kdl').read_text(), original)
             installer.prepare_profile(*args)
@@ -165,6 +169,24 @@ class ProfileIsolation(unittest.TestCase):
             with patch('configuration.subprocess.run') as validate:
                 self.assertFalse(activate_launcher_bindings(config, state, args[-1], compositor))
             validate.assert_not_called()
+
+    def test_macro_binding_upgrade_preserves_custom_commands_and_keys(self):
+        from configuration import node_view_macro_bindings
+        launcher = Path('/test/bin/flowwm-session')
+        for command in ('spawn "flowwm" "search" "macros"',
+                        'spawn-with-keyboard-focus "/test/bin/flowwm" "search" "macros" namespace="dms:spotlight" wait-for-ready=true'):
+            original = f'binds {{\n    Ctrl+Shift+P repeat=false {{ {command}; }}\n}}\n'
+            upgraded = original.replace('Ctrl+Shift+P', 'Ctrl+Shift+P scope="nodes"')
+            self.assertEqual(node_view_macro_bindings(original, launcher), upgraded)
+            self.assertEqual(node_view_macro_bindings(upgraded, launcher), upgraded)
+        for binding in ('Ctrl+Shift+P { spawn "editor" "command-palette"; }',
+                        'Ctrl+Shift+P { spawn "flowwm" "search" "macros" "--custom"; }',
+                        'Mod+P { spawn "flowwm" "search" "macros"; }',
+                        'Ctrl+Shift+P scope="global" { spawn "flowwm" "search" "macros"; }',
+                        '// Ctrl+Shift+P { spawn "flowwm" "search" "macros"; }',
+                        'Ctrl+Shift+p action="macros" title="My macros"'):
+            original = f'binds {{\n    {binding}\n}}\n'
+            self.assertEqual(node_view_macro_bindings(original, launcher), original)
 
     def test_login_binding_validation_failure_preserves_the_original_config(self):
         from configuration import activate_launcher_bindings

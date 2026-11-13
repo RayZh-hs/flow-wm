@@ -583,9 +583,13 @@ impl State {
                 }
 
                 let res = {
+                    let node_canvas_focused = this.niri.node_canvas_is_focused();
                     let config = this.niri.config.borrow();
                     let bindings =
-                        make_binds_iter(&config, &mut this.niri.window_mru_ui, modifiers);
+                        make_binds_iter(&config, &mut this.niri.window_mru_ui, modifiers)
+                            .filter(|bind| {
+                                bind.scope != niri_config::BindScope::Nodes || node_canvas_focused
+                            });
 
                     should_intercept_key(
                         &mut this.niri.suppressed_keys,
@@ -824,6 +828,9 @@ impl State {
     }
 
     pub fn handle_bind(&mut self, bind: Bind) {
+        if bind.scope == niri_config::BindScope::Nodes && !self.niri.node_canvas_is_focused() {
+            return;
+        }
         let Some(cooldown) = bind.cooldown else {
             self.do_action(bind.action, bind.allow_when_locked);
             return;
@@ -3348,6 +3355,7 @@ impl State {
                                 cooldown: None,
                                 allow_when_locked: false,
                                 allow_inhibiting: false,
+                                scope: Default::default(),
                                 hotkey_overlay_title: None,
                             });
                             let bind_right = Some(Bind {
@@ -3360,6 +3368,7 @@ impl State {
                                 cooldown: None,
                                 allow_when_locked: false,
                                 allow_inhibiting: false,
+                                scope: Default::default(),
                                 hotkey_overlay_title: None,
                             });
                             (bind_left, bind_right)
@@ -3417,6 +3426,7 @@ impl State {
                             cooldown: Some(Duration::from_millis(50)),
                             allow_when_locked: false,
                             allow_inhibiting: false,
+                            scope: Default::default(),
                             hotkey_overlay_title: None,
                         });
                         let bind_down = Some(Bind {
@@ -3429,6 +3439,7 @@ impl State {
                             cooldown: Some(Duration::from_millis(50)),
                             allow_when_locked: false,
                             allow_inhibiting: false,
+                            scope: Default::default(),
                             hotkey_overlay_title: None,
                         });
                         (bind_up, bind_down)
@@ -3443,6 +3454,7 @@ impl State {
                             cooldown: Some(Duration::from_millis(50)),
                             allow_when_locked: false,
                             allow_inhibiting: false,
+                            scope: Default::default(),
                             hotkey_overlay_title: None,
                         });
                         let bind_down = Some(Bind {
@@ -3455,6 +3467,7 @@ impl State {
                             cooldown: Some(Duration::from_millis(50)),
                             allow_when_locked: false,
                             allow_inhibiting: false,
+                            scope: Default::default(),
                             hotkey_overlay_title: None,
                         });
                         (bind_up, bind_down)
@@ -4778,6 +4791,7 @@ fn should_intercept_key<'a>(
                     // But logically, nothing can inhibit its actions. Only opening it can be
                     // inhibited.
                     allow_inhibiting: false,
+                    scope: Default::default(),
                     hotkey_overlay_title: None,
                 });
             }
@@ -4844,6 +4858,7 @@ fn find_bind<'a>(
             // It also makes no sense to inhibit the default power key handling.
             // Hardcoded binds must never be inhibited.
             allow_inhibiting: false,
+            scope: Default::default(),
             hotkey_overlay_title: None,
         });
     }
@@ -5081,6 +5096,7 @@ fn hardcoded_overview_bind(raw: Keysym, mods: ModifiersState) -> Option<Bind> {
         cooldown: None,
         allow_when_locked: false,
         allow_inhibiting: false,
+        scope: Default::default(),
         hotkey_overlay_title: None,
     })
 }
@@ -5511,6 +5527,7 @@ mod tests {
                 cooldown: None,
                 allow_when_locked: false,
                 allow_inhibiting: true,
+                scope: Default::default(),
                 hotkey_overlay_title: None,
             },
             Bind {
@@ -5523,6 +5540,7 @@ mod tests {
                 cooldown: None,
                 allow_when_locked: false,
                 allow_inhibiting: true,
+                scope: Default::default(),
                 hotkey_overlay_title: None,
             },
             Bind {
@@ -5535,6 +5553,7 @@ mod tests {
                 cooldown: None,
                 allow_when_locked: false,
                 allow_inhibiting: true,
+                scope: Default::default(),
                 hotkey_overlay_title: None,
             },
             Bind {
@@ -5547,6 +5566,7 @@ mod tests {
                 cooldown: None,
                 allow_when_locked: false,
                 allow_inhibiting: true,
+                scope: Default::default(),
                 hotkey_overlay_title: None,
             },
             Bind {
@@ -5559,6 +5579,7 @@ mod tests {
                 cooldown: None,
                 allow_when_locked: false,
                 allow_inhibiting: true,
+                scope: Default::default(),
                 hotkey_overlay_title: None,
             },
         ]);

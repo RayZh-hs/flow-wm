@@ -72,13 +72,23 @@ def launcher_focus_bindings(text, launcher):
     )
 
 
+def node_view_macro_bindings(text, launcher):
+    """Scope the former global macro shortcut to the node canvas."""
+    commands = '|'.join(re.escape(json.dumps(command)) for command in ('flowwm', str(launcher.with_name('flowwm'))))
+    key = r'(?i:(?:Ctrl|Control)\+Shift\+P|Shift\+(?:Ctrl|Control)\+P)'
+    command = r'spawn(?:-with-keyboard-focus)?\s+(?:' + commands + r')\s+"search"\s+"macros"'
+    properties = r'(?:\s+(?:namespace="dms:spotlight"|wait-for-ready=(?:true|false)|timeout-ms=\d+))*'
+    pattern = re.compile(r'(?m)^([ \t]*' + key + r')([ \t]+[^\n{}]*\{\s*' + command + properties + r'\s*;?\s*\})')
+    return pattern.sub(lambda match: match[0] if re.search(r'\bscope\s*=', match[2]) else match[1] + ' scope="nodes"' + match[2], text)
+
+
 def activate_launcher_bindings(config, state, launcher, compositor):
     """Activate compositor-specific bindings only after the previous session has ended."""
     main = Path(config) / 'config.kdl'
     if not main.is_file():
         return False
     original = main.read_text()
-    upgraded = row_environment_bindings(launcher_focus_bindings(original, launcher))
+    upgraded = node_view_macro_bindings(row_environment_bindings(launcher_focus_bindings(original, launcher)), launcher)
     if original == upgraded:
         return False
     backup = Path(state) / 'config-backups/before-launcher-input/config.kdl'

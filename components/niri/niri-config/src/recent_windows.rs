@@ -153,6 +153,7 @@ impl From<MruBind> for Bind {
             cooldown: None,
             allow_when_locked: false,
             allow_inhibiting: x.allow_inhibiting,
+            scope: Default::default(),
             hotkey_overlay_title: x.hotkey_overlay_title,
         }
     }

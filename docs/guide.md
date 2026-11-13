@@ -64,7 +64,7 @@ Bindings that require a newer compositor are activated at the next login, after 
 | Win+Shift+Space | Find a node in Dux search |
 | Ctrl+F or / | Search; frame all nodes first |
 | Ctrl+P | Compact, align and frame the graph |
-| Ctrl+Shift+P | Search workflow macros (`@ >`) |
+| Ctrl+Shift+P | Search workflow macros (`@ >`) in Nodes view |
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo graph edits |
 | H J K L | Smoothly pan left/down/up/right |
 | Shift+H J K L | Pan faster |
@@ -140,7 +140,7 @@ You can start typing immediately after a search shortcut. The compositor holds t
 | `@ / name` | Workspace rows |
 | `@ # name` | Saved recipes |
 
-Application window titles are kept out of ordinary search. `Ctrl+Shift+P` opens `@ >` directly; choose Rearrange to compact and frame the workflow. Fuzzy abbreviations match within words, so unrelated words in a long title cannot combine into a match.
+Application window titles are kept out of ordinary search. In Nodes view, `Ctrl+Shift+P` opens `@ >` directly; choose Rearrange to compact and frame the workflow. In Windows view and window peeks, the shortcut passes through to the application. Existing profiles have the former global macro binding scoped to Nodes at the next login, preserving custom commands and explicit scopes. Fuzzy abbreviations match within words, so unrelated words in a long title cannot combine into a match.
 
 With a selected node, **Tab** starts a connection search:
 
@@ -251,7 +251,7 @@ The extension observer discovers already running or explicitly addressed executa
 
 XDG directory overrides are respected. `FLOWWM_CONFIG_DIR` selects an explicit FlowWM configuration directory. Edit `config.kdl` directly: niri validates and reloads compositor settings and global bindings. Restart the graph service for graph bindings and motion changes. Reinstalling preserves this file; no binding generation step is needed.
 
-Global `binds` use native niri actions and properties such as `repeat`, `allow-when-locked`, `allow-inhibiting`, and `cooldown-ms`. The `flow` section configures the canvas:
+Global `binds` use native niri actions and properties such as `repeat`, `allow-when-locked`, `allow-inhibiting`, and `cooldown-ms`. Set `scope="nodes"` on a keyboard binding to activate it only while the native node canvas has keyboard focus; window peeks and shell dialogs keep their application shortcuts. Bindings default to `scope="global"`. The `flow` section configures the canvas:
 
 ```kdl
 flow {

@@ -121,7 +121,11 @@ pub fn shortcuts() -> Vec<Shortcut> {
                 keys: vec![key_name(bind.key)],
                 action: format!("{:?}", bind.action),
                 description,
-                scope: "global".into(),
+                scope: match bind.scope {
+                    niri_config::BindScope::Global => "global",
+                    niri_config::BindScope::Nodes => "nodes",
+                }
+                .into(),
             })
         })
         .collect();

@@ -35,7 +35,7 @@ fn parse(keymap: &Keymap, input: &str) -> Vec<Op> {
     ops
 }
 
-fn set_up(config: &str) -> (Fixture, ClientId, WlSurface) {
+pub(super) fn set_up(config: &str) -> (Fixture, ClientId, WlSurface) {
     let mut config = Config::parse_mem(config).unwrap();
     // knuffel doesn't understand #[cfg(test)]...
     for bind in &mut config.binds.0 {
@@ -61,7 +61,7 @@ fn set_up(config: &str) -> (Fixture, ClientId, WlSurface) {
     (f, id, surface)
 }
 
-fn run_f(f: &mut Fixture, id: ClientId, surface: &WlSurface, input: &str) -> String {
+pub(super) fn run_f(f: &mut Fixture, id: ClientId, surface: &WlSurface, input: &str) -> String {
     let state = f.niri_state();
     let keyboard = state.niri.seat.get_keyboard().unwrap();
     let ops = keyboard.with_xkb_state(state, |xkb| {

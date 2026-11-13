@@ -33,6 +33,63 @@ use scene_client::flowwm_node_row_manager_v1::FlowwmNodeRowManagerV1;
 wayland_client::delegate_noop!(super::client::State: FlowwmNodeRowManagerV1);
 
 #[test]
+fn node_rows_scoped_shortcuts_only_intercept_keys_while_the_canvas_is_focused() {
+    use super::binds::{run_f, set_up};
+
+    let (mut f, client, app_surface) =
+        set_up(r#"binds { Ctrl+Shift+P scope="nodes" { spawn "unused"; }; }"#);
+    let input = "+LCTL +LFSH +AD10 -AD10 -LFSH -LCTL";
+    let received = run_f(&mut f, client, &app_surface, input);
+    assert!(received.contains("surface key pressed: 25"), "{received}");
+    assert_eq!(f.niri().test_action_count, 0, "Windows owns its shortcuts");
+
+    let workspace = f.niri().layout.active_workspace().unwrap().id().get();
+    let window = f.niri().layout.windows().next().unwrap().1.window.clone();
+    let window_id = f.niri().layout.windows().next().unwrap().1.id().get();
+    let (canvas_client, canvas_surface) = canvas(&mut f, client, workspace);
+    assert!(f.niri().node_canvas_is_focused());
+    run_f(&mut f, client, &canvas_client, input);
+    assert_eq!(
+        f.niri().test_action_count,
+        1,
+        "Nodes owns the macro shortcut"
+    );
+
+    f.niri()
+        .stage_node_row(
+            workspace,
+            NodeRowScene {
+                windows: vec![NodeWindow {
+                    id: window_id,
+                    bounds: (100., 100., 800., 600.),
+                    expanded: true,
+                    opacity: 1.,
+                    presentation: None,
+                }],
+                insets: [0; 4],
+            },
+        )
+        .unwrap();
+    f.client(client).window(&canvas_client).commit();
+    f.double_roundtrip(client);
+    f.niri_state().focus_window(&window);
+    f.double_roundtrip(client);
+    assert!(!f.niri().node_canvas_is_focused());
+    let received = run_f(&mut f, client, &app_surface, input);
+    assert!(received.contains("surface key pressed: 25"), "{received}");
+    assert_eq!(f.niri().test_action_count, 1, "Peeks own their shortcuts");
+
+    f.niri().focus_node_canvas(Some(&canvas_surface));
+    f.double_roundtrip(client);
+    run_f(&mut f, client, &canvas_client, input);
+    assert_eq!(
+        f.niri().test_action_count,
+        2,
+        "Returning to Nodes restores its shortcuts"
+    );
+}
+
+#[test]
 fn node_rows_wayland_scenes_latch_chunks_only_on_the_matching_canvas_commit() {
     let mut f =
         Fixture::with_config(Config::parse_mem("workspace \"one\"\nworkspace \"two\"").unwrap());

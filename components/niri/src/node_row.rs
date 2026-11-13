@@ -346,6 +346,12 @@ impl Niri {
         removed
     }
 
+    pub(crate) fn node_canvas_is_focused(&self) -> bool {
+        self.node_canvas_focus()
+            .as_ref()
+            .is_some_and(|canvas| self.keyboard_focus.surface() == Some(canvas))
+    }
+
     pub(crate) fn node_canvas_focus(&self) -> Option<WlSurface> {
         if self.layout.is_overview_open() {
             return None;

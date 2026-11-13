@@ -70,7 +70,7 @@ binds {
     Mod+minus hotkey-overlay-title="Zoom out (Nodes) / decrease column width (Windows)" repeat=true { spawn "flowwm" "send" "{\"action\": \"ui\", \"command\": {\"action\": \"zoom_out\"}}"; }
     Mod+Space hotkey-overlay-title="Dux app search (Windows) / create a node (Nodes)" repeat=false allow-inhibiting=false { spawn-with-keyboard-focus "flowwm" "new" namespace="dms:spotlight" wait-for-ready=true; }
     Alt+Space hotkey-overlay-title="Open Dux app search" repeat=false allow-inhibiting=false { spawn-with-keyboard-focus "flowwm" "launcher" namespace="dms:spotlight" wait-for-ready=true; }
-    Ctrl+Shift+P hotkey-overlay-title="Search workflow macros" repeat=false allow-inhibiting=false { spawn-with-keyboard-focus "flowwm" "search" "macros" namespace="dms:spotlight" wait-for-ready=true; }
+    Ctrl+Shift+P scope="nodes" hotkey-overlay-title="Search workflow macros (Nodes)" repeat=false allow-inhibiting=false { spawn-with-keyboard-focus "flowwm" "search" "macros" namespace="dms:spotlight" wait-for-ready=true; }
     Mod+Shift+Space hotkey-overlay-title="Find a node in Dux" repeat=false allow-inhibiting=false { spawn-with-keyboard-focus "flowwm" "search" namespace="dms:spotlight" wait-for-ready=true; }
     Mod+Shift+slash hotkey-overlay-title="Show key bindings" repeat=false allow-inhibiting=false { spawn "flowwm" "send" "{\"action\": \"ui\", \"command\": {\"action\": \"help\"}}"; }
     Mod+Left hotkey-overlay-title="Select node / focus window left" repeat=true allow-inhibiting=false { spawn "flowwm" "navigate" "left"; }
