@@ -34,6 +34,15 @@ interfaces](runtime.md) for the current native contracts.
 Vox is vendored at the validated fixed-width integer revision; no sibling checkout
 is required.
 
+Port hovers follow the editor-hover layout: a monospace signature with highlighted
+types and record fields, a separate description, and a muted endpoint footer.
+The canvas prepares lexer tokens and Pango attributes with each changed port's
+documentation, using the same vendored Vox lexer as Vox LSP's semantic tokens.
+Unchanged documentation survives runtime value updates and camera movement;
+removed ports and rows are evicted. Each canvas reuses one tooltip widget tree,
+so hovering performs no language-server request or markup parsing. Syntax colors
+follow the active Material theme, and long signatures wrap within the tooltip.
+
 Automatic window `on_exit(exit_code: UInt8)` observation requires Linux 6.15+
 for pidfd exit information. The process-exit integration tests exercise real
 processes, including an observed non-child, without a graphical session.

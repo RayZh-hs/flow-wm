@@ -766,6 +766,7 @@ dependencies = [
  "signal-hook",
  "tempfile",
  "uuid",
+ "vox-compiler",
  "wayland-backend",
  "wayland-client",
  "wayland-scanner",

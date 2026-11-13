@@ -10,6 +10,7 @@ mod motion;
 mod native;
 mod parameters;
 mod popup;
+mod port_tooltip;
 mod shell;
 mod surface;
 pub mod theme;

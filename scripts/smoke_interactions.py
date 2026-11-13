@@ -143,6 +143,19 @@ def run():
                 outside = before.crop((20, 20, 100, 100)).convert("L").tobytes()
                 assert statistics.pstdev(outside) > 50, "the wallpaper fixture must have visible detail outside the card"
 
+                # A stationary port hover shows documentation; leaving the port
+                # dismisses it without changing the graph or grabbing input.
+                hover_x, hover_y = point(392, 177)
+                input_command("mousemove", "--sync", round(hover_x), round(hover_y))
+                time.sleep(1.)
+                hovered = capture("port-tooltip.png")
+                difference = ImageChops.difference(before, hovered)
+                assert sum(value > 30 for value in difference.convert("L").tobytes()) > 1000, "the port tooltip must be visible"
+                input_command("mousemove", "--sync", 40, 40)
+                time.sleep(0.15)
+                dismissed = capture("port-tooltip-dismissed.png")
+                assert ImageChops.difference(before, dismissed).getbbox() is None, "leaving the port must dismiss its tooltip"
+
                 click(*point(140, 185))
                 time.sleep(0.2)
                 opened = capture("constant-editor.png")
@@ -264,7 +277,7 @@ def run():
                 ui("open",id=preview)
                 wait(lambda: any(w["id"]==preview_window and w["is_focused"] for w in request(niri_socket,"Windows")["Windows"]),compositor)
                 assert node(preview)["workspace"]==parent, "opening an application must not move its workflow"
-                print("Interaction smoke passed: blurred/dimmed preview gaps, visible inline editor, keyboard editing and saving, Escape dismissal, constant and window dragging, persistent release positions, deselection, and row-switch recovery; extension-only compact windows, working actions, close-without-destroy, private regions, identity-preserving Make Public, and native attachments across workflow rows.")
+                print("Interaction smoke passed: styled port hover and pointer-leave dismissal, blurred/dimmed preview gaps, visible inline editor, keyboard editing and saving, Escape dismissal, constant and window dragging, persistent release positions, deselection, and row-switch recovery; extension-only compact windows, working actions, close-without-destroy, private regions, identity-preserving Make Public, and native attachments across workflow rows.")
         finally:
             for child in reversed(children):
                 if child.poll() is None:

@@ -12,6 +12,7 @@ from runtime import start
 
 ROOT = Path(__file__).resolve().parents[1]
 TESTS = (
+    "ui::port_tooltip::tests::gtk_tooltip_binds_prepared_attributes_and_wraps_long_signatures",
     "ui::canvas::rendering_tests::constant_clicks_and_drags_release_input_and_commit_positions",
     "ui::canvas::rendering_tests::gpu_window_cards_keep_full_selection_outlines_and_foreground_gestures",
     "ui::gpu::tests::native_morphs_do_not_paint_opaque_boxes_behind_stationary_previews",

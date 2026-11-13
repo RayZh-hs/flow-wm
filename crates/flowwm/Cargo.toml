@@ -27,6 +27,7 @@ wayland-client = { version = "0.31.15", features = ["system"] }
 wayland-backend = { version = "0.3.17", features = ["client_system"] }
 wayland-scanner = "0.31.11"
 uuid = { version = "1", features = ["v4", "serde"] }
+vox-compiler = { path = "../../vendor/vox/crates/vox-compiler" }
 [dev-dependencies]
 tempfile = "3"
 

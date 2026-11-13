@@ -782,11 +782,16 @@ fn make_scoped(
     let on_map = publisher.clone();
     let scoped = RefCell::new(None::<(u64, State)>);
     let camera_frame = Cell::new(None::<(u64, std::time::Instant)>);
+    let tooltips = Rc::new(RefCell::new(super::port_tooltip::Cache::default()));
+    let prepared_tooltips = tooltips.clone();
     let area = super::surface::Surface::new(move |area, snapshot, width, height| {
         let started = std::time::Instant::now();
         let state = e.snapshot();
         let revision = state.revision;
         let render = |state: &State, view: &mut View| {
+            prepared_tooltips
+                .borrow_mut()
+                .prepare(state, revision, &view.theme);
             view.output_scale = area.scale_factor() as f64;
             let now = std::time::Instant::now();
             if view.camera_target.is_some() && !view.morphing {
@@ -896,6 +901,39 @@ fn make_scoped(
         });
     });
     area.set_cursor_from_name(Some("default"));
+    area.set_has_tooltip(true);
+    let e = engine.clone();
+    let v = view.clone();
+    let content = RefCell::new(super::port_tooltip::Content::new());
+    area.connect_query_tooltip(move |_, x, y, keyboard, tooltip| {
+        let view = v.borrow();
+        if keyboard || view.drag.is_some() || view.space_down {
+            return false;
+        }
+        let state = e.snapshot().state;
+        let (wx, wy) = view.world(x as f64, y as f64);
+        let hovered = hit_pin(&state, &view, wx, wy, true)
+            .map(|pin| (pin, true))
+            .or_else(|| hit_pin(&state, &view, wx, wy, false).map(|pin| (pin, false)));
+        let Some((endpoint, output)) = hovered else {
+            return false;
+        };
+        let Some((px, py)) = state.node(&endpoint.node).and_then(|node| {
+            pin_position(&state, node, &view.position(node), &endpoint.pin, output)
+        }) else {
+            return false;
+        };
+        let radius = 9. * view.zoom;
+        tooltip.set_tip_area(&gdk::Rectangle::new(
+            (px * view.zoom + view.pan_x - radius).floor() as i32,
+            (py * view.zoom + view.pan_y - radius).floor() as i32,
+            (radius * 2.).ceil().max(1.) as i32,
+            (radius * 2.).ceil().max(1.) as i32,
+        ));
+        content
+            .borrow_mut()
+            .show(&tooltips.borrow(), endpoint, output, tooltip)
+    });
     let click = gtk::GestureClick::new();
     click.set_button(1);
     let inline_pressed = Rc::new(RefCell::new(None));
@@ -1002,31 +1040,6 @@ fn make_scoped(
     let v = view.clone();
     let a = area.clone();
     motion.connect_motion(move |_, x, y| {
-        let state = e.snapshot().state;
-        let view = v.borrow();
-        let (wx, wy) = view.world(x, y);
-        let hovered_pin = hit_pin(&state, &view, wx, wy, true)
-            .map(|p| (p, true))
-            .or_else(|| hit_pin(&state, &view, wx, wy, false).map(|p| (p, false)));
-        let tooltip = hovered_pin.and_then(|(endpoint, output)| {
-            state.node(&endpoint.node).and_then(|n| {
-                crate::graph::pins(&state, n, output)
-                    .into_iter()
-                    .find(|p| p.name == endpoint.pin)
-                    .map(|p| {
-                        format!(
-                            "{} · {}\n{}\n{}.{}",
-                            crate::graph::pin_label(n, &p, output),
-                            p.ty,
-                            crate::graph::pin_description(&p, output),
-                            n.title,
-                            p.name
-                        )
-                    })
-            })
-        });
-        drop(view);
-        a.set_tooltip_text(tooltip.as_deref());
         let hit = super::empty::hit(a.width() as f64, a.height() as f64, x, y);
         let hover = hit.filter(|_| !v.borrow().space_down && workspace_empty(&e.snapshot().state));
         if v.borrow().empty_hover != hover {
