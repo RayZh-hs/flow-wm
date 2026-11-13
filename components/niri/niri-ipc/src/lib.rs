@@ -97,6 +97,11 @@ pub enum Request {
         /// Exact layer-shell namespace receiving the input.
         namespace: String,
     },
+    /// Cancel a keyboard handoff when a launcher closes instead of opening.
+    KeyboardFocusCancelled {
+        /// Exact layer-shell namespace releasing the input.
+        namespace: String,
+    },
     /// Request information about the configured keyboard layouts.
     KeyboardLayouts,
     /// Request information about the focused output.

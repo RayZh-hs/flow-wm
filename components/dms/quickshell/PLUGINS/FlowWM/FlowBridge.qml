@@ -62,6 +62,7 @@ Scope {
         if (!launcherSeen)
             return;
         launcherSeen = false;
+        NiriService.cancelKeyboardFocus("dms:spotlight");
         if (!selectionInProgress && catalog.presentation?.lookup_return)
             Qt.callLater(() => { if (!root.launcherOpen && !root.selectionInProgress && root.catalog.presentation?.lookup_return) root.action("resume_lookup"); });
     }

@@ -327,6 +327,10 @@ Singleton {
         requestSocket.send(JSON.stringify({KeyboardFocusReady: {namespace: namespace}}));
     }
 
+    function cancelKeyboardFocus(namespace: string) {
+        requestSocket.send(JSON.stringify({KeyboardFocusCancelled: {namespace: namespace}}));
+    }
+
     function handleEventStreamConnection(linkUp) {
         _touchpadStateInitialized = false;
         // Each subscription starts with ConfigLoaded describing the current state.

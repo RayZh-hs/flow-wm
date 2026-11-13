@@ -153,6 +153,25 @@ def run():
                             (artifacts / "results.json").write_text(json.dumps(samples, indent=2) + "\n")
                             keys("Escape")
                             wait(lambda: not inspect().get("open"), compositor)
+                # Closing through a toggle must not leave a handoff waiting for an opening.
+                request(runtime / "flowwm.sock", {"action": "ui", "command": {"action": "windows"}})
+                wait(lambda: not request(runtime / "flowwm.sock", {"action": "catalog"})["presentation"]["graph_visible"], compositor)
+                for shortcut in ("super+space", "alt+space"):
+                    keys(shortcut)
+                    wait(lambda: inspect().get("focused") and inspect().get("open"), compositor)
+                    keys(shortcut)
+                    wait(lambda: not inspect().get("open"), compositor)
+                    started = time.monotonic()
+                    keys(shortcut, "a", "b", "c", "BackSpace", "shift+d")
+                    try:
+                        actual = wait(lambda: (value if (value := inspect()).get("text") == "abD" and value.get("focused") else None), compositor)
+                    except TimeoutError as error:
+                        raise AssertionError(f"{connected=} {shortcut=} after toggle close: {inspect()}") from error
+                    elapsed_ms = (time.monotonic() - started) * 1000
+                    samples.append({"connected": connected, "view": "windows", "close": "toggle", "shortcut": shortcut, "observed_ms": elapsed_ms, "text": actual["text"]})
+                    (artifacts / "results.json").write_text(json.dumps(samples, indent=2) + "\n")
+                    keys("Escape")
+                    wait(lambda: not inspect().get("open"), compositor)
             (artifacts / "results.json").write_text(json.dumps(samples, indent=2) + "\n")
             print(json.dumps(samples, indent=2))
         finally:

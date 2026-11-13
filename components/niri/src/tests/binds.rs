@@ -296,6 +296,115 @@ fn launcher_keyboard_handoff_waits_for_reinitialization_when_reopening() {
 }
 
 #[test]
+fn launcher_keyboard_handoff_cancels_on_close_after_focus_returns() {
+    use crate::tests::client::LayerConfigureProps;
+    use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::KeyboardInteractivity;
+
+    for cancel_before_focus_return in [true, false] {
+        let (mut f, id, surface) = set_up("");
+        let target = map_keyboard_layer(&mut f, id, "test-launcher");
+        f.niri_state().do_action(
+            Action::SpawnWithKeyboardFocus(vec![], "test-launcher".into(), 1000, true),
+            false,
+        );
+        run_f(&mut f, id, &target, "+LFSH +AC01 -AC01 -LFSH");
+        f.niri_state().keyboard_focus_cancelled("another-dialog");
+        assert!(f.niri().keyboard_handoff.is_some());
+
+        if cancel_before_focus_return {
+            f.niri_state().keyboard_focus_cancelled("test-launcher");
+            assert!(f.niri().keyboard_handoff.is_some());
+        }
+        let layer = f.client(id).layer(&target);
+        layer.set_configure_props(LayerConfigureProps {
+            kb_interactivity: Some(KeyboardInteractivity::None),
+            ..Default::default()
+        });
+        layer.commit();
+        f.double_roundtrip(id);
+        if !cancel_before_focus_return {
+            assert!(f.niri().keyboard_handoff.is_some());
+            f.niri_state().keyboard_focus_cancelled("test-launcher");
+        }
+        f.roundtrip(id);
+        assert!(f.niri().keyboard_handoff.is_none());
+        let events = f
+            .client(id)
+            .state
+            .recent_keyboard_events(&surface)
+            .map(ToString::to_string)
+            .filter(|e| e.starts_with("key "))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            events,
+            [
+                "key pressed: 42",
+                "key pressed: 30",
+                "key released: 30",
+                "key released: 42"
+            ]
+        );
+        assert!(!f.niri().seat.get_keyboard().unwrap().modifier_state().shift);
+        assert!(f.niri().suppressed_keys.is_empty());
+    }
+}
+
+#[test]
+fn launcher_keyboard_handoff_preserves_reopening_and_typing_after_toggle_close() {
+    use crate::tests::client::{KeyboardEvent, LayerConfigureProps};
+    use smithay::reexports::wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::KeyboardInteractivity;
+
+    let config = r#"binds { Mod+space repeat=false { spawn-with-keyboard-focus namespace="test-launcher" wait-for-ready=true; }; }"#;
+    let (mut f, id, surface) = set_up(config);
+    f.niri().config.borrow_mut().binds = Config::parse_mem(config).unwrap().binds;
+    let target = map_keyboard_layer(&mut f, id, "test-launcher");
+    run_f(&mut f, id, &target, "+LWIN +SPCE -SPCE -LWIN");
+    assert!(f.niri().keyboard_handoff.is_some());
+    run_f(&mut f, id, &target, "+LWIN +SPCE -SPCE -LWIN +AC01 -AC01");
+    f.niri_state().keyboard_focus_cancelled("test-launcher");
+    let layer = f.client(id).layer(&target);
+    layer.set_configure_props(LayerConfigureProps {
+        kb_interactivity: Some(KeyboardInteractivity::None),
+        ..Default::default()
+    });
+    layer.commit();
+    f.double_roundtrip(id);
+    assert!(
+        f.niri().keyboard_handoff.is_some(),
+        "reopening must start a fresh handoff"
+    );
+    assert!(!f
+        .client(id)
+        .state
+        .recent_keyboard_events(&surface)
+        .any(|e| matches!(e, KeyboardEvent::Key { key: 30, .. })));
+
+    let layer = f.client(id).layer(&target);
+    layer.set_configure_props(LayerConfigureProps {
+        kb_interactivity: Some(KeyboardInteractivity::Exclusive),
+        ..Default::default()
+    });
+    layer.commit();
+    f.double_roundtrip(id);
+    let _ = f.client(id).state.recent_keyboard_events(&target);
+    f.niri_state().keyboard_focus_ready("test-launcher");
+    f.roundtrip(id);
+    assert!(f.niri().keyboard_handoff.is_none());
+    let events = f
+        .client(id)
+        .state
+        .recent_keyboard_events(&target)
+        .map(ToString::to_string)
+        .filter(|e| e.starts_with("key "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        events,
+        ["key released: 125", "key pressed: 30", "key released: 30"]
+    );
+    assert!(f.niri().suppressed_keys.is_empty());
+}
+
+#[test]
 fn launcher_keyboard_handoff_recovers_when_launching_fails() {
     use std::time::{Duration, Instant};
     let config = r#"binds { Mod+space repeat=false { spawn-with-keyboard-focus namespace="absent" timeout-ms=100; }; }"#;

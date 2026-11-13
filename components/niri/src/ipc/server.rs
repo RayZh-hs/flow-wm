@@ -333,6 +333,14 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
             });
             rx.recv().await.map_err(|e| e.to_string())?
         }
+        Request::KeyboardFocusCancelled { namespace } => {
+            let (tx, rx) = async_channel::bounded(1);
+            ctx.event_loop.insert_idle(move |state| {
+                state.keyboard_focus_cancelled(&namespace);
+                let _ = tx.try_send(Response::Handled);
+            });
+            rx.recv().await.map_err(|e| e.to_string())?
+        }
         Request::Layers => {
             let (tx, rx) = async_channel::bounded(1);
             ctx.event_loop.insert_idle(move |state| {

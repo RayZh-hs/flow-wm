@@ -74,6 +74,7 @@ pub const DOUBLE_CLICK_TIME: Duration = Duration::from_millis(400);
 pub struct KeyboardHandoff {
     namespace: String,
     ready: bool,
+    cancelled: bool,
     original_focus: Option<WlSurface>,
     timer: calloop::RegistrationToken,
     events: Vec<(Keycode, KeyState, InputTime)>,
@@ -659,6 +660,7 @@ impl State {
         self.niri.keyboard_handoff = Some(KeyboardHandoff {
             // A still-focused closing launcher must initialize before it receives more text.
             ready: !wait_for_ready,
+            cancelled: false,
             namespace,
             original_focus: self.niri.keyboard_focus.surface().cloned(),
             timer: token,
@@ -685,18 +687,30 @@ impl State {
         };
         if self.niri.is_locked() {
             self.finish_keyboard_handoff(false);
-        } else if handoff.ready && self.keyboard_focus_has_namespace(&handoff.namespace) {
+        } else if (handoff.ready && self.keyboard_focus_has_namespace(&handoff.namespace))
+            || (handoff.cancelled && !self.keyboard_focus_has_namespace(&handoff.namespace))
+        {
             self.finish_keyboard_handoff(true);
         }
     }
 
-    fn finish_keyboard_handoff(&mut self, target_ready: bool) {
+    pub fn keyboard_focus_cancelled(&mut self, namespace: &str) {
+        if let Some(handoff) = &mut self.niri.keyboard_handoff {
+            if handoff.namespace == namespace {
+                handoff.cancelled = true;
+            }
+        }
+        // The IPC and Wayland commits can arrive in either order. Replay after focus returns.
+        self.complete_keyboard_handoff();
+    }
+
+    fn finish_keyboard_handoff(&mut self, allow_current_focus: bool) {
         let Some(handoff) = self.niri.keyboard_handoff.take() else {
             return;
         };
         self.niri.event_loop.remove(handoff.timer);
         let deliver = !self.niri.is_locked()
-            && (target_ready
+            && (allow_current_focus
                 || self.keyboard_focus_has_namespace(&handoff.namespace)
                 || self.niri.keyboard_focus.surface() == handoff.original_focus.as_ref());
         let keyboard = self.niri.seat.get_keyboard().unwrap();
