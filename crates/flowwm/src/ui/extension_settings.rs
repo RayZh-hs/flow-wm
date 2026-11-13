@@ -6,9 +6,11 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use flow_builtins::external::{Field, Form};
 use gtk::{glib, prelude::*};
+use pinyin::ToPinyin;
 use serde_json::{Value, json};
 use std::{
     cell::{Cell, RefCell},
+    collections::HashMap,
     io::{Read, Write},
     os::unix::process::CommandExt,
     process::{Command, Stdio},
@@ -94,7 +96,7 @@ pub fn open(dialog: gtk::Window, engine: DesktopClient, node: Node, command: Vec
     let e = Rc::downgrade(&editor);
     refresh.connect_clicked(move |_| {
         if let Some(e) = e.upgrade() {
-            e.request("describe");
+            e.request("refresh");
         }
     });
     let e = Rc::downgrade(&editor);
@@ -194,13 +196,7 @@ impl Editor {
             self.body.append(&label);
             let read: ReadField = match field.kind.as_str() {
                 "choice" => {
-                    let labels = field
-                        .choices
-                        .iter()
-                        .map(|c| c.label.as_str())
-                        .collect::<Vec<_>>();
-                    let choice = gtk::DropDown::from_strings(&labels);
-                    choice.set_enable_search(true);
+                    let choice = searchable_choice(&field.choices);
                     choice.set_selected(
                         field
                             .choices
@@ -262,6 +258,73 @@ impl Editor {
         self.save.set_sensitive(form.ready);
     }
 }
+
+/// Display the original labels, but search locally using precomputed aliases.
+/// GTK requires an expression even for a dropdown backed by a StringList.
+fn searchable_choice(choices: &[flow_builtins::external::Choice]) -> gtk::DropDown {
+    let labels = choices.iter().map(|c| c.label.as_str()).collect::<Vec<_>>();
+    let keys = labels
+        .iter()
+        .map(|label| (label.to_string(), search_key(label)))
+        .collect::<HashMap<_, _>>();
+    let expression =
+        gtk::ClosureExpression::with_callback([] as [gtk::Expression; 0], move |values| {
+            let item = values[0].get::<gtk::StringObject>().unwrap();
+            keys.get(item.string().as_str())
+                .cloned()
+                .unwrap_or_default()
+        });
+    let choice = gtk::DropDown::new(Some(gtk::StringList::new(&labels)), Some(expression));
+    choice.set_enable_search(true);
+    // Names are prefixed with e.g. "Group · "; prefix matching hides valid chats.
+    choice.set_search_match_mode(gtk::StringFilterMatchMode::Substring);
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(|_, object| {
+        let item = object.downcast_ref::<gtk::ListItem>().unwrap();
+        let label = gtk::Label::new(None);
+        label.set_xalign(0.);
+        item.set_child(Some(&label));
+    });
+    factory.connect_bind(|_, object| {
+        let item = object.downcast_ref::<gtk::ListItem>().unwrap();
+        let value = item.item().and_downcast::<gtk::StringObject>().unwrap();
+        let label = item.child().and_downcast::<gtk::Label>().unwrap();
+        label.set_text(&value.string());
+    });
+    choice.set_factory(Some(&factory));
+    choice
+}
+
+fn search_key(label: &str) -> String {
+    let mut full = String::new();
+    let mut initials = String::new();
+    let mut spaced = String::new();
+    for character in label.chars() {
+        if let Some(reading) = character.to_pinyin() {
+            let syllable = reading.plain();
+            full.push_str(syllable);
+            initials.push(syllable.chars().next().unwrap());
+            spaced.push(' ');
+            spaced.push_str(syllable);
+            spaced.push(' ');
+        } else {
+            full.push(character);
+            initials.push(character);
+            spaced.push(character);
+        }
+    }
+    let compact = full
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect::<String>();
+    let compact_initials = initials
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect::<String>();
+    let spaced = spaced.split_whitespace().collect::<Vec<_>>().join(" ");
+    format!("{label}\n{full}\n{initials}\n{compact}\n{compact_initials}\n{spaced}").to_lowercase()
+}
+
 fn exchange(arguments: &[String], request: &Value, cancelled: Arc<AtomicBool>) -> Result<Form> {
     let executable = arguments
         .first()
@@ -317,4 +380,135 @@ fn exchange(arguments: &[String], request: &Value, cancelled: Arc<AtomicBool>) -
     }
     ensure!(status.success(), "Extension settings failed");
     serde_json::from_value(value).context("Invalid settings form")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flow_builtins::external::Choice;
+
+    #[test]
+    fn search_keys_cover_names_pinyin_initials_and_mixed_labels() {
+        let key = search_key("Group · AI 研究小组 2");
+        for query in [
+            "研究",
+            "yanjiu",
+            "yanjiuxiaozu",
+            "yjxz",
+            "aiyanjiu",
+            "aiyjxz2",
+            "yan jiu xiao zu",
+        ] {
+            assert!(
+                key.contains(query),
+                "missing search alias {query:?}: {key:?}"
+            );
+        }
+        assert!(search_key("Direct · Alice Smith").contains("alice smith"));
+        assert!(search_key("Direct · 张三").contains("zhangsan"));
+        assert!(search_key("Direct · 张三").contains("zs"));
+        assert!(!key.contains("unrelated"));
+    }
+
+    #[test]
+    #[ignore = "requires GTK display; run under xvfb-run with --include-ignored"]
+    fn native_choice_filters_pinyin_and_preserves_labels_and_value_indices() {
+        gtk::test_synced(|| {
+            let choices = [
+                Choice {
+                    label: "Group · 研究小组".into(),
+                    value: json!({"chat_id":"group"}),
+                },
+                Choice {
+                    label: "Direct · 张三".into(),
+                    value: json!({"chat_id":"dm"}),
+                },
+                Choice {
+                    label: "Direct · Alice".into(),
+                    value: json!({"chat_id":"alice"}),
+                },
+                Choice {
+                    label: "All my chats".into(),
+                    value: json!({}),
+                },
+            ];
+            let choice = searchable_choice(&choices);
+            choice.set_selected(2);
+            let window = gtk::Window::builder().child(&choice).build();
+            window.present();
+            let context = glib::MainContext::default();
+            while context.pending() {
+                context.iteration(false);
+            }
+            fn descendants(widget: &gtk::Widget) -> Vec<gtk::Widget> {
+                let mut widgets = vec![widget.clone()];
+                let mut child = widget.first_child();
+                while let Some(widget) = child {
+                    widgets.extend(descendants(&widget));
+                    child = widget.next_sibling();
+                }
+                widgets
+            }
+            let labels = descendants(choice.upcast_ref())
+                .into_iter()
+                .filter_map(|w| w.downcast::<gtk::Label>().ok())
+                .map(|label| label.text())
+                .collect::<Vec<_>>();
+            assert!(labels.iter().any(|text| text == "Direct · Alice"));
+            assert!(labels.iter().all(|text| !text.contains('\n')));
+
+            choice.emit_activate();
+            while context.pending() {
+                context.iteration(false);
+            }
+            let widgets = descendants(choice.upcast_ref());
+            let search = widgets
+                .iter()
+                .find_map(|w| w.downcast_ref::<gtk::SearchEntry>())
+                .unwrap();
+            let list = widgets
+                .iter()
+                .find_map(|w| w.downcast_ref::<gtk::ListView>())
+                .unwrap();
+            for (query, expected) in [
+                ("研究", "Group · 研究小组"),
+                ("YANJIU", "Group · 研究小组"),
+                ("yjxz", "Group · 研究小组"),
+                ("yan jiu", "Group · 研究小组"),
+                ("zhangsan", "Direct · 张三"),
+                ("ZS", "Direct · 张三"),
+                ("alice", "Direct · Alice"),
+                ("All my", "All my chats"),
+            ] {
+                search.set_text(query);
+                search.emit_by_name::<()>("search-changed", &[]);
+                while context.pending() {
+                    context.iteration(false);
+                }
+                let model = list.model().unwrap();
+                assert_eq!(model.n_items(), 1, "popup search {query}");
+                assert_eq!(
+                    model
+                        .item(0)
+                        .and_downcast::<gtk::StringObject>()
+                        .unwrap()
+                        .string(),
+                    expected
+                );
+                assert_eq!(choice.selected(), 2);
+            }
+            search.set_text("no matching chat");
+            search.emit_by_name::<()>("search-changed", &[]);
+            assert_eq!(list.model().unwrap().n_items(), 0);
+            search.set_text("");
+            search.emit_by_name::<()>("search-changed", &[]);
+            assert_eq!(list.model().unwrap().n_items(), choices.len() as u32);
+            search.set_text("zs");
+            search.emit_by_name::<()>("search-changed", &[]);
+            list.emit_by_name::<()>("activate", &[&0u32]);
+            assert_eq!(choice.selected(), 1);
+            assert_eq!(choices[choice.selected() as usize].value["chat_id"], "dm");
+            window.close();
+        });
+    }
 }

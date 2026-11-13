@@ -20,6 +20,7 @@ libc = "0.2"
 niri-ipc = { path = "../../components/niri/niri-ipc" }
 niri-config = { path = "../../components/niri/niri-config" }
 pangocairo = "0.22"
+pinyin = { version = "0.11", default-features = false, features = ["plain"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 signal-hook = "0.3"

@@ -49,6 +49,12 @@ are text, secret, multiline, Boolean, and searchable choices. `ready` enables
 saving the node. Transient fields may be sent to settings actions and are never
 saved to the graph. Use them for setup credentials.
 
+Choice search runs locally and matches substrings of the displayed label,
+Chinese names in full pinyin, and pinyin initials. The original labels and
+values are preserved. The dialog's **Refresh** button sends `"operation":"refresh"`;
+opening settings sends `"operation":"describe"`. Extensions may reuse cached
+choices for describe and fetch fresh data only on refresh.
+
 An action supplies an `id` and `label`. Clicking it calls the same program with
 the action ID as `operation` and the current form values in `properties`. The
 program returns the next form. It may open a browser for OAuth and return chat
