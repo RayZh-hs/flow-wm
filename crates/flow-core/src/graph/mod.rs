@@ -410,8 +410,12 @@ pub fn validate(state: &FlowNet) -> Result<()> {
         );
         ensure!(
             can_cast(state, &from.ty, &to.ty),
-            "Cannot cast {:?} to {:?}",
+            "Cannot connect {}.{} ({}) to {}.{} ({}): no compatible conversion",
+            type_id(source),
+            from.name,
             from.ty,
+            type_id(target),
+            to.name,
             to.ty
         );
         if !to.ty.is_signal() {

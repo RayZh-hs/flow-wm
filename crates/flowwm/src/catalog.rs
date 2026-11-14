@@ -91,6 +91,16 @@ impl Lookup {
         {
             return None;
         }
+        let mut graph = state.graph();
+        graph.nodes.retain(|n| {
+            state
+                .node(&n.id.0)
+                .is_some_and(|n| n.workspace == source.workspace)
+        });
+        graph.connections.retain(|e| {
+            graph.nodes.iter().any(|n| n.id.0 == e.source.node)
+                && graph.nodes.iter().any(|n| n.id.0 == e.target.node)
+        });
         let outputs = crate::graph::pins(state, source, !reverse)
             .into_iter()
             .filter(|pin| selected.is_none_or(|name| pin.name == name))
@@ -103,6 +113,26 @@ impl Lookup {
                         } else {
                             crate::graph::can_cast(state, &output.ty, &input.ty)
                         }
+                };
+                let connects = |node: &crate::model::Node, pin: &crate::graph::Pin| {
+                    let mut candidate = graph.clone();
+                    if candidate.node(&node.id).is_none() {
+                        candidate.nodes.push(node.spec());
+                    }
+                    let mut edge = crate::graph::Connection {
+                        source: crate::graph::Endpoint {
+                            node: source.id.clone(),
+                            pin: output.name.clone(),
+                        },
+                        target: crate::graph::Endpoint {
+                            node: node.id.clone(),
+                            pin: pin.name.clone(),
+                        },
+                    };
+                    if reverse {
+                        std::mem::swap(&mut edge.source, &mut edge.target);
+                    }
+                    flow_core::graph::connect(&mut candidate, edge).is_ok()
                 };
                 for node in state
                     .nodes
@@ -122,6 +152,9 @@ impl Lookup {
                         {
                             continue;
                         }
+                        if !connects(node, &pin) {
+                            continue;
+                        }
                         targets.push(LookupTarget {
                             id: node.id.clone(),
                             input: pin.name,
@@ -137,10 +170,15 @@ impl Lookup {
                         Default::default(),
                     );
                     node.flow = m.flow.clone();
-                    for pin in crate::graph::pins(state, &node, reverse)
+                    node.command = m.command.clone();
+                    let spec = node.spec();
+                    for pin in flow_core::graph::pins(&graph, &spec, reverse)
                         .into_iter()
                         .filter(&accepts)
                     {
+                        if !connects(&node, &pin) {
+                            continue;
+                        }
                         targets.push(LookupTarget {
                             id: m.id.clone(),
                             input: pin.name,

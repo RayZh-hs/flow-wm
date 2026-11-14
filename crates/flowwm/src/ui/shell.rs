@@ -2415,7 +2415,11 @@ impl Shell {
         self.workspace_label.set_text(&state.workspace().name);
         self.workspace_path
             .set_text(&state.workspace().cwd.to_string_lossy());
-        if let Some(error) = &snapshot.error {
+        if self.native_nodes {
+            if let Some(error) = self.engine.take_error() {
+                self.show_error(&error);
+            }
+        } else if let Some(error) = &snapshot.error {
             self.show_error(error);
         } else {
             self.error.set_visible(false);

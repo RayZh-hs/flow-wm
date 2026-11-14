@@ -485,12 +485,15 @@ impl DesktopClient {
         bindings.apply_native(&mut state);
         view.state = Arc::new(state);
         view.revision += 1;
-        view.error = None;
         self.inner.changed.notify_all();
         Ok(())
     }
     pub fn snapshot(&self) -> ViewSnapshot {
         self.inner.view.lock().unwrap().clone()
+    }
+    /// Consume a pending failure so later view updates cannot present it again.
+    pub fn take_error(&self) -> Option<String> {
+        self.inner.view.lock().unwrap().error.take()
     }
     pub fn data_directory(&self) -> Result<PathBuf> {
         Ok(self
