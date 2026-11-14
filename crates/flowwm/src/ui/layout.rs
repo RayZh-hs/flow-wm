@@ -1,7 +1,7 @@
 //! Keep live windows in a row and fit their compact history beneath it.
 use super::canvas::{HEIGHT, WIDTH};
 use crate::model::{Node, Position, State};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub const CLOSED_HEIGHT: f64 = 78.0;
 const LIVE_STEP: f64 = 340.0;
@@ -153,10 +153,9 @@ fn gap() -> f64 {
     crate::config::flow().arrange_gap.unwrap_or(48.)
 }
 
-/// Signal flow runs down the graph; data flows across each signal layer.
-/// Stable spatial ordering keeps unrelated nodes in their existing relative order.
+/// Arrange each connected component before packing it with its neighbours.
+/// Component rows preserve the user's vertical grouping of independent flows.
 pub fn arrange(state: &State, width: i32, height: i32, wrap_zoom: f64) -> Vec<(String, Position)> {
-    use std::collections::{BTreeMap, BTreeSet};
     let nodes: BTreeMap<_, _> = state
         .nodes
         .iter()
@@ -182,6 +181,158 @@ pub fn arrange(state: &State, width: i32, height: i32, wrap_zoom: f64) -> Vec<(S
         if signal { &mut signals } else { &mut data }
             .insert((edge.source.node.clone(), edge.target.node.clone()));
     }
+    let mut neighbours = HashMap::<&str, Vec<&str>>::new();
+    for (a, b) in signals.iter().chain(&data) {
+        neighbours.entry(a).or_default().push(b);
+        neighbours.entry(b).or_default().push(a);
+    }
+    let gap = gap();
+    let mut visited = BTreeSet::new();
+    let mut components = vec![];
+    for seed in nodes.keys() {
+        if !visited.insert(seed.as_str()) {
+            continue;
+        }
+        let mut component = BTreeMap::new();
+        let mut pending = vec![seed.as_str()];
+        while let Some(id) = pending.pop() {
+            component.insert(id.to_string(), nodes[id]);
+            for &neighbour in neighbours.get(id).into_iter().flatten() {
+                if visited.insert(neighbour) {
+                    pending.push(neighbour);
+                }
+            }
+        }
+        components.push(arrange_component(
+            &component, &signals, &data, width, height, wrap_zoom, gap,
+        ));
+    }
+    components.sort_by(|a, b| {
+        a.top
+            .total_cmp(&b.top)
+            .then_with(|| a.left.total_cmp(&b.left))
+            .then_with(|| a.positions[0].0.cmp(&b.positions[0].0))
+    });
+    let mut rows: Vec<Vec<ComponentLayout>> = vec![];
+    let mut bottom = f64::NEG_INFINITY;
+    for component in components {
+        if component.top >= bottom {
+            rows.push(vec![]);
+            bottom = component.bottom;
+        } else {
+            bottom = bottom.max(component.bottom);
+        }
+        rows.last_mut().unwrap().push(component);
+    }
+    for row in &mut rows {
+        row.sort_by(|a, b| {
+            a.left
+                .total_cmp(&b.left)
+                .then_with(|| a.top.total_cmp(&b.top))
+        });
+    }
+
+    let widest = rows.iter().flatten().map(|c| c.width).fold(0., f64::max);
+    let minimum = if wrap_zoom > 0. {
+        ((width as f64 - 160.).max(1.) / wrap_zoom).max(widest)
+    } else {
+        f64::INFINITY
+    };
+    let mut limits = vec![minimum];
+    for row in &rows {
+        let mut width = -gap;
+        for component in row {
+            width += gap + component.width;
+            if width > minimum {
+                limits.push(width);
+            }
+        }
+    }
+    let limit = limits
+        .into_iter()
+        .max_by(|a, b| {
+            let scale = |limit| {
+                let packed = pack_components(&rows, limit, gap);
+                let w = packed
+                    .iter()
+                    .map(|row| row.iter().map(|c| c.width + gap).sum::<f64>() - gap)
+                    .fold(0., f64::max);
+                let h = packed
+                    .iter()
+                    .map(|row| row.iter().map(|c| c.height).fold(0., f64::max) + gap)
+                    .sum::<f64>()
+                    - gap;
+                ((width as f64 - 160.).max(1.) / w).min((height as f64 - 160.).max(1.) / h)
+            };
+            scale(*a).total_cmp(&scale(*b)).then_with(|| a.total_cmp(b))
+        })
+        .unwrap();
+    let mut result = vec![];
+    let mut y = 80.;
+    for row in pack_components(&rows, limit, gap) {
+        let mut x = 100.;
+        let mut height = 0_f64;
+        for component in row {
+            result.extend(component.positions.iter().map(|(id, p)| {
+                (
+                    id.clone(),
+                    Position {
+                        x: x + p.x,
+                        y: y + p.y,
+                    },
+                )
+            }));
+            x += component.width + gap;
+            height = height.max(component.height);
+        }
+        y += height + gap;
+    }
+    result
+}
+
+struct ComponentLayout {
+    positions: Vec<(String, Position)>,
+    width: f64,
+    height: f64,
+    left: f64,
+    top: f64,
+    bottom: f64,
+}
+
+fn pack_components(
+    rows: &[Vec<ComponentLayout>],
+    limit: f64,
+    gap: f64,
+) -> Vec<Vec<&ComponentLayout>> {
+    let mut packed = vec![];
+    for row in rows {
+        let mut current = vec![];
+        let mut width = -gap;
+        for component in row {
+            if !current.is_empty() && width + gap + component.width > limit {
+                packed.push(std::mem::take(&mut current));
+                width = -gap;
+            }
+            width += gap + component.width;
+            current.push(component);
+        }
+        if !current.is_empty() {
+            packed.push(current);
+        }
+    }
+    packed
+}
+
+/// Signal flow runs down a component; data flows across each signal layer.
+fn arrange_component(
+    nodes: &BTreeMap<String, &Node>,
+    signals: &BTreeSet<(String, String)>,
+    data: &BTreeSet<(String, String)>,
+    width: i32,
+    height: i32,
+    wrap_zoom: f64,
+    gap: f64,
+) -> ComponentLayout {
     let spatial = |a: &&String, b: &&String| {
         nodes[*a]
             .position
@@ -189,38 +340,6 @@ pub fn arrange(state: &State, width: i32, height: i32, wrap_zoom: f64) -> Vec<(S
             .total_cmp(&nodes[*b].position.y)
             .then_with(|| nodes[*a].position.x.total_cmp(&nodes[*b].position.x))
             .then_with(|| a.cmp(b))
-    };
-    let mut seeds: Vec<_> = nodes.keys().collect();
-    seeds.sort_by(spatial);
-    let mut components = HashMap::<String, usize>::new();
-    for seed in seeds {
-        if components.contains_key(seed) {
-            continue;
-        }
-        let component = components.len();
-        let mut pending = vec![seed.clone()];
-        while let Some(id) = pending.pop() {
-            if components.insert(id.clone(), component).is_some() {
-                continue;
-            }
-            for (a, b) in signals.iter().chain(&data) {
-                let neighbour = if a == &id {
-                    b
-                } else if b == &id {
-                    a
-                } else {
-                    continue;
-                };
-                if !components.contains_key(neighbour) {
-                    pending.push(neighbour.clone());
-                }
-            }
-        }
-    }
-    let related = |a: &&String, b: &&String| {
-        components[*a]
-            .cmp(&components[*b])
-            .then_with(|| spatial(a, b))
     };
     let mut pending: BTreeSet<_> = nodes.keys().cloned().collect();
     let mut ranks = BTreeMap::<String, usize>::new();
@@ -242,7 +361,7 @@ pub fn arrange(state: &State, width: i32, height: i32, wrap_zoom: f64) -> Vec<(S
         ranks.insert(ready, rank);
     }
     let mut layers = vec![vec![]; ranks.values().copied().max().unwrap_or(0) + 1];
-    for rank in 0..layers.len() {
+    for (rank, layer) in layers.iter_mut().enumerate() {
         let mut pending: BTreeSet<_> = nodes
             .keys()
             .filter(|id| ranks[*id] == rank)
@@ -252,15 +371,14 @@ pub fn arrange(state: &State, width: i32, height: i32, wrap_zoom: f64) -> Vec<(S
             let ready = pending
                 .iter()
                 .filter(|id| !data.iter().any(|(a, b)| b == *id && pending.contains(a)))
-                .min_by(related)
-                .or_else(|| pending.iter().min_by(related))
+                .min_by(spatial)
+                .or_else(|| pending.iter().min_by(spatial))
                 .unwrap()
                 .clone();
             pending.remove(&ready);
-            layers[rank].push(nodes[&ready]);
+            layer.push(nodes[&ready]);
         }
     }
-    let gap = gap();
     let row_height = |row: &[&Node]| {
         row.iter()
             .map(|n| super::canvas::node_height(n))
@@ -291,7 +409,7 @@ pub fn arrange(state: &State, width: i32, height: i32, wrap_zoom: f64) -> Vec<(S
         .unwrap_or(1);
     let mut placed = HashMap::<String, Position>::new();
     let mut result = vec![];
-    let mut y = 80.;
+    let mut y = 0.;
     for row in layers.iter().flat_map(|l| l.chunks(columns)) {
         // Translate a compact row toward its connected predecessors without
         // inserting empty columns between adjacent cards.
@@ -309,9 +427,9 @@ pub fn arrange(state: &State, width: i32, height: i32, wrap_zoom: f64) -> Vec<(S
             })
             .collect();
         let x = if anchors.is_empty() {
-            100.
+            0.
         } else {
-            (anchors.iter().sum::<f64>() / anchors.len() as f64).max(100.)
+            (anchors.iter().sum::<f64>() / anchors.len() as f64).max(0.)
         };
         for (index, node) in row.iter().enumerate() {
             let p = Position {
@@ -323,7 +441,23 @@ pub fn arrange(state: &State, width: i32, height: i32, wrap_zoom: f64) -> Vec<(S
         }
         y += row_height(row) + gap;
     }
-    result
+    ComponentLayout {
+        width: result.iter().map(|(_, p)| p.x + WIDTH).fold(0., f64::max),
+        height: y - gap,
+        positions: result,
+        left: nodes
+            .values()
+            .map(|n| n.position.x)
+            .fold(f64::INFINITY, f64::min),
+        top: nodes
+            .values()
+            .map(|n| n.position.y)
+            .fold(f64::INFINITY, f64::min),
+        bottom: nodes
+            .values()
+            .map(|n| n.position.y + super::canvas::node_height(n))
+            .fold(f64::NEG_INFINITY, f64::max),
+    }
 }
 
 pub fn align_selection(
@@ -511,6 +645,167 @@ mod tests {
             state.nodes.push(node);
         }
         state
+    }
+
+    fn connect(state: &mut State, source: usize, pin: &str, target: usize) {
+        state.connections.push(crate::graph::Connection {
+            source: crate::graph::Endpoint {
+                node: state.nodes[source].id.clone(),
+                pin: pin.into(),
+            },
+            target: crate::graph::Endpoint {
+                node: state.nodes[target].id.clone(),
+                pin: if pin == "value" { "value" } else { "in" }.into(),
+            },
+        });
+    }
+
+    fn assert_no_overlaps(state: &State, positions: &HashMap<String, Position>) {
+        for (index, a) in state.nodes.iter().enumerate() {
+            let p = &positions[&a.id];
+            for b in &state.nodes[index + 1..] {
+                let q = &positions[&b.id];
+                assert!(
+                    p.x + WIDTH <= q.x
+                        || q.x + WIDTH <= p.x
+                        || p.y + super::super::canvas::node_height(a) <= q.y
+                        || q.y + super::super::canvas::node_height(b) <= p.y,
+                    "{} overlaps {}",
+                    a.id,
+                    b.id,
+                );
+            }
+        }
+    }
+
+    fn assert_idempotent(state: &mut State, width: i32, height: i32, zoom: f64) {
+        let coordinates = |positions: Vec<(String, Position)>| {
+            positions
+                .into_iter()
+                .map(|(id, p)| (id, p.x, p.y))
+                .collect::<Vec<_>>()
+        };
+        let positions = arrange(state, width, height, zoom);
+        for (id, p) in &positions {
+            state.node_mut(id).unwrap().position = p.clone();
+        }
+        assert_eq!(
+            coordinates(positions),
+            coordinates(arrange(state, width, height, zoom))
+        );
+    }
+
+    #[test]
+    fn screenshot_workflow_keeps_the_data_pair_below_the_complete_signal_component() {
+        let mut state = State::empty("/tmp".into());
+        for (id, kind, x, y) in [
+            ("live", NodeKind::Window, 220., 60.),
+            ("closed", NodeKind::Window, 560., 240.),
+            ("break", NodeKind::BreakSignal, 105., 480.),
+            ("alert", NodeKind::Alert, 460., 480.),
+            ("vox", NodeKind::Vox, 100., 700.),
+            ("display", NodeKind::Display, 480., 704.),
+        ] {
+            let mut node = Node::new(
+                &state.selected_workspace,
+                kind,
+                "/tmp".into(),
+                Position { x, y },
+            );
+            node.id = id.into();
+            node.desktop_window = matches!(kind, NodeKind::Window);
+            node.window_id = (id == "live").then_some(1);
+            state.nodes.push(node);
+        }
+        connect(&mut state, 0, "on_exit", 2);
+        connect(&mut state, 0, "on_exit", 3);
+        // Multiple output pins between the same cards must not change their rank.
+        state.nodes[0].flow.outputs.push(crate::graph::Pin::new(
+            "closed",
+            crate::graph::Type::trigger(),
+        ));
+        connect(&mut state, 0, "closed", 3);
+        connect(&mut state, 1, "on_exit", 3);
+        connect(&mut state, 4, "value", 5);
+
+        for (width, height) in [(1828, 1095), (1200, 800), (800, 1200), (300, 400)] {
+            let positions: HashMap<_, _> = arrange(&state, width, height, DEFAULT_WRAP_ZOOM)
+                .into_iter()
+                .collect();
+            let signal_bottom = state.nodes[..4]
+                .iter()
+                .map(|n| positions[&n.id].y + super::super::canvas::node_height(n))
+                .fold(0., f64::max);
+            assert!(positions["vox"].y >= signal_bottom + gap());
+            assert!(positions["display"].y >= signal_bottom + gap());
+            assert_no_overlaps(&state, &positions);
+            if width >= 800 {
+                assert_eq!(positions["live"].y, positions["closed"].y);
+                assert_eq!(positions["break"].y, positions["alert"].y);
+                assert!(positions["break"].x < positions["alert"].x);
+                assert_eq!(positions["vox"].y, positions["display"].y);
+                assert_eq!(positions["display"].x - positions["vox"].x, WIDTH + gap());
+            }
+            assert_idempotent(&mut state.clone(), width, height, DEFAULT_WRAP_ZOOM);
+        }
+    }
+
+    #[test]
+    fn independent_flows_pack_as_whole_components_in_spatial_order() {
+        let mut state = State::empty("/tmp".into());
+        for (kind, x, y) in [
+            (NodeKind::Window, 1200., 0.),
+            (NodeKind::Alert, 1200., 500.),
+            (NodeKind::Window, 100., 10.),
+            (NodeKind::Alert, 100., 510.),
+        ] {
+            state.nodes.push(Node::new(
+                &state.selected_workspace,
+                kind,
+                "/tmp".into(),
+                Position { x, y },
+            ));
+        }
+        connect(&mut state, 0, "on_exit", 1);
+        connect(&mut state, 2, "on_exit", 3);
+        let positions: HashMap<_, _> = arrange(&state, 1200, 800, 0.).into_iter().collect();
+        let p = |index: usize| &positions[&state.nodes[index].id];
+        assert_eq!(p(0).x, p(1).x);
+        assert_eq!(p(2).x, p(3).x);
+        assert_eq!(p(0).y, p(2).y);
+        assert!(p(3).x + WIDTH < p(0).x);
+        assert_no_overlaps(&state, &positions);
+        assert_idempotent(&mut state, 1200, 800, 0.);
+    }
+
+    #[test]
+    fn arranging_signal_and_data_cycles_is_stable_and_ignores_other_workspaces() {
+        let mut state = scene(3, 0);
+        connect(&mut state, 0, "on_exit", 1);
+        connect(&mut state, 1, "on_exit", 2);
+        connect(&mut state, 2, "on_exit", 0);
+        connect(&mut state, 0, "on_exit", 0);
+        let foreign = Node::new(
+            "other-workspace",
+            NodeKind::Window,
+            "/tmp".into(),
+            Position::default(),
+        );
+        let foreign_id = foreign.id.clone();
+        state.nodes.push(foreign);
+        connect(&mut state, 3, "on_exit", 0);
+        connect(&mut state, 0, "on_exit", 3);
+        for signal in [true, false] {
+            if !signal {
+                for edge in &mut state.connections {
+                    edge.source.pin = "value".into();
+                }
+            }
+            let positions = arrange(&state, 1200, 800, DEFAULT_WRAP_ZOOM);
+            assert_eq!(positions.len(), 3);
+            assert!(positions.iter().all(|(id, _)| id != &foreign_id));
+            assert_idempotent(&mut state, 1200, 800, DEFAULT_WRAP_ZOOM);
+        }
     }
 
     #[test]
@@ -715,6 +1010,7 @@ mod tests {
                 assert!(p.y + super::super::canvas::node_height(a) < positions[&target_id].y);
             }
         }
+        assert_idempotent(&mut state, 1200, 800, DEFAULT_WRAP_ZOOM);
     }
 
     #[test]

@@ -5,8 +5,15 @@ pub fn route(from: (f64, f64), to: (f64, f64), horizontal: bool) -> Vec<(f64, f6
     } else {
         (from, to)
     };
-    let lead = 42.0;
-    let corners = if b.1 >= a.1 + lead * 2. {
+    let forward = b.1 - a.1;
+    // A short forward gap still has room for a direct span. Reserve detours
+    // for endpoints that actually run backwards or share the same flow axis.
+    let lead = if forward > 0. {
+        42.0_f64.min(forward / 2.)
+    } else {
+        42.0
+    };
+    let corners = if forward > 0. {
         vec![a, (a.0, a.1 + lead), (b.0, b.1 - lead), b]
     } else {
         let side = if (b.0 - a.0).abs() > 90. {
@@ -58,4 +65,84 @@ pub fn route(from: (f64, f64), to: (f64, f64), horizontal: bool) -> Vec<(f64, f6
         }
     }
     points
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forward_connections_stay_between_their_endpoints_at_any_distance() {
+        for horizontal in [false, true] {
+            for gap in [0.01, 1., 24., 48., 83., 84., 200.] {
+                for offset in [-200., -4., 0., 4., 200.] {
+                    let from = (120., 230.);
+                    let to = if horizontal {
+                        (from.0 + gap, from.1 + offset)
+                    } else {
+                        (from.0 + offset, from.1 + gap)
+                    };
+                    let points = route(from, to, horizontal);
+                    assert_eq!(points.first(), Some(&from));
+                    assert_eq!(points.last(), Some(&to));
+                    for p in &points {
+                        assert!(p.0 >= from.0.min(to.0) - 1e-9);
+                        assert!(p.0 <= from.0.max(to.0) + 1e-9);
+                        assert!(p.1 >= from.1.min(to.1) - 1e-9);
+                        assert!(p.1 <= from.1.max(to.1) + 1e-9);
+                    }
+                    assert!(points.windows(2).all(|p| if horizontal {
+                        p[0].0 <= p[1].0 + 1e-9
+                    } else {
+                        p[0].1 <= p[1].1 + 1e-9
+                    }));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn short_aligned_connections_are_straight() {
+        for horizontal in [false, true] {
+            let from = (100., 200.);
+            let to = if horizontal {
+                (148., 200.)
+            } else {
+                (100., 248.)
+            };
+            assert!(route(from, to, horizontal).iter().all(|p| if horizontal {
+                p.1 == from.1
+            } else {
+                p.0 == from.0
+            }));
+        }
+    }
+
+    #[test]
+    fn backward_connections_keep_their_endpoint_clearance() {
+        for horizontal in [false, true] {
+            for delta in [-200., 0.] {
+                let from = (100., 200.);
+                let to = if horizontal {
+                    (100. + delta, 200.)
+                } else {
+                    (100., 200. + delta)
+                };
+                let points = route(from, to, horizontal);
+                assert_eq!(points.first(), Some(&from));
+                assert_eq!(points.last(), Some(&to));
+                assert!(points.iter().all(|p| p.0.is_finite() && p.1.is_finite()));
+                assert!(points.iter().any(|p| if horizontal {
+                    p.0 > from.0
+                } else {
+                    p.1 > from.1
+                }));
+                assert!(
+                    points
+                        .iter()
+                        .any(|p| if horizontal { p.0 < to.0 } else { p.1 < to.1 })
+                );
+            }
+        }
+    }
 }
