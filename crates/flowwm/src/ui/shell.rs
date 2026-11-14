@@ -3770,14 +3770,18 @@ impl Shell {
         let dialog = self.dialog(
             "Node parameters",
             if node.kind == NodeKind::Vox {
-                1000
+                1100
             } else {
                 560
             },
-            -1,
+            if node.kind == NodeKind::Vox { 720 } else { -1 },
         );
         let root = column(14);
         root.add_css_class("dialog-body");
+        if node.kind == NodeKind::Vox {
+            root.add_css_class("vox-parameters");
+            root.set_vexpand(true);
+        }
         let environment_node = matches!(
             node.flow.node_type.as_str(),
             "local.set_env" | "local.unset_env" | "local.empty_env" | "local.bake_args_into_env"
@@ -3818,9 +3822,15 @@ impl Shell {
             && !environment_node
         {
             if node.kind == NodeKind::Vox {
-                let options = column(10);
+                let options = row(12);
+                options.set_margin_top(8);
+                options.append(&label("Working directory", "field-label"));
+                directory.set_hexpand(true);
+                directory.set_width_chars(16);
+                options.append(&directory);
+                inherit.set_label(Some("Inherit row directory"));
+                inherit.set_tooltip_text(Some("Inherit working directory from row settings (pwd)"));
                 options.append(&inherit);
-                field(&options, "Working directory", &directory);
                 let execution = gtk::Expander::new(Some("Execution settings"));
                 execution.set_child(Some(&options));
                 root.append(&execution);
@@ -3842,7 +3852,7 @@ impl Shell {
         editor.buffer().set_text(&node.command);
         editor.add_css_class("code-editor");
         let editor_scroll = gtk::ScrolledWindow::builder()
-            .min_content_height(if node.kind == NodeKind::Vox { 360 } else { 160 })
+            .min_content_height(if node.kind == NodeKind::Vox { 220 } else { 160 })
             .vexpand(true)
             .child(&editor)
             .build();
@@ -3907,31 +3917,34 @@ impl Shell {
                 }
             });
             code_error.set_max_width_chars(70);
+            code_error.set_visible(false);
             source_body.append(&code_error);
             let diagnostics = code_error.clone();
             editor.buffer().connect_changed(move |buffer| {
-                diagnostics.set_text(
-                    &crate::graph::vox_syntax_error(&buffer.text(
-                        &buffer.start_iter(),
-                        &buffer.end_iter(),
-                        true,
-                    ))
-                    .unwrap_or_default(),
-                );
+                let error = crate::graph::vox_syntax_error(&buffer.text(
+                    &buffer.start_iter(),
+                    &buffer.end_iter(),
+                    true,
+                ));
+                diagnostics.set_visible(error.is_some());
+                diagnostics.set_text(&error.unwrap_or_default());
             });
             let ports = super::vox_parameters::interface(draft.clone(), &editor.buffer(), hover);
             let ports_scroll = gtk::ScrolledWindow::builder()
                 .hscrollbar_policy(gtk::PolicyType::Never)
-                .min_content_width(280)
+                .min_content_width(380)
                 .vexpand(true)
                 .child(&ports)
                 .build();
             let split = gtk::Paned::new(gtk::Orientation::Horizontal);
+            split.add_css_class("vox-source-split");
+            split.set_vexpand(true);
+            ports_scroll.set_margin_start(16);
             split.set_start_child(Some(&source_body));
             split.set_end_child(Some(&ports_scroll));
             split.set_shrink_start_child(true);
             split.set_shrink_end_child(false);
-            split.set_position(560);
+            split.set_position(570);
             root.append(&split);
             let weak = self.weak.clone();
             let id = node.id.clone();
@@ -4059,6 +4072,7 @@ impl Shell {
             if let Some(draft) = &code_draft {
                 if let Some(error) = crate::graph::vox_syntax_error(&node.command) {
                     code_error.set_text(&error);
+                    code_error.set_visible(true);
                     return;
                 }
                 draft.apply(&mut node);
@@ -4090,14 +4104,9 @@ impl Shell {
                 Err(error) => s.show_error(&error.to_string()),
             }
         });
-        let scroll = gtk::ScrolledWindow::builder()
-            .propagate_natural_height(true)
-            .max_content_height(680)
-            .child(&root)
-            .build();
         if node.kind == NodeKind::Vox {
             let body = column(0);
-            body.append(&scroll);
+            body.append(&root);
             actions.set_margin_start(28);
             actions.set_margin_end(28);
             actions.set_margin_bottom(20);
@@ -4105,6 +4114,11 @@ impl Shell {
             body.append(&actions);
             dialog.set_child(Some(&body));
         } else {
+            let scroll = gtk::ScrolledWindow::builder()
+                .propagate_natural_height(true)
+                .max_content_height(680)
+                .child(&root)
+                .build();
             dialog.set_child(Some(&scroll));
         }
         dialog.present();

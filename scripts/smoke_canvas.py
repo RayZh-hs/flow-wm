@@ -226,6 +226,14 @@ def run():
                     state()["nodes"][0]["command"] == "{ value = inputs.payload.code, }"
                 )
             )
+            # Capture the compact interface with execution settings expanded, too.
+            ui("edit", id=script["id"])
+            time.sleep(0.3)
+            focus_properties()
+            xd("mousemove", 90, 180, "click", "1")
+            time.sleep(0.3)
+            ui("capture", path=str(ART / "vox-parameters.png"))
+            xd("key", "Escape")
             # Hover an actual canvas output port without changing the graph.
             focus_canvas()
             ui("fit")
