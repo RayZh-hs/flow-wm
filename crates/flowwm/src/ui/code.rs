@@ -143,6 +143,8 @@ pub fn attach(editor: &gtk::TextView, theme: &Theme, pins: Rc<dyn Fn() -> Vec<Pi
         .child(&list)
         .build();
     popup.set_child(Some(&scroll));
+    let attached = popup.clone();
+    editor.connect_unrealize(move |_| attached.unparent());
     let b = buffer.clone();
     let p = popup.downgrade();
     let editor_weak = editor.downgrade();
@@ -166,6 +168,7 @@ pub fn attach(editor: &gtk::TextView, theme: &Theme, pins: Rc<dyn Fn() -> Vec<Pi
     });
     let e = editor.downgrade();
     let p = popup.downgrade();
+    let key_list = list.clone();
     let update: Rc<dyn Fn(bool)> = Rc::new(move |explicit| {
         let (Some(editor), Some(popup)) = (e.upgrade(), p.upgrade()) else {
             return;
@@ -197,6 +200,7 @@ pub fn attach(editor: &gtk::TextView, theme: &Theme, pins: Rc<dyn Fn() -> Vec<Pi
             editor.buffer_to_window_coords(gtk::TextWindowType::Widget, caret.x(), caret.y());
         popup.set_pointing_to(Some(&gdk::Rectangle::new(x, y, 1, caret.height())));
         popup.popup();
+        editor.grab_focus();
     });
     let u = update.clone();
     buffer.connect_changed(move |_| u(false));
@@ -210,12 +214,7 @@ pub fn attach(editor: &gtk::TextView, theme: &Theme, pins: Rc<dyn Fn() -> Vec<Pi
             return glib::Propagation::Stop;
         }
         if let Some(popup) = p.upgrade().filter(|popup| popup.is_visible()) {
-            let Some(scroll) = popup.child().and_downcast::<gtk::ScrolledWindow>() else {
-                return glib::Propagation::Proceed;
-            };
-            let Some(list) = scroll.child().and_downcast::<gtk::ListBox>() else {
-                return glib::Propagation::Proceed;
-            };
+            let list = &key_list;
             match key {
                 gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::Tab => {
                     if let Some(row) = list.selected_row() {
