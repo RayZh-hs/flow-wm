@@ -133,6 +133,9 @@ fn resolve(
             _ => None,
         };
         if let Some(ty) = inferred {
+            if matches!(&pin.ty, Type::Signal { args, open } if !args.is_empty() || !*open) {
+                continue;
+            }
             pin.ty = ty;
             // A connected template's old placeholder is not a typed default.
             if connections

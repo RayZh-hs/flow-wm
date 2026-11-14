@@ -65,6 +65,17 @@ pub fn type_id(node: &Node) -> &str {
     }
 }
 pub fn pins(state: &State, node: &Node, output: bool) -> Vec<Pin> {
+    if state.node(&node.id).is_none() {
+        let spec = node.spec();
+        return flow_core::graph::pins_for(
+            &spec,
+            state
+                .node_types
+                .iter()
+                .find(|definition| definition.id == spec.type_id),
+            output,
+        );
+    }
     flow_core::graph::specialized_pins(
         &node.id,
         output,
