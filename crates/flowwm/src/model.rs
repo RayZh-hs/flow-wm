@@ -181,6 +181,8 @@ pub struct Node {
     pub flow: crate::graph::Flow,
     pub id: String,
     pub workspace: String,
+    /// Application metadata for presentation only; never a node identifier.
+    #[serde(default)]
     pub title: String,
     pub kind: NodeKind,
     pub command: String,
@@ -212,6 +214,39 @@ pub struct Node {
     pub attention_generation: u64,
 }
 impl Node {
+    pub fn application_title(&self) -> &str {
+        if self.kind == NodeKind::Window {
+            &self.title
+        } else {
+            ""
+        }
+    }
+
+    pub fn type_label(&self) -> String {
+        if self.kind != NodeKind::Extension || self.flow.node_type.is_empty() {
+            return self.kind.label().into();
+        }
+        let name = self
+            .flow
+            .node_type
+            .strip_prefix("local.")
+            .unwrap_or(&self.flow.node_type);
+        let mut chars = name.chars();
+        chars
+            .next()
+            .map(|first| first.to_uppercase().to_string() + chars.as_str())
+            .unwrap_or_default()
+            .replace('_', " ")
+    }
+
+    pub fn label(&self) -> String {
+        if self.application_title().is_empty() {
+            self.type_label()
+        } else {
+            self.title.clone()
+        }
+    }
+
     pub(crate) fn imported_window(&self) -> bool {
         self.kind == NodeKind::Window
             && (self.desktop_window || self.window_match.is_some())
@@ -230,34 +265,21 @@ impl Node {
     }
 
     pub fn new(workspace: &str, kind: NodeKind, cwd: PathBuf, position: Position) -> Self {
-        let (title, command) = match kind {
-            NodeKind::Agent => (
-                "Agent session",
-                "Inspect this project and summarize the next useful steps.",
-            ),
-            NodeKind::Shell => ("Shell command", "pwd && git status --short"),
-            NodeKind::Metric => ("Watch a metric", "printf '0\\n'"),
-            NodeKind::Gate => (
-                "Review & continue",
-                "Review the upstream results before continuing.",
-            ),
-            NodeKind::Human => ("My work", "A place for your work, alongside the agents."),
-            NodeKind::Window => ("Application window", ""),
-            NodeKind::Constant => ("Constant", ""),
-            NodeKind::Display => ("Display", ""),
-            NodeKind::Alert => ("Alert", ""),
-            NodeKind::BreakSignal => ("Break signal", ""),
-            NodeKind::MergeSignal => ("Merge signal", ""),
-            NodeKind::Conditional => ("Conditional", ""),
-            NodeKind::Vox => ("Vox", "{ value = 42, }"),
-            NodeKind::Python => ("Python", "outputs = {'value': 42}"),
-            NodeKind::Extension => ("Extension", ""),
+        let command = match kind {
+            NodeKind::Agent => "Inspect this project and summarize the next useful steps.",
+            NodeKind::Shell => "pwd && git status --short",
+            NodeKind::Metric => "printf '0\\n'",
+            NodeKind::Gate => "Review the upstream results before continuing.",
+            NodeKind::Human => "A place for your work, alongside the agents.",
+            NodeKind::Vox => "{ value = 42, }",
+            NodeKind::Python => "outputs = {'value': 42}",
+            _ => "",
         };
         Self {
             flow: crate::graph::Flow::default(),
             id: id(),
             workspace: workspace.into(),
-            title: title.into(),
+            title: String::new(),
             kind,
             command: command.into(),
             cwd,
@@ -524,7 +546,7 @@ impl State {
                 template.position.clone(),
             );
             n.id = mapping[&template.id].clone();
-            n.title = template.title.clone();
+            n.title = template.application_title().into();
             n.command = template.command.clone();
             n.flow = template.flow.clone();
             n.cwd = if template.cwd == std::path::Path::new(".") {

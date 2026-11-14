@@ -707,19 +707,7 @@ impl Shell {
                 self.copy_selection(false);
                 self.paste_selection();
             }
-            CanvasAction::EditValue(id) => {
-                if self
-                    .engine
-                    .snapshot()
-                    .state
-                    .node(&id)
-                    .is_some_and(|node| node.kind == NodeKind::Vox)
-                {
-                    self.edit(&id);
-                } else {
-                    self.edit_value(&id);
-                }
-            }
+            CanvasAction::EditValue(id) => self.edit_value(&id),
             CanvasAction::Search => self.search_nodes(),
             CanvasAction::Help => self.help(),
             CanvasAction::ClearHistory => self.engine.dispatch(Action::ClearHistory),
@@ -1917,14 +1905,16 @@ impl Shell {
             position.x += canvas::WIDTH + 100.;
         }
         let mut node = Node::new(&parent.workspace, m.kind, parent.cwd.clone(), position);
-        node.title = m.name.clone();
         node.command = m.command.clone();
         node.flow = m.flow.clone();
         if node.kind == NodeKind::Window || flow_builtins::agent::is_session(&node.spec().type_id) {
             node.cwd = PathBuf::new();
         }
         if let Some(application) = application {
-            node.title = application.name;
+            node.flow.properties.insert(
+                "application_name".into(),
+                serde_json::json!(application.name),
+            );
             node.flow
                 .properties
                 .insert("application".into(), serde_json::json!(application.id));
@@ -1972,7 +1962,9 @@ impl Shell {
                     &self.engine.snapshot().state,
                     &id,
                 );
-                self.edit(&id);
+                if m.kind != NodeKind::Vox {
+                    self.edit(&id);
+                }
             }
             Err(error) => {
                 self.engine.dispatch(Action::Delete { id });
@@ -2199,6 +2191,10 @@ impl Shell {
                         let Some(node) = state.node(&id) else {
                             continue;
                         };
+                        if run && node.kind == NodeKind::Vox {
+                            self.edit(&id);
+                            continue;
+                        }
                         if state.behavior(node) == Some(flow_core::providers::Behavior::Source) {
                             if run {
                                 self.edit(&id);
@@ -2560,7 +2556,7 @@ impl Shell {
         }
         for (id, win) in self.windows.borrow().iter() {
             if let Some(node) = state.node(id) {
-                win.window.set_title(Some(&node.title));
+                win.window.set_title(Some(&node.label()));
                 win.panel.refresh(node, state);
             }
         }
@@ -2804,7 +2800,6 @@ impl Shell {
             return;
         }
         if node.kind == NodeKind::Vox {
-            self.edit(id);
             return;
         }
         if flow_builtins::agent::is_session(&node.spec().type_id) && node.window_id.is_none() {
@@ -2947,7 +2942,7 @@ impl Shell {
         let panel = ExtensionPanel::new(self, node, interface);
         let window = gtk::ApplicationWindow::builder()
             .application(&self.app)
-            .title(&node.title)
+            .title(node.label())
             .default_width(560)
             .default_height(-1)
             .build();
@@ -3072,7 +3067,7 @@ impl Shell {
         let p = view.position(&node);
         popover.set_pointing_to(Some(&gdk::Rectangle::new(
             (view.pan_x + p.x * view.zoom) as i32,
-            (view.pan_y + (p.y + 75.) * view.zoom) as i32,
+            (view.pan_y + (p.y + canvas::body_top(&node)) * view.zoom) as i32,
             (canvas::WIDTH * view.zoom) as i32,
             30,
         )));
@@ -3225,7 +3220,6 @@ impl Shell {
                     node.flow
                         .properties
                         .insert("writable".into(), serde_json::json!(true));
-                    node.title = text.chars().take(48).collect();
                     node.writable = true;
                     let id = node.id.clone();
                     drop(view);
@@ -3506,14 +3500,15 @@ impl Shell {
             position.x += 360.0;
         }
         node.position = position;
-        node.title = m.name.clone();
         node.command = m.command.clone();
         node.flow = m.flow.clone();
         if node.kind == NodeKind::Window || flow_builtins::agent::is_session(&node.spec().type_id) {
             node.cwd = PathBuf::new();
         }
         if let Some((id, name, app_id)) = application {
-            node.title = name;
+            node.flow
+                .properties
+                .insert("application_name".into(), serde_json::json!(name));
             if !app_id.is_empty() {
                 node.flow
                     .properties
@@ -3530,7 +3525,9 @@ impl Shell {
         }) {
             Ok(_) => {
                 self.select(Some(id.clone()));
-                self.edit(&id);
+                if m.kind != NodeKind::Vox {
+                    self.edit(&id);
+                }
             }
             Err(error) => self.show_error(&error.to_string()),
         }
@@ -3788,7 +3785,7 @@ impl Shell {
         );
         root.append(&label(
             &if environment_node {
-                node.title.clone()
+                node.label()
             } else if flow_builtins::agent::is_session(&node.spec().type_id) {
                 "Agent session parameters".into()
             } else {
@@ -3796,9 +3793,6 @@ impl Shell {
             },
             "dialog-title",
         ));
-        let title = entry(&node.title);
-        title.set_activates_default(true);
-        field(&root, "Name", &title);
         let directory = entry(&node.cwd.to_string_lossy());
         let inherit =
             gtk::CheckButton::with_label("Inherit working directory from row settings (pwd)");
@@ -4061,7 +4055,6 @@ impl Shell {
                 s.show_error(&error.to_string());
                 return;
             }
-            node.title = title.text().to_string();
             node.cwd = if inherit.is_active() {
                 PathBuf::new()
             } else {
@@ -4655,7 +4648,7 @@ impl Shell {
         let root = column(16);
         root.add_css_class("dialog-body");
         root.append(&label("Turn a signal into work.", "dialog-title"));
-        root.append(&label(&source.title, "muted"));
+        root.append(&label(&source.label(), "muted"));
         let threshold = gtk::SpinButton::with_range(-1_000_000.0, 1_000_000.0, 1.0);
         threshold.set_value(source.metric.samples.last().map(|s| s.value).unwrap_or(0.0));
         let operator = Choice::new();
@@ -4668,7 +4661,7 @@ impl Shell {
         for n in state.nodes.iter().filter(|n| {
             n.workspace == state.selected_workspace && n.id != id && n.kind != NodeKind::Metric
         }) {
-            target.append(Some(&n.id), &n.title);
+            target.append(Some(&n.id), &n.label());
         }
         target.set_active(Some(0));
         field(&root, "Queue this node", &target.widget);

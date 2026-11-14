@@ -16,6 +16,19 @@ use std::{
 
 pub const WIDTH: f64 = 292.0;
 pub const HEIGHT: f64 = 154.0;
+const TITLE_HEIGHT: f64 = 28.;
+
+pub(super) fn body_top(node: &Node) -> f64 {
+    76. - if node.application_title().is_empty() {
+        TITLE_HEIGHT
+    } else {
+        0.
+    }
+}
+
+fn inline_editable(node: &Node) -> bool {
+    node.kind == NodeKind::Constant && node.flow.editable_in_graph
+}
 const FIT_PADDING: f64 = 160.;
 fn usable_viewport(width: f64, height: f64) -> bool {
     width.is_finite() && height.is_finite() && width > FIT_PADDING && height > FIT_PADDING
@@ -26,9 +39,9 @@ pub fn node_height(node: &Node) -> f64 {
     } else if node.kind == NodeKind::Window || node.window_id.is_some() {
         HEIGHT + 120.0
     } else if node.kind == NodeKind::Vox {
-        280.
+        280. - TITLE_HEIGHT
     } else {
-        HEIGHT
+        HEIGHT - TITLE_HEIGHT
     }
 }
 pub const GRID: f64 = 20.0;
@@ -1058,9 +1071,8 @@ fn make_scoped(
         let selected = view.selected.clone();
         let inline = hit
             .filter(|n| {
-                matches!(n.kind, NodeKind::Constant | NodeKind::Vox)
-                    && n.flow.editable_in_graph
-                    && y > view.position(n).y + 70.
+                inline_editable(n)
+                    && y > view.position(n).y + body_top(n) - 6.
                     && y < view.position(n).y + node_height(n) - 40.
             })
             .map(|n| n.id.clone());
@@ -2372,7 +2384,7 @@ fn draw_window_node(
 }
 
 pub fn matches_query(node: &Node, query: &str) -> bool {
-    let text = format!("{} {} {}", node.title, node.kind.label(), node.command).to_lowercase();
+    let text = format!("{} {} {}", node.id, node.label(), node.command).to_lowercase();
     query
         .to_lowercase()
         .split_whitespace()
@@ -2485,7 +2497,7 @@ fn draw_node_with_border(
         c,
         x + 49.0,
         y + 31.0,
-        &n.kind.label().to_uppercase(),
+        &n.type_label().to_uppercase(),
         9.0,
         theme.muted.rgb(),
         false,
@@ -2515,28 +2527,31 @@ fn draw_node_with_border(
         status_color,
         false,
     );
-    bounded_text(
-        c,
-        x + 17.0,
-        y + 62.0,
-        &n.title,
-        15.0,
-        theme.text.rgb(),
-        false,
-    );
+    if !n.application_title().is_empty() {
+        bounded_text(
+            c,
+            x + 17.,
+            y + 62.,
+            n.application_title(),
+            15.,
+            theme.text.rgb(),
+            false,
+        );
+    }
     if n.closed_window() {
         return;
     }
+    let body_y = y + body_top(n);
     if n.kind == NodeKind::Vox {
         let _ = c.save();
-        c.rectangle(x + 16., y + 76., WIDTH - 32., height - 118.);
+        c.rectangle(x + 16., body_y, WIDTH - 32., height - body_top(n) - 42.);
         c.clip();
         let layout = text_layout(c, "", 10.5, true);
         layout.set_single_paragraph_mode(false);
         layout.set_width(((WIDTH - 34.) * pango::SCALE as f64) as i32);
         layout.set_wrap(pango::WrapMode::WordChar);
         layout.set_markup(&super::code::markup_for_usage(&n.command, theme, usage));
-        c.move_to(x + 17., y + 76.);
+        c.move_to(x + 17., body_y);
         pangocairo::functions::show_layout(c, &layout);
         let _ = c.restore();
     } else if n.kind == NodeKind::Metric && !n.metric.samples.is_empty() {
@@ -2544,7 +2559,7 @@ fn draw_node_with_border(
         text(
             c,
             x + 17.0,
-            y + 99.0,
+            body_y + 23.,
             &format!("{value:.0} {}", n.metric.unit),
             24.0,
             theme.text.rgb(),
@@ -2553,7 +2568,7 @@ fn draw_node_with_border(
         sparkline(
             c,
             &n.metric.samples,
-            (x + 130.0, y + 76.0, 140.0, 33.0),
+            (x + 130.0, body_y, 140.0, 33.0),
             accent,
         );
     } else {
@@ -2599,7 +2614,7 @@ fn draw_node_with_border(
         bounded_text(
             c,
             x + 17.0,
-            y + 90.0,
+            body_y + 14.,
             &format!("{prefix}{snippet}"),
             10.5,
             theme.muted.rgb(),
@@ -3187,6 +3202,35 @@ mod rendering_tests {
         u32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap())
     }
     #[test]
+    fn untitled_cards_compact_content_and_ignore_legacy_titles() {
+        for kind in [NodeKind::Shell, NodeKind::Constant, NodeKind::Vox] {
+            let mut node = Node::new("workspace", kind, "/tmp".into(), Position::default());
+            assert_eq!(
+                node_height(&node),
+                if kind == NodeKind::Vox { 252. } else { 126. }
+            );
+            assert_eq!(body_top(&node), 48.);
+            let before = raster(400, 400, |c| {
+                draw_node(c, &node, &node.position, false, &Theme::default())
+            });
+            node.title = "Legacy title must not reserve space".into();
+            let after = raster(400, 400, |c| {
+                draw_node(c, &node, &node.position, false, &Theme::default())
+            });
+            assert_eq!(before, after);
+            assert_eq!(inline_editable(&node), kind == NodeKind::Constant);
+        }
+        let mut application = Node::new(
+            "workspace",
+            NodeKind::Window,
+            "/tmp".into(),
+            Position::default(),
+        );
+        application.title = "Editor".into();
+        assert_eq!(body_top(&application), 76.);
+        assert_eq!(node_height(&application), 274.);
+    }
+    #[test]
     fn cut_stroke_crosses_the_rendered_bezier_and_ignores_distant_strokes() {
         let state = State::empty("/tmp".into());
         let a = Node::new(
@@ -3263,14 +3307,14 @@ mod rendering_tests {
     #[test]
     fn search_keeps_spatial_navigation_on_matching_nodes() {
         let mut state = State::empty("/tmp".into());
-        for (title, x) in [("Editor", 0.0), ("Browser", 360.0), ("Editor tests", 720.0)] {
+        for (command, x) in [("Editor", 0.0), ("Browser", 360.0), ("Editor tests", 720.0)] {
             let mut node = Node::new(
                 &state.selected_workspace,
                 NodeKind::Shell,
                 "/tmp".into(),
                 Position { x, y: 0.0 },
             );
-            node.title = title.into();
+            node.command = command.into();
             state.nodes.push(node);
         }
         let mut view = View {
@@ -3626,7 +3670,13 @@ mod rendering_tests {
         );
         let controllers = area.observe_controllers();
         let click = (0..controllers.n_items())
-            .find_map(|i| controllers.item(i)?.downcast::<gtk::GestureClick>().ok())
+            .find_map(|i| {
+                controllers
+                    .item(i)?
+                    .downcast::<gtk::GestureClick>()
+                    .ok()
+                    .filter(|gesture| gesture.button() == 1)
+            })
             .unwrap();
         let drag = (0..controllers.n_items())
             .find_map(|i| {
@@ -3637,13 +3687,13 @@ mod rendering_tests {
                     .filter(|g| g.button() == 1)
             })
             .unwrap();
-        click.emit_by_name::<()>("pressed", &[&1i32, &130f64, &185f64]);
+        click.emit_by_name::<()>("pressed", &[&1i32, &130f64, &157f64]);
         assert_eq!(
             edits.get(),
             0,
             "a value press must remain available for dragging"
         );
-        drag.emit_by_name::<()>("drag-begin", &[&130f64, &185f64]);
+        drag.emit_by_name::<()>("drag-begin", &[&130f64, &157f64]);
         drag.emit_by_name::<()>("drag-update", &[&60f64, &40f64]);
         assert_eq!(
             view.borrow()
@@ -3651,13 +3701,13 @@ mod rendering_tests {
                 .x,
             160.
         );
-        click.emit_by_name::<()>("released", &[&1i32, &190f64, &225f64]);
+        click.emit_by_name::<()>("released", &[&1i32, &190f64, &197f64]);
         drag.emit_by_name::<()>("drag-end", &[&60f64, &40f64]);
         assert_eq!(edits.get(), 0);
         assert_eq!(engine.snapshot().state.node(&id).unwrap().position.x, 160.);
         assert_eq!(engine.snapshot().state.node(&id).unwrap().position.y, 140.);
-        click.emit_by_name::<()>("pressed", &[&1i32, &190f64, &225f64]);
-        click.emit_by_name::<()>("released", &[&1i32, &190f64, &225f64]);
+        click.emit_by_name::<()>("pressed", &[&1i32, &190f64, &197f64]);
+        click.emit_by_name::<()>("released", &[&1i32, &190f64, &197f64]);
         assert_eq!(edits.get(), 1);
         click.emit_by_name::<()>("pressed", &[&1i32, &700f64, &500f64]);
         assert!(view.borrow().selected.is_none());

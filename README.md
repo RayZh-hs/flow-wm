@@ -109,7 +109,7 @@ See the [user guide](docs/guide.md) for configuration, updates, rollback, and CL
 | Ctrl+G / Ctrl+Shift+G | Group / ungroup selected nodes |
 | Ctrl+T | Add a resizable text field |
 | Ctrl+Shift+V | Create a Vox code node |
-| Win+Enter / Win+Q | Run / stop selected nodes (terminal / close in Windows) |
+| Win+Enter / Win+Q | Edit Vox or run other selected nodes / stop (terminal / close in Windows) |
 | R | Run the selected node |
 | Win+- / Win+= | Zoom out / in in Nodes |
 | Win+? | Show all shortcuts |

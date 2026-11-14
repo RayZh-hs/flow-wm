@@ -156,7 +156,7 @@ def run(state_file=None):
             assert ImageChops.difference(before, during).getbbox() is None, "wallpaper must stay fixed during workspace scrolling"
             wait(lambda: catalog()["selected_workspace"] == second["id"], compositor)
             time.sleep(2)
-            seed = json.loads(subprocess.check_output([str(ROOT / "target/debug/flowwm"), "add", "shell", "First toggle must show this node", "--command", "sleep 60"], env=environment, text=True))["id"]
+            seed = json.loads(subprocess.check_output([str(ROOT / "target/debug/flowwm"), "add", "shell", "--command", "sleep 60"], env=environment, text=True))["id"]
             opened = request(flow_socket, {"action":"performance"}).get("transition_open", {}).get("count", 0)
             key("super+Tab")
             wait(lambda: request(flow_socket, {"action":"performance"}).get("transition_open", {}).get("count", 0) > opened, compositor)

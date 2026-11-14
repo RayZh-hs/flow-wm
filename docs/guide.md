@@ -150,7 +150,7 @@ Bindings that require a newer compositor are activated at the next login, after 
 | Enter or double-click | Peek at a window, edit a constant, or open workflow output |
 | Shift+Tab, Shift+Enter or E | Edit node parameters |
 | F / Home | Center selection / frame all nodes |
-| Win+Enter / Win+Q | Run / stop selected nodes |
+| Win+Enter / Win+Q | Edit Vox or run other selected nodes / stop selection |
 | R | Run the selected node |
 | Delete or Backspace | Delete selection; close selected live application windows |
 | Alt+1…9, 0 | Select by index; hold Alt to display indices |
@@ -223,7 +223,7 @@ With a selected node, **Tab** starts a connection search:
 4. If a target accepts the output on multiple inputs, choose the input in another search layer.
 5. FlowWM connects the pins, creating an idle node first when necessary.
 
-The small text below the search field shows the source title and accepted type. The query references the node by ID, so long titles and title changes do not affect filtering. This hint is read-only; it uses the graph's type and registered-cast rules. A **Back** result returns to the previous layer. Choosing a type never starts its work.
+The small text below the search field shows the application title or node type and accepted type. The query references the node by ID, so long titles and title changes do not affect filtering. This hint is read-only; it uses the graph's type and registered-cast rules. A **Back** result returns to the previous layer. Choosing a type never starts its work.
 
 ## Nodes and typed data
 
@@ -427,7 +427,7 @@ flowwm nodes
 flowwm windows
 flowwm new
 flowwm search
-flowwm add shell "Check" --command 'git diff --check'
+flowwm add shell --command 'git diff --check'
 flowwm run <node-id> --downstream
 flowwm stop <node-id>
 flowwm focus <node-id>

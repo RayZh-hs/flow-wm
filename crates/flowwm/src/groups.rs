@@ -221,24 +221,6 @@ pub(crate) fn synchronize_with_processes(
                                         })
                                     })))
                 })
-            })
-            .or_else(|| {
-                if window.app_id.as_deref() != Some("dev.flowwm.Shell") {
-                    return None;
-                }
-                let matches: Vec<_> = state
-                    .nodes
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, n)| {
-                        n.kind != NodeKind::Window
-                            && n.window_id.is_none()
-                            && n.workspace == group_id
-                            && Some(n.title.as_str()) == window.title.as_deref()
-                    })
-                    .map(|(i, _)| i)
-                    .collect();
-                (matches.len() == 1).then(|| matches[0])
             });
         let index = existing.unwrap_or_else(|| {
             let right = state
@@ -298,12 +280,10 @@ pub(crate) fn synchronize_with_processes(
             if node.desktop_window {
                 changed |= assign(
                     &mut node.title,
-                    node.flow
-                        .properties
-                        .get("display_title")
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_string)
-                        .or_else(|| window.title.clone())
+                    window
+                        .title
+                        .clone()
+                        .filter(|title| !title.is_empty())
                         .or_else(|| window.app_id.clone())
                         .unwrap_or_else(|| "Application window".into()),
                 );

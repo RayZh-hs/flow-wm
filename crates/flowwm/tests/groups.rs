@@ -253,7 +253,7 @@ fn native_output_is_bound_to_its_existing_workflow_node() {
     let id = node.id.clone();
     state.nodes.push(node);
     desktop.windows[0].title = Some("Draft plan".into());
-    desktop.windows[0].app_id = Some("dev.flowwm.Shell".into());
+    desktop.windows[0].app_id = Some(format!("dev.flowwm.interface.v1.{id}"));
     groups::synchronize(&mut state, &desktop);
     assert_eq!(state.node(&id).unwrap().window_id, Some(1));
     assert_eq!(
@@ -265,6 +265,31 @@ fn native_output_is_bound_to_its_existing_workflow_node() {
         state.node(&id).unwrap().status,
         Status::Idle,
         "presentation must not start work"
+    );
+}
+
+#[test]
+fn matching_titles_do_not_attach_application_windows_to_workflow_nodes() {
+    let mut state = State::empty("/tmp".into());
+    let mut desktop = desktop();
+    let mut node = Node::new(
+        &state.selected_workspace,
+        NodeKind::Human,
+        "/tmp".into(),
+        Position::default(),
+    );
+    node.title = "Draft plan".into();
+    let id = node.id.clone();
+    state.nodes.push(node);
+    desktop.windows[0].title = Some("Draft plan".into());
+    desktop.windows[0].app_id = Some("dev.flowwm.Shell".into());
+    groups::synchronize(&mut state, &desktop);
+    assert_eq!(state.node(&id).unwrap().window_id, None);
+    assert!(
+        state
+            .nodes
+            .iter()
+            .any(|node| node.id != id && node.window_id == Some(1))
     );
 }
 

@@ -99,8 +99,8 @@ def run():
                 def node(identifier):
                     return next(n for n in state()["nodes"] if n["id"] == identifier)
 
-                def create(kind, title):
-                    return json.loads(subprocess.check_output([str(ROOT / "target/debug/flowwm"), "add", kind, title], env=environment))["id"]
+                def create(kind):
+                    return json.loads(subprocess.check_output([str(ROOT / "target/debug/flowwm"), "add", kind], env=environment))["id"]
 
                 def capture(name):
                     path = artifacts / name
@@ -120,7 +120,7 @@ def run():
                 second = next(g for g in groups if g["id"] != first["id"])
                 ui("bar_geometry", output="winit", insets=[0, 0, 0, 0])
                 ui("nodes")
-                constant = create("constant", "Constant input probe")
+                constant = create("constant")
                 children.append(subprocess.Popen([sys.executable, str(ROOT / "scripts/preview_fixture.py"), "Tall preview probe"], env=environment, stdout=log, stderr=log))
                 preview = wait(lambda: next((n["id"] for n in state()["nodes"] if n["title"] == "Tall preview probe" and n.get("window_id")), None), compositor)
                 ui("nodes")
@@ -165,7 +165,7 @@ def run():
 
                 # A stationary port hover shows documentation; leaving the port
                 # dismisses it without changing the graph or grabbing input.
-                hover_x, hover_y = point(392, 177)
+                hover_x, hover_y = point(392, 163)
                 input_command("mousemove", "--sync", round(hover_x), round(hover_y))
                 time.sleep(1.)
                 hovered = capture("port-tooltip.png")
@@ -181,7 +181,7 @@ def run():
                 dismissed = capture("port-tooltip-dismissed.png")
                 assert sum(value > 30 for value in ImageChops.difference(before, dismissed).convert("L").tobytes()) < 20, "leaving the port must dismiss its tooltip"
 
-                click(*point(140, 185))
+                click(*point(140, 157))
                 time.sleep(0.2)
                 opened = capture("constant-editor.png")
                 difference = ImageChops.difference(before, opened)
@@ -191,7 +191,7 @@ def run():
                 closed = capture("constant-editor-dismissed.png")
                 assert sum(value > 30 for value in ImageChops.difference(before, closed).convert("L").tobytes()) < 20, "Escape must dismiss the editor and restore the canvas"
 
-                click(*point(140, 185))
+                click(*point(140, 157))
                 time.sleep(0.15)
                 input_command("key", "ctrl+a")
                 input_command("type", "--clearmodifiers", "73")
@@ -199,7 +199,7 @@ def run():
                 wait(lambda: node(constant)["flow"]["properties"].get("value") == 73, compositor)
 
                 # Drag from the value field, then check the persistent position after release.
-                start_x, start_y = point(140, 185)
+                start_x, start_y = point(140, 157)
                 input_command("mousemove", "--sync", round(start_x), round(start_y), "mousedown", "1")
                 input_command("mousemove", "--sync", round(start_x + 60 * zoom), round(start_y + 40 * zoom))
                 time.sleep(0.1)
@@ -213,7 +213,7 @@ def run():
                 assert ImageChops.difference(selected, deselected).getbbox() is not None, "clicking the background must clear selection"
 
                 # Returning to a row must not revive an abandoned modal editor.
-                click(*point(200, 225))
+                click(*point(200, 197))
                 time.sleep(0.15)
                 request(niri_socket, {"Action": {"FocusWorkspace": {"reference": {"Id": second["row"]["id"]}}}})
                 wait(lambda: catalog()["selected_workspace"] == second["id"], compositor)
@@ -268,14 +268,49 @@ def run():
                 capture("selection-aligned-horizontally.png")
                 input_command("key", "ctrl+z")
                 wait(lambda: all(node(identifier)["position"] == position for identifier, position in initial_positions.items()), compositor)
-                ordinary = create("human", "No default interface")
+                request(niri_socket, {"Action": {"FocusWorkspace": {"reference": {"Id": second["row"]["id"]}}}})
+                wait(lambda: catalog()["selected_workspace"] == second["id"], compositor)
+                ui("nodes")
+                time.sleep(0.3)
+                input_command("key", "ctrl+shift+v")
+                vox = wait(lambda: next((n["id"] for n in state()["nodes"] if n["workspace"] == second["id"] and n["kind"] == "vox"), None), compositor)
+                ui("fit")
+                time.sleep(0.4)
+                def editor_open():
+                    return any(layer["namespace"] == "flowwm-dialog" for layer in request(niri_socket, "Layers")["Layers"])
+                assert not editor_open(), "creating Vox must wait for an explicit edit action"
+                vox_zoom = min((width - 160) / 292, (height - 160) / 252, 1.2)
+                code_x = width / 2
+                code_y = (height - 252 * vox_zoom) / 2 + 64 * vox_zoom
+                click(code_x, code_y)
+                input_command("click", "--repeat", "2", "--delay", "100", "1")
+                ui("open", id=vox)
+                time.sleep(0.2)
+                assert not editor_open(), "Vox previews must stay read-only on clicks and Open"
+                input_command("key", "Super_L+Return")
+                wait(editor_open, compositor)
+                time.sleep(0.3)
+                input_command("key", "ctrl+a")
+                input_command("type", "--clearmodifiers", "{ value = 99, }")
+                input_command("key", "ctrl+Return")
+                try:
+                    wait(lambda: node(vox)["command"] == "{ value = 99, }" and not editor_open(), compositor)
+                except TimeoutError:
+                    print(json.dumps({"vox": node(vox), "editor_open": editor_open()}, indent=2), flush=True)
+                    capture("failed-vox-edit.png")
+                    raise
+                capture("vox-explicit-edit.png")
+                request(flow_socket, {"action": "delete", "id": vox})
+                request(niri_socket, {"Action": {"FocusWorkspace": {"reference": {"Id": first["row"]["id"]}}}})
+                wait(lambda: catalog()["selected_workspace"] == first["id"], compositor)
+                ordinary = create("human")
                 ui("open", id=ordinary)
                 wait(lambda: any(layer["namespace"] == "flowwm-dialog" for layer in request(niri_socket, "Layers")["Layers"]), compositor)
-                assert not any(w["title"] == "No default interface" for w in request(niri_socket, "Windows")["Windows"])
+                assert not any(w["app_id"] == f"dev.flowwm.interface.v1.{ordinary}" for w in request(niri_socket, "Windows")["Windows"])
                 ui("dismiss")
                 definition = json.loads((ROOT / "examples/extension-window.json").read_text())["nodes"][0]
                 request(flow_socket, {"action":"register_node", "definition":definition})
-                optional = create("vox", "Counter interface")
+                optional = create("vox")
                 extension_node = node(optional)
                 extension_node.update(kind="extension", command=definition["source"], flow={"node_type":definition["id"],"properties":{"start":40}})
                 request(flow_socket,{"action":"update","node":extension_node})
@@ -316,7 +351,7 @@ def run():
                 orchestrate({"command":"unreference","workflow":parent,"target":child},parent)
                 assert child in orchestrate({"command":"snapshot"})["workflows"], "removing a reference must keep its target alive"
                 orchestrate({"command":"destroy","workflow":child})
-                dependent=create("shell","Keep the connected workflow")
+                dependent=create("shell")
                 request(flow_socket,{"action":"connect","source":preview,"target":dependent})
                 preview_window=node(preview)["window_id"]
                 request(niri_socket,{"Action":{"MoveWindowToWorkspace":{"window_id":preview_window,"reference":{"Id":second["row"]["id"]},"focus":False}}})
@@ -331,7 +366,7 @@ def run():
                 ui("open",id=preview)
                 wait(lambda: any(w["id"]==preview_window and w["is_focused"] for w in request(niri_socket,"Windows")["Windows"]),compositor)
                 assert node(preview)["workspace"]==second["id"], "opening the moved window must preserve its destination workflow"
-                print("Interaction smoke passed: translucent, blurred row settings and port tooltips, styled port hover and pointer-leave dismissal, blurred/dimmed preview gaps, visible inline editor, keyboard editing and saving, Escape dismissal, constant and window dragging, persistent release positions, deselection, and row-switch recovery; extension-only compact windows, working actions, close-without-destroy, private regions, identity-preserving Make Public, directional Ctrl-drag alignment with undo/redo, and synchronized window nodes across workflow rows with detached boundary connections.")
+                print("Interaction smoke passed: translucent, blurred row settings and port tooltips, styled port hover and pointer-leave dismissal, blurred/dimmed preview gaps, visible inline editor, keyboard editing and saving, Escape dismissal, constant and window dragging, persistent release positions, deselection, and row-switch recovery; read-only Vox previews with Win+Enter editing and Ctrl+Enter saving; extension-only compact windows, working actions, close-without-destroy, private regions, identity-preserving Make Public, directional Ctrl-drag alignment with undo/redo, and synchronized window nodes across workflow rows with detached boundary connections.")
         finally:
             for child in reversed(children):
                 if child.poll() is None:

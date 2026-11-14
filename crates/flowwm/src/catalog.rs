@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 pub struct CatalogNode {
     pub id: String,
     pub title: String,
+    pub label: String,
     pub workspace: String,
     pub kind: NodeKind,
     pub status: Status,
@@ -197,7 +198,7 @@ impl Lookup {
             .collect();
         Some(Self {
             node: source.id.clone(),
-            title: source.title.clone(),
+            title: source.label(),
             outputs,
             selected: selected.map(str::to_string),
             input: reverse,
@@ -237,7 +238,8 @@ impl Catalog {
                 })
                 .map(|n| CatalogNode {
                     id: n.id.clone(),
-                    title: n.title.clone(),
+                    title: n.application_title().into(),
+                    label: n.label(),
                     workspace: n.workspace.clone(),
                     kind: n.kind,
                     status: n.status,

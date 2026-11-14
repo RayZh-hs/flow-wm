@@ -145,3 +145,20 @@ test('application creation is available from ordinary and create searches', () =
         assert.deepEqual(Array.from(result[0].flowwmArgs), ['create','window']);
     }
 });
+
+
+test('untitled nodes remain searchable by type, content and ID', () => {
+    const input = { ...catalog, nodes: [{ id: 'script-42', title: '', label: 'Vox', summary: 'inputs.temperature + 1', workspace: 'a', kind: 'vox', status: 'idle' }] };
+    for (const query of ['Vox', 'temperature', 'script-42']) {
+        const results = JSON.parse(JSON.stringify(context.items(input, query, labels)));
+        assert.equal(results[0].name, 'Vox');
+        assert.deepEqual(results[0].flowwmArgs, ['focus', 'script-42']);
+    }
+    const connected = JSON.parse(JSON.stringify(linked));
+    connected.nodes[0] = { id: 'display', title: '', label: 'Display', summary: 'temperature' };
+    for (const query of ['Display', 'temperature', 'display']) {
+        const results = connections(connected, query, 'number');
+        assert.equal(results[0].name, 'Display');
+        assert.equal(JSON.parse(results[0].flowwmArgs[1]).connection.target.node, 'display');
+    }
+});

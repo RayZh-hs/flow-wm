@@ -141,13 +141,20 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
             if let Some(attention) = attention {
                 node.flow.properties.insert("_alert".into(), attention);
             }
-            node.title = spec
-                .flow
-                .properties
-                .get("title")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or(node.kind.label())
-                .into();
+            if kind == NodeKind::Window {
+                if let Some(name) = spec
+                    .flow
+                    .properties
+                    .get("application_name")
+                    .or_else(|| spec.flow.properties.get("application_id"))
+                    .or_else(|| spec.flow.properties.get("application"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    node.title = name.into();
+                }
+            } else {
+                node.title.clear();
+            }
             node.flow.values = runtime
                 .queue
                 .computed

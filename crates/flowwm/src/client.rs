@@ -475,7 +475,7 @@ impl DesktopClient {
             {
                 crate::notifications::present(
                     &self.inner.notification_command,
-                    &node.title,
+                    &node.label(),
                     attention["message"]
                         .as_str()
                         .unwrap_or("Needs your attention"),
@@ -765,18 +765,9 @@ impl DesktopClient {
             Action::Shutdown => {
                 self.shutdown();
             }
-            Action::Create { node } => {
-                let mut spec = node.spec();
-                if node.desktop_window
-                    && state.node(&node.id).is_some_and(|n| n.title != node.title)
-                {
-                    spec.flow
-                        .properties
-                        .insert("display_title".into(), json!(node.title));
-                }
-                spec.flow
-                    .properties
-                    .insert("title".into(), json!(node.title));
+            Action::Create { mut node } => {
+                node.title.clear();
+                let spec = node.spec();
                 self.edit_graph(&node.workspace, |g| {
                     ensure!(g.node(&node.id).is_none(), "Duplicate node");
                     g.nodes.push(spec);
@@ -790,16 +781,6 @@ impl DesktopClient {
             }
             Action::Update { node } => {
                 let mut spec = node.spec();
-                if node.desktop_window
-                    && state.node(&node.id).is_some_and(|n| n.title != node.title)
-                {
-                    spec.flow
-                        .properties
-                        .insert("display_title".into(), json!(node.title));
-                }
-                spec.flow
-                    .properties
-                    .insert("title".into(), json!(node.title));
                 if node.kind == NodeKind::Agent {
                     spec.flow
                         .properties
@@ -1157,7 +1138,7 @@ impl DesktopClient {
                     let node = state.node(&id).context("Node not found")?;
                     crate::notifications::present(
                         &self.inner.notification_command,
-                        &node.title,
+                        &node.label(),
                         &message,
                         critical,
                     );

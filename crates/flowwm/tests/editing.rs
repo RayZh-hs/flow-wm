@@ -9,6 +9,81 @@ use flowwm::{
 use serde_json::json;
 
 #[test]
+fn workflow_nodes_discard_titles_and_require_ids() {
+    let state = State::empty("/tmp".into());
+    let mut node = Node::new(
+        &state.selected_workspace,
+        NodeKind::Shell,
+        "/tmp".into(),
+        Default::default(),
+    );
+    node.title = "Old custom name".into();
+    node.flow
+        .properties
+        .insert("title".into(), json!(node.title));
+    node.flow
+        .properties
+        .insert("display_title".into(), json!(node.title));
+    node.command = "printf untitled".into();
+    let (engine, _) = support::fixture(state);
+    engine
+        .request(Action::Create {
+            node: Box::new(node.clone()),
+        })
+        .unwrap();
+    let snapshot = engine.snapshot();
+    let saved = snapshot.state.node(&node.id).unwrap();
+    assert!(saved.title.is_empty());
+    assert!(!saved.flow.properties.contains_key("title"));
+    assert!(!saved.flow.properties.contains_key("display_title"));
+    let catalog = Catalog::new(&snapshot, Presentation::default(), &extensions::builtins());
+    assert!(catalog.nodes[0].title.is_empty());
+    assert_eq!(catalog.nodes[0].label, "Shell");
+    for name in ["Old custom name", "Shell"] {
+        assert!(
+            engine
+                .request(Action::Run {
+                    id: name.into(),
+                    downstream: false
+                })
+                .is_err()
+        );
+    }
+    engine
+        .request(Action::Run {
+            id: node.id.clone(),
+            downstream: false,
+        })
+        .unwrap();
+    support::wait(|| engine.snapshot().state.node(&node.id).unwrap().status == Status::Done);
+    let mut application = Node::new(
+        &node.workspace,
+        NodeKind::Window,
+        "/tmp".into(),
+        Default::default(),
+    );
+    application.title = "Manual name".into();
+    application
+        .flow
+        .properties
+        .insert("application".into(), json!("editor.desktop"));
+    application
+        .flow
+        .properties
+        .insert("application_name".into(), json!("Text Editor"));
+    engine
+        .request(Action::Create {
+            node: Box::new(application.clone()),
+        })
+        .unwrap();
+    assert_eq!(
+        engine.snapshot().state.node(&application.id).unwrap().title,
+        "Text Editor"
+    );
+    engine.shutdown();
+}
+
+#[test]
 fn agent_macros_can_be_connected_before_their_first_instance_exists() {
     let mut initial = State::empty("/tmp".into());
     let human = Node::new(
@@ -31,7 +106,6 @@ fn agent_macros_can_be_connected_before_their_first_instance_exists() {
             "/tmp".into(),
             Default::default(),
         );
-        node.title = m.name;
         node.command = m.command;
         node.flow = m.flow;
         let catalog = Catalog::new(
@@ -295,11 +369,19 @@ fn live_window_parameters_can_be_saved_without_stopping_or_detaching_the_window(
         Default::default(),
     );
     node.window_id = Some(7);
+    node.title = "Editor".into();
     node.desktop_window = true;
     node.status = Status::Running;
     state.nodes.push(node.clone());
     let (engine, _) = support::fixture(state);
-    node.title = "My editor".into();
+    node.title = "Custom title".into();
+    node.flow
+        .properties
+        .insert("display_title".into(), json!("Custom title"));
+    node.flow
+        .properties
+        .insert("title".into(), json!("Custom title"));
+    node.cwd = "/tmp/editor".into();
     node.window_id = None;
     engine
         .request(Action::Update {
@@ -310,7 +392,10 @@ fn live_window_parameters_can_be_saved_without_stopping_or_detaching_the_window(
     let saved = snapshot.state.node(&node.id).unwrap();
     assert_eq!(saved.window_id, Some(7));
     assert_eq!(saved.status, Status::Running);
-    assert_eq!(saved.flow.properties["display_title"], "My editor");
+    assert_eq!(saved.title, "Editor");
+    assert!(!saved.flow.properties.contains_key("display_title"));
+    assert!(!saved.flow.properties.contains_key("title"));
+    assert_eq!(saved.cwd, std::path::Path::new("/tmp/editor"));
     engine.shutdown();
 }
 

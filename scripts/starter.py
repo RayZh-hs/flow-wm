@@ -20,13 +20,13 @@ def main():
         return
     repo = str(Path(__file__).resolve().parents[1])
     specs = [
-        ("agent", "Inspect workspace", "Inspect this repository. Explain its current state and propose one concrete next task. Do not edit files. Raise an issue if an assumption needs a decision.", 480, 80),
-        ("gate", "Choose the next step", "Review the investigation and decide whether to continue.", 480, 320),
-        ("shell", "Check working tree", "git diff --check && git status --short", 480, 560),
+        ("agent", "Inspect this repository. Explain its current state and propose one concrete next task. Do not edit files. Raise an issue if an assumption needs a decision.", 480, 80),
+        ("gate", "Review the investigation and decide whether to continue.", 480, 320),
+        ("shell", "git diff --check && git status --short", 480, 560),
     ]
     ids = []
-    for kind, title, command, x, y in specs:
-        node_id = flow("add", kind, title, "--cwd", repo, "--command", command)["id"]
+    for kind, command, x, y in specs:
+        node_id = flow("add", kind, "--cwd", repo, "--command", command)["id"]
         send({"action": "move", "id": node_id, "position": {"x": x, "y": y}})
         ids.append(node_id)
     for source, target in zip(ids[:2], ids[1:3]):

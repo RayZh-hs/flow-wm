@@ -1,10 +1,17 @@
 # Editing the workflow canvas
 
+Workflow nodes are untitled. Their compact cards show the node type and content.
+Application cards infer their title from the application; node settings do not
+offer a name field. Connections, commands, and window attachments identify nodes
+by ID, never by title. Groups and text fields can still have names.
+
 Vox code is visible directly on its node card, with the same lexer-based syntax
-colors used by the editor. Click the code body, double-click the node, or use
-**Shift+Enter** to open the normal node properties editor. Source and ports appear
-side by side, so both stay visible while inspecting a binding. **Ctrl+Shift+V**
-creates a new Vox node and opens its properties.
+colors used by the editor. Select the node and press **Win+Enter** to open its
+properties editor. Source and ports appear side by side, so both stay visible
+while inspecting a binding. Clicking the code body or double-clicking the card
+keeps the preview read-only. **Ctrl+Shift+V** creates a new Vox node; **Win+Enter**
+opens it for editing. The explicit Edit action, including **Shift+Enter** and
+the context menu, also opens the editor.
 
 The editor offers completion for `inputs`, nested input records, signal `args`,
 Vox keywords, and names in the current source. Suggestions appear automatically

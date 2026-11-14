@@ -16,6 +16,8 @@ impl Node {
         let mut flow = self.flow.clone();
         flow.values.clear();
         flow.properties.remove("_alert");
+        flow.properties.remove("title");
+        flow.properties.remove("display_title");
         flow.properties
             .insert("command".into(), serde_json::json!(self.command));
         flow.properties.remove("cwd");

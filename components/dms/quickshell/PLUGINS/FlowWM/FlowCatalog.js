@@ -77,9 +77,10 @@ function items(catalog, query, labels) {
             if (node.kind === "window") return;
             var status = node.kind === "window" && node.window_id ? labels.open : labels.status[node.status] || node.status;
             var kind = labels.kind[node.kind] || node.kind;
-            var description = kind + " · " + status + " · " + (workspaces[node.workspace] || "");
+            var description = kind + " · " + status + " · " + (workspaces[node.workspace] || "") + " · " + node.id;
+            if (node.summary) description += " · " + node.summary;
             var args = ["focus", node.id];
-            add("node:" + node.id, node.title, description, ({ agent: "smart_toy", shell: "terminal", metric: "monitoring", gate: "rule", human: "edit_note", window: "window" })[node.kind] || "account_tree", args, labels.reveal);
+            add("node:" + node.id, node.label || node.title || kind, description, ({ agent: "smart_toy", shell: "terminal", metric: "monitoring", gate: "rule", human: "edit_note", window: "window" })[node.kind] || "account_tree", args, labels.reveal);
         });
     }
     if (mode === "create" || (mode === "nodes" && query)) {
@@ -140,8 +141,8 @@ function connectionItems(catalog, query, outputName, targetKey) {
         var first = targets[0];
         var entry = (first.create ? catalog.macros : catalog.nodes).find(function (n) { return n.id === first.id; });
         if (!entry) return;
-        var name = first.create ? entry.name : entry.title;
-        if (!targetKey && !matches(name + " " + (entry.description || ""), query)) return;
+        var name = first.create ? entry.name : (entry.label || entry.title || entry.kind || entry.id);
+        if (!targetKey && !matches(name + " " + (entry.description || entry.summary || "") + " " + entry.id, query)) return;
         if (!targetKey && targets.length > 1) {
             result.push(item(key, name, output.ty + " · " + targets.length + " compatible " + (lookup.input ? "outputs" : "inputs"), { target: key }, null));
             return;

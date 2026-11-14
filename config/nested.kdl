@@ -12,6 +12,7 @@ binds {
     Mod+L repeat=false allow-inhibiting=false { spawn "flowwm" "row-settings"; }
     Mod+Tab repeat=false allow-inhibiting=false { spawn "flowwm" "toggle"; }
     Mod+Q repeat=false allow-inhibiting=false { spawn "flowwm" "send" r#"{"action":"ui","command":{"action":"stop_selected"}}"#; }
+    Mod+Return repeat=false allow-inhibiting=false { spawn "flowwm" "send" r#"{"action":"ui","command":{"action":"run_selected"}}"#; }
     Mod+Space repeat=false { spawn "flowwm" "new"; }
     Mod+Minus { spawn "flowwm" "send" r#"{"action":"ui","command":{"action":"zoom_out"}}"#; }
     Mod+Equal { spawn "flowwm" "send" r#"{"action":"ui","command":{"action":"zoom_in"}}"#; }

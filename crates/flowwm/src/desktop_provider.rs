@@ -152,13 +152,7 @@ impl Bindings {
                 node.desktop_window = true;
                 node.column = binding.column.clone();
                 if node.kind == crate::model::NodeKind::Window && !binding.title.is_empty() {
-                    node.title = node
-                        .flow
-                        .properties
-                        .get("display_title")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or(&binding.title)
-                        .into();
+                    node.title = binding.title.clone();
                 }
                 if node.kind == crate::model::NodeKind::Window {
                     node.status = crate::model::Status::Running;

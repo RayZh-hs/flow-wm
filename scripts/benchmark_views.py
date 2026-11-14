@@ -95,8 +95,8 @@ def run(args):
             children.append(subprocess.Popen([sys.executable, __file__, "--clients", str(args.windows)], env=env, stdout=log, stderr=log))
             wait(lambda: len(request(niri, "Windows")["Windows"]) == args.windows, compositor)
             wait(lambda: len(request(flow, {"action": "catalog"})["nodes"]) >= args.windows, compositor)
-            for index in range(args.nodes):
-                subprocess.run([str(args.flowwm.resolve()), "add", "constant", f"Graph probe {index:03}"], env=env, stdout=log, stderr=log, check=True)
+            for _ in range(args.nodes):
+                subprocess.run([str(args.flowwm.resolve()), "add", "constant"], env=env, stdout=log, stderr=log, check=True)
             if args.nodes:
                 wait(lambda: len(request(flow, {"action": "catalog"})["nodes"]) >= args.windows + args.nodes, compositor)
             time.sleep(0.4)

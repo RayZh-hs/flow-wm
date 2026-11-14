@@ -39,7 +39,7 @@ fn graph_edits_and_group_placements_undo_and_redo_without_rewinding_execution() 
     assert_eq!(client.snapshot().state.node(&id).unwrap().position.x, 550.);
     assert!(client.snapshot().state.workspace().graph_arranged);
     let mut edited = client.snapshot().state.node(&id).unwrap().clone();
-    edited.title = "Edited command".into();
+    edited.command = "printf updated".into();
     client
         .request(Action::Update {
             node: Box::new(edited),
@@ -47,13 +47,13 @@ fn graph_edits_and_group_placements_undo_and_redo_without_rewinding_execution() 
         .unwrap();
     client.request(Action::Undo).unwrap();
     assert_eq!(
-        client.snapshot().state.node(&id).unwrap().title,
-        "Shell command"
+        client.snapshot().state.node(&id).unwrap().command,
+        "printf done"
     );
     client.request(Action::Redo).unwrap();
     assert_eq!(
-        client.snapshot().state.node(&id).unwrap().title,
-        "Edited command"
+        client.snapshot().state.node(&id).unwrap().command,
+        "printf updated"
     );
     assert_eq!(
         client.snapshot().state.node(&id).unwrap().status,

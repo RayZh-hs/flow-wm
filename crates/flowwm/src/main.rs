@@ -128,7 +128,6 @@ enum Cmd {
     Add {
         #[arg(value_enum)]
         kind: Kind,
-        title: String,
         #[arg(long)]
         command: Option<String>,
         #[arg(long)]
@@ -296,12 +295,7 @@ fn main() -> Result<()> {
             );
             return Ok(());
         }
-        Cmd::Add {
-            kind,
-            title,
-            command,
-            cwd,
-        } => {
+        Cmd::Add { kind, command, cwd } => {
             let view = ipc::send(&socket, &serde_json::json!({"action":"view"}))?;
             let selected = view["selected_workflow"]
                 .as_str()
@@ -320,7 +314,6 @@ fn main() -> Result<()> {
                 node.kind = NodeKind::Window;
                 node.flow.node_type = flow_builtins::agent::TERMINAL_TYPE.into();
             }
-            node.title = title;
             if let Some(command) = command {
                 node.command = command;
             }

@@ -118,7 +118,7 @@ harness "fixture" {{
                 input("mousemove",x,y,"click",1)
                 time.sleep(0.15)
             ui("nodes")
-            trigger = json.loads(subprocess.check_output([str(ROOT / "target/debug/flowwm"), "add", "human", "Trigger", "--cwd", temporary], env=environment, text=True))["id"]
+            trigger = json.loads(subprocess.check_output([str(ROOT / "target/debug/flowwm"), "add", "human", "--cwd", temporary], env=environment, text=True))["id"]
             ui("create_connected", id="lark.send", source={"node":trigger,"pin":"accepted"}, input="in", reverse=False)
             wait(lambda: any(layer.get("namespace") == "flowwm-dialog" for layer in request(niri,"Layers")["Layers"]), compositor)
             time.sleep(0.3)

@@ -29,7 +29,6 @@ struct Editor {
     body: gtk::Box,
     status: gtk::Label,
     save: gtk::Button,
-    title: gtk::Entry,
     command: Vec<String>,
     node: Node,
     engine: DesktopClient,
@@ -41,9 +40,6 @@ struct Editor {
 pub fn open(dialog: gtk::Window, engine: DesktopClient, node: Node, command: Vec<String>) {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 14);
     root.add_css_class("dialog-body");
-    let title = gtk::Entry::new();
-    title.set_text(&node.title);
-    root.append(&title);
     let status = gtk::Label::new(Some("Loading settings…"));
     status.set_wrap(true);
     status.set_xalign(0.);
@@ -78,7 +74,6 @@ pub fn open(dialog: gtk::Window, engine: DesktopClient, node: Node, command: Vec
         body,
         status,
         save,
-        title,
         command,
         node,
         engine,
@@ -108,7 +103,6 @@ pub fn open(dialog: gtk::Window, engine: DesktopClient, node: Node, command: Vec
             let mut node = e.node.clone();
             let properties = e.read(false)?;
             node.flow.properties = properties.into_iter().collect();
-            node.title = e.title.text().into();
             e.engine.request(Action::Update {
                 node: Box::new(node),
             })?;

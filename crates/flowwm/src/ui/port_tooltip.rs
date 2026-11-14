@@ -106,7 +106,7 @@ impl Cache {
                         context: format!(
                             "{} · {}.{}",
                             if output { "Output" } else { "Input" },
-                            node.title,
+                            node.label(),
                             pin.name
                         ),
                         ty: pin.ty,
@@ -247,7 +247,7 @@ mod tests {
             "/tmp".into(),
             Position::default(),
         );
-        node.title = "Timer".into();
+        node.flow.node_type = "local.timer".into();
         node.flow.inputs.push(Pin::new("value", Type::Int));
         node.flow.outputs.push(Pin::new("value", Type::Float));
         let key = (
@@ -276,7 +276,7 @@ mod tests {
         cache.prepare(&state, 2, &theme);
         assert!(Rc::ptr_eq(&original, &cache.entries[&key]));
 
-        state.nodes[0].title = "Clock & <ticks>".into();
+        state.nodes[0].flow.node_type = "local.clock & <ticks>".into();
         state.nodes[0].flow.outputs[0].ty = Type::UInt8;
         cache.prepare(&state, 3, &theme);
         let changed = cache.entries[&key].clone();
@@ -317,7 +317,7 @@ mod tests {
             "/tmp".into(),
             Position::default(),
         );
-        node.title = "Timer & <value>".into();
+        node.title = "Ignored title".into();
         let endpoint = Endpoint {
             node: node.id.clone(),
             pin: "value".into(),
@@ -337,7 +337,7 @@ mod tests {
         assert!(content.show(&cache, endpoint.clone(), true, &tooltip));
         assert_eq!(content.signature.text(), format!("value: {ty}"));
         assert!(content.signature.attributes().is_some());
-        assert_eq!(content.context.text(), "Output · Timer & <value>.value");
+        assert_eq!(content.context.text(), "Output · Constant.value");
         assert!(content.description.text().contains("Event connection"));
         let first = content.current.clone().unwrap();
         assert!(content.show(&cache, endpoint, true, &tooltip));

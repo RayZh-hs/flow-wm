@@ -142,13 +142,6 @@ pub fn fixture_with_provider_setup(
         graph.connections.retain(|e| {
             ids.contains(e.source.node.as_str()) && ids.contains(e.target.node.as_str())
         });
-        for node in &mut graph.nodes {
-            if let Some(view) = state.node(&node.id.0) {
-                node.flow
-                    .properties
-                    .insert("title".into(), serde_json::json!(view.title));
-            }
-        }
         native
             .command(Command::Create {
                 workflow: Workflow {

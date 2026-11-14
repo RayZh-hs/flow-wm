@@ -80,14 +80,14 @@ def run(root, runtime, process, application, environment):
             return same
         wait(settled, process)
 
-    def create(title, kind="human"):
-        result = subprocess.check_output([str(application), "add", kind, title, "--cwd", str(root)], env=environment, text=True)
+    def create(kind="human"):
+        result = subprocess.check_output([str(application), "add", kind, "--cwd", str(root)], env=environment, text=True)
         return json.loads(result)["id"]
 
     activate(first)
     ui("nodes")
     wait(lambda: len(rows()) == 1, process)
-    selected = create("Native row one")
+    selected = create()
     ui("select", id=selected)
     ui("fit")
     wait(lambda: request(flow_socket, {"action": "performance"}).get("transition_open", {}).get("count", 0) > 0, process)
@@ -101,7 +101,7 @@ def run(root, runtime, process, application, environment):
     wait(lambda: not catalog()["presentation"]["graph_visible"], process)
     assert len(rows()) == 1, "the first row must stay mapped while another row is active"
     ui("nodes")
-    create("Native row two")
+    create()
     wait(lambda: len(rows()) == 2, process)
     activate(first)
     wait(lambda: catalog()["presentation"]["graph_visible"], process)
@@ -158,8 +158,8 @@ def run(root, runtime, process, application, environment):
     request(niri_socket, {"Action": {"CloseOverview": {}}})
     assert rows() == [first["row"]["id"]], "overview must preserve mixed Nodes/Windows rows"
     activate(first)
-    constant = create("Constant 42", "constant")
-    display = create("Displayed input", "display")
+    constant = create("constant")
+    display = create("display")
     state = request(flow_socket, {"action": "view"})
     constant_node = next(n for n in state["nodes"] if n["id"] == constant)
     constant_node["flow"]["properties"] = {"value": 42}
