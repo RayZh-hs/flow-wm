@@ -19,13 +19,14 @@ pub fn selector(window: &niri_ipc::Window) -> String {
 }
 
 pub fn synchronize(state: &mut State, desktop: &Desktop) -> bool {
-    synchronize_with_processes(state, desktop, &HashSet::new())
+    synchronize_with_processes(state, desktop, &HashSet::new(), &HashSet::new())
 }
 
 pub(crate) fn synchronize_with_processes(
     state: &mut State,
     desktop: &Desktop,
     retained: &HashSet<String>,
+    awaiting_exit: &HashSet<String>,
 ) -> bool {
     if !desktop.connected
         || !desktop.windows_ready
@@ -193,7 +194,7 @@ pub(crate) fn synchronize_with_processes(
                 state.nodes.iter().position(|n| {
                     n.kind == NodeKind::Window
                         && n.window_id.is_none()
-                        && !retained.contains(&n.id)
+                        && !awaiting_exit.contains(&n.id)
                         && (n.window_match.as_ref() == Some(&key)
                             || (n.workspace == group_id
                                 && n.flow
@@ -312,14 +313,7 @@ pub(crate) fn synchronize_with_processes(
     let removed: HashSet<_> = state
         .nodes
         .iter()
-        .filter(|n| {
-            n.desktop_window
-                && n.kind == NodeKind::Window
-                && n.spec().type_id == "local.window"
-                && !n.flow.properties.contains_key("application")
-                && !retained.contains(&n.id)
-                && !seen.contains(&n.id)
-        })
+        .filter(|n| n.imported_window() && !retained.contains(&n.id) && !seen.contains(&n.id))
         .map(|n| n.id.clone())
         .collect();
     if !removed.is_empty() {

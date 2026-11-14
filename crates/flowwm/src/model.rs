@@ -212,6 +212,13 @@ pub struct Node {
     pub attention_generation: u64,
 }
 impl Node {
+    pub(crate) fn imported_window(&self) -> bool {
+        self.kind == NodeKind::Window
+            && (self.desktop_window || self.window_match.is_some())
+            && self.spec().type_id == "local.window"
+            && !self.flow.properties.contains_key("application")
+    }
+
     pub fn closed_window(&self) -> bool {
         self.window_id.is_none()
             && (self.desktop_window

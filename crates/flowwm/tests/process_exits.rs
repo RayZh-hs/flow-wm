@@ -110,6 +110,139 @@ fn application_node() -> (State, String) {
 }
 
 #[test]
+fn restored_window_selectors_prune_closed_imports_and_reconnect_live_windows() {
+    let compositor = Compositor::new(std::process::id() as i32);
+    let mut state = State::empty("/tmp".into());
+    let workflow = state.selected_workspace.clone();
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        let node = Node::new(
+            &workflow,
+            NodeKind::Window,
+            "/tmp".into(),
+            Default::default(),
+        );
+        ids.push(node.id.clone());
+        state.nodes.push(node);
+    }
+    let [closed, live, unlaunched] = <[String; 3]>::try_from(ids).unwrap();
+    state.connections.push(Connection {
+        source: Endpoint {
+            node: unlaunched.clone(),
+            pin: "on_exit".into(),
+        },
+        target: Endpoint {
+            node: closed.clone(),
+            pin: "in".into(),
+        },
+    });
+    state.connections.push(Connection {
+        source: Endpoint {
+            node: live.clone(),
+            pin: "on_exit".into(),
+        },
+        target: Endpoint {
+            node: unlaunched.clone(),
+            pin: "in".into(),
+        },
+    });
+    let (desktop, _) = support::fixture_with_provider_setup(
+        state,
+        Some(&compositor.socket),
+        |_| {},
+        |_, data| {
+            let path = data.join("desktop.json");
+            let mut bindings: flowwm::desktop_provider::Bindings =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            // Only declarative selectors survive after the live bindings have
+            // been cleared, including across compositor sessions.
+            bindings.session = "previous-session".into();
+            bindings
+                .selectors
+                .insert(closed.clone(), "test.shared::Closed window".into());
+            bindings
+                .selectors
+                .insert(live.clone(), "test.shared::Shared app".into());
+            std::fs::write(path, serde_json::to_vec(&bindings).unwrap()).unwrap();
+        },
+    );
+    support::wait(|| desktop.bindings().applications.contains_key(&live));
+    support::wait(|| desktop.snapshot().state.node(&closed).is_none());
+    let runtime = desktop.orchestrate(Command::Snapshot, None).unwrap();
+    let graph = &runtime["workflows"][&workflow]["graph"];
+    assert!(
+        graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|n| n["id"] != closed)
+    );
+    assert_eq!(graph["connections"].as_array().unwrap().len(), 1);
+    assert_eq!(graph["connections"][0]["source"]["node"], live);
+    assert_eq!(graph["connections"][0]["target"]["node"], unlaunched);
+    assert!(!desktop.bindings().selectors.contains_key(&closed));
+    let (desktop, _) = desktop.reconnect();
+    for view in [RowView::Windows, RowView::Nodes] {
+        desktop
+            .request(Action::RowView {
+                workspace: workflow.clone(),
+                view,
+            })
+            .unwrap();
+        let state = desktop.snapshot().state;
+        assert!(state.node(&closed).is_none());
+        assert_eq!(state.node(&live).unwrap().window_id, Some(1));
+        assert!(state.node(&unlaunched).is_some());
+    }
+    desktop.shutdown();
+}
+
+#[test]
+fn manually_closing_imported_windows_removes_them_from_the_runtime_and_both_views() {
+    let pid = std::process::id() as i32;
+    let compositor = Compositor::new(pid);
+    let state = State::empty("/tmp".into());
+    let workflow = state.selected_workspace.clone();
+    let (desktop, _) = support::fixture_with_niri(state, Some(&compositor.socket));
+    support::wait(|| desktop.bindings().applications.len() == 1);
+    for id in 2..=6 {
+        compositor
+            .publish(json!({"WindowOpenedOrChanged":{"window":window(pid, id, "Shared app")}}));
+    }
+    support::wait(|| desktop.bindings().applications.len() == 6);
+    let ids: Vec<_> = desktop.bindings().applications.keys().cloned().collect();
+    for id in 1..=6 {
+        compositor.publish(json!({"WindowClosed":{"id":id}}));
+    }
+    support::wait(|| desktop.bindings().applications.is_empty());
+    support::wait(|| {
+        ids.iter()
+            .all(|id| desktop.snapshot().state.node(id).is_none())
+    });
+    assert!(compositor.close_requests.lock().unwrap().is_empty());
+    let runtime = desktop.orchestrate(Command::Snapshot, None).unwrap();
+    assert!(
+        runtime["workflows"][&workflow]["graph"]["nodes"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(runtime["applications"].as_object().unwrap().is_empty());
+    assert!(desktop.bindings().selectors.is_empty());
+    let (desktop, _) = desktop.reconnect();
+    for view in [RowView::Windows, RowView::Nodes] {
+        desktop
+            .request(Action::RowView {
+                workspace: workflow.clone(),
+                view,
+            })
+            .unwrap();
+        assert!(desktop.snapshot().state.nodes.is_empty());
+    }
+    desktop.shutdown();
+}
+
+#[test]
 fn reopening_an_application_replaces_its_registration_and_rejects_old_exit_events() {
     let pid = std::process::id() as i32;
     let compositor = Compositor::new(pid);
@@ -480,7 +613,7 @@ fn provider_observes_application_exit_after_the_gtk_client_closes() {
     ]);
     graph.connections.push(Connection {
         source: Endpoint {
-            node: app.node.0,
+            node: app.node.0.clone(),
             pin: "on_exit".into(),
         },
         target: Endpoint {
@@ -497,6 +630,29 @@ fn provider_observes_application_exit_after_the_gtk_client_closes() {
             None,
         )
         .unwrap();
+    // A manually closed window must keep its signal source until the shared
+    // process exits. Opening another window must not steal that source node.
+    compositor.publish(json!({"WindowClosed":{"id":1}}));
+    support::wait(|| !desktop.bindings().applications.contains_key(&app.node.0));
+    support::wait(|| {
+        desktop
+            .snapshot()
+            .state
+            .node(&app.node.0)
+            .is_some_and(|n| n.window_id.is_none())
+    });
+    assert!(application.try_wait().unwrap().is_none());
+    assert!(!directory.path().join("exit-code").exists());
+    compositor.publish(json!({"WindowOpenedOrChanged":{"window":window(application.id() as i32, 2, "Shared app")}}));
+    support::wait(|| {
+        desktop
+            .bindings()
+            .applications
+            .values()
+            .any(|b| b.window == 2)
+    });
+    assert!(!desktop.bindings().applications.contains_key(&app.node.0));
+    assert!(desktop.snapshot().state.node(&app.node.0).is_some());
     desktop.shutdown();
     application.stdin.take().unwrap().write_all(b"x").unwrap();
     application.wait().unwrap();

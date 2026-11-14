@@ -168,9 +168,14 @@ are never reported as successful exits; observation errors appear in node logs.
 
 Closing a window does not emit this signal while the process remains alive.
 Windows sharing a process each receive their own event when that process exits.
-Closed nodes and their connections remain available while awaiting the process
-exit, including in Windows view. A newly opened window does not reuse a node
-still awaiting its old process. Explicitly deleting a node cancels its observer.
+Automatically imported window cards without outgoing connections are removed
+from the graph when their windows close, in either view. Saved imports whose
+windows have already closed are also removed after a complete desktop snapshot;
+live windows reconnect before cleanup. Configured application nodes remain
+available to run again. Signal sources and their connections remain available
+while awaiting the process exit, including in Windows view. A newly opened
+window does not reuse a node still awaiting its old process. Explicitly deleting
+a node cancels its observer.
 The generic `emit` API can also deliver `on_exit` with the same checked payload.
 
 Extensions can explicitly add outputs to a window. The bundled agent-sessions

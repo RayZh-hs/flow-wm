@@ -44,7 +44,7 @@ use flow_core::{domain::*, protocol::Command, providers::ApplicationRegistration
 use flow_host::client::Client;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs::OpenOptions,
     io::{BufRead, BufReader, Read, Write},
     os::{
@@ -186,6 +186,39 @@ enum Event {
     },
     Exit(u64, std::result::Result<u8, String>),
 }
+
+fn remove_imported_windows(
+    host: &Client,
+    bindings: &mut Bindings,
+    removed: &BTreeSet<String>,
+) -> Result<()> {
+    if removed.is_empty() {
+        return Ok(());
+    }
+    for workflow in host.snapshot()?.workflows.into_values() {
+        if !workflow
+            .graph
+            .nodes
+            .iter()
+            .any(|n| removed.contains(&n.id.0))
+        {
+            continue;
+        }
+        let mut graph = workflow.graph;
+        graph.nodes.retain(|n| !removed.contains(&n.id.0));
+        graph
+            .connections
+            .retain(|e| !removed.contains(&e.source.node) && !removed.contains(&e.target.node));
+        host.command(Command::ReplaceGraph {
+            workflow: workflow.id,
+            graph,
+        })?;
+    }
+    bindings.applications.retain(|id, _| !removed.contains(id));
+    bindings.selectors.retain(|id, _| !removed.contains(id));
+    Ok(())
+}
+
 pub fn run() -> Result<()> {
     let host = Client::new(flow_host::ipc::host_socket());
     let directory: PathBuf =
@@ -596,52 +629,48 @@ pub fn run() -> Result<()> {
                     bindings.start_session(&desktop.session);
                     bindings.apply_native(&mut state);
                 }
+                // Runtime notifications may still be queued. Reconcile the
+                // authoritative graph before deciding which imports to remove.
+                crate::projection::apply(&mut state, &runtime);
+                bindings.apply(&mut state);
                 desktop
                     .windows
                     .retain(|w| !bindings.disowned.contains(&w.id));
                 bindings.restore_row_hints(&mut state);
-                // A closed automatically observed card has no definition to keep.
-                // Keep nodes with exit listeners until their process produces on_exit.
-                let mut closed = BTreeMap::<WorkflowId, BTreeSet<String>>::new();
-                for node in state.nodes.iter().filter(|n| {
-                    n.desktop_window
-                        && n.kind == crate::model::NodeKind::Window
-                        && n.spec().type_id == "local.window"
-                }) {
-                    if node
-                        .window_id
-                        .is_some_and(|id| !desktop.windows.iter().any(|w| w.id == id))
-                        && !node.flow.properties.contains_key("application")
-                        && !state.connections.iter().any(|e| e.source.node == node.id)
-                    {
-                        closed
-                            .entry(node.workspace.clone().into())
-                            .or_default()
-                            .insert(node.id.clone());
-                    }
-                }
-                for (workflow, ids) in closed {
-                    let mut graph = runtime.workflows[&workflow].graph.clone();
-                    graph.nodes.retain(|n| !ids.contains(&n.id.0));
-                    graph
-                        .connections
-                        .retain(|e| !ids.contains(&e.source.node) && !ids.contains(&e.target.node));
-                    host.command(Command::ReplaceGraph { workflow, graph })?;
-                    let tokens: Vec<_> = watches
-                        .iter()
-                        .filter(|(_, w)| ids.contains(&w.0))
-                        .map(|(token, _)| *token)
-                        .collect();
-                    for token in tokens {
-                        monitor.unwatch(token);
-                        watches.remove(&token);
-                    }
-                }
+                // Match live selectors first, including after a restart. Only
+                // imports actually removed by reconciliation leave the graph.
+                let previous: BTreeSet<_> = state.nodes.iter().map(|n| n.id.clone()).collect();
+                // Signal sources remain reusable and must survive window close
+                // so their process observer can still deliver on_exit.
+                let retained: HashSet<_> = state
+                    .connections
+                    .iter()
+                    .map(|e| e.source.node.clone())
+                    .collect();
+                let awaiting_exit = watches
+                    .values()
+                    .filter(|(id, _, _)| retained.contains(id))
+                    .map(|(id, _, _)| id.clone())
+                    .collect();
                 crate::groups::synchronize_with_processes(
                     &mut state,
                     &desktop,
-                    &Default::default(),
+                    &retained,
+                    &awaiting_exit,
                 );
+                let current: BTreeSet<_> = state.nodes.iter().map(|n| n.id.clone()).collect();
+                let closed: BTreeSet<_> = previous.difference(&current).cloned().collect();
+                remove_imported_windows(&host, &mut bindings, &closed)?;
+                let tokens: Vec<_> = watches
+                    .iter()
+                    .filter(|(_, w)| closed.contains(&w.0))
+                    .map(|(token, _)| *token)
+                    .collect();
+                for token in tokens {
+                    monitor.unwatch(token);
+                    watches.remove(&token);
+                }
+                watched.retain(|(id, _, _)| !closed.contains(id));
                 bindings.rows.clear();
                 for row in &state.workspaces {
                     if !runtime.workflows.contains_key(&row.id.clone().into()) {
