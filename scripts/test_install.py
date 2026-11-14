@@ -28,6 +28,42 @@ def current_bundle(bundle, metadata=None):
 
 
 class ProfileIsolation(unittest.TestCase):
+    def test_lock_controls_upgrade_old_bindings_and_preserve_explicit_policies(self):
+        from configuration import lock_screen_bindings
+        defaults = (installer.ROOT / 'config/compositor.kdl').read_text()
+        bindings = [line for line in defaults.splitlines() if line.strip().startswith(('XF86Audio', 'XF86MonBrightness'))]
+        levels = [line for line in bindings if any(key in line for key in ('RaiseVolume', 'LowerVolume', 'AudioMute', 'AudioMicMute', 'MonBrightness'))]
+        original = '\n'.join(levels).replace(' allow-when-locked=true', '')
+        upgraded = lock_screen_bindings(original, defaults)
+        self.assertEqual(upgraded.count('allow-when-locked=true'), len(levels))
+        self.assertEqual(lock_screen_bindings(upgraded, defaults), upgraded)
+        self.assertEqual(lock_screen_bindings(original.replace('repeat=', 'allow-when-locked=false repeat='), defaults), original.replace('repeat=', 'allow-when-locked=false repeat='))
+        custom = '    XF86MonBrightnessUp { spawn "my-brightness-command"; }\n'
+        self.assertEqual(lock_screen_bindings(custom, defaults), custom)
+        comments = '\n'.join('// ' + line for line in levels)
+        self.assertEqual(lock_screen_bindings(comments, defaults), comments)
+
+    def test_existing_profile_upgrades_lock_controls_once_with_backup_and_permissions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = self.profile(root)
+            main = args[0] / 'config.kdl'
+            original = main.read_text().replace(' repeat=true allow-when-locked=true { spawn "brightnessctl"', ' repeat=true { spawn "brightnessctl"')
+            main.write_text(original)
+            main.chmod(0o600)
+            installer.prepare_profile(*args)
+            upgraded = main.read_text()
+            self.assertNotEqual(upgraded, original)
+            self.assertEqual(upgraded.count('XF86MonBrightness'), 2)
+            self.assertEqual(upgraded.count('XF86MonBrightnessUp allow-when-locked=true'), 1)
+            self.assertEqual(upgraded.count('XF86MonBrightnessDown allow-when-locked=true'), 1)
+            self.assertEqual(main.stat().st_mode & 0o777, 0o600)
+            backup = args[1] / 'config-backups/before-lock-screen-controls/config.kdl'
+            self.assertEqual(backup.read_text(), original)
+            installer.prepare_profile(*args)
+            self.assertEqual(main.read_text(), upgraded)
+            self.assertEqual(backup.read_text(), original)
+
     def test_row_environment_upgrade_preserves_custom_shortcuts_and_terminal_flags(self):
         from configuration import row_environment_bindings
         text = 'binds {\n    Mod+T repeat=false { spawn "kitty" "--single-instance"; }\n}\n'

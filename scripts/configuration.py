@@ -115,6 +115,22 @@ def current_wm_commands(text):
     return pattern.sub(upgrade, text)
 
 
+def lock_screen_bindings(text, defaults):
+    """Allow the former shipped level controls while locked, keeping explicit policies."""
+    key = r'XF86(?:Audio(?:RaiseVolume|LowerVolume|Mute|MicMute)|MonBrightness(?:Up|Down))'
+    pattern = re.compile(r'(?m)^([ \t]*' + key + r')([ \t]+[^\n{}]*)(\{[^\n]*\})')
+    shipped = {match[1].strip(): match[3] for match in pattern.finditer(defaults)}
+
+    def upgrade(match):
+        if re.search(r'\ballow-when-locked\s*=', match[2]):
+            return match[0]
+        if shipped.get(match[1].strip()) != match[3]:
+            return match[0]
+        return match[1] + ' allow-when-locked=true' + match[2] + match[3]
+
+    return pattern.sub(upgrade, text)
+
+
 def row_environment_bindings(text):
     """Add row settings without replacing a user's existing Win+L action."""
     active = '\n'.join(line for line in text.splitlines() if not line.lstrip().startswith('//'))
@@ -142,6 +158,12 @@ def migrate(config, state, defaults, launcher, atomic_text):
             if not backup.exists():
                 atomic_text(backup, original, mode=main.stat().st_mode & 0o777)
             atomic_text(main, upgraded, mode=main.stat().st_mode & 0o777)
+        locked = lock_screen_bindings(upgraded, defaults)
+        if locked != upgraded:
+            backup = state / 'config-backups/before-lock-screen-controls/config.kdl'
+            if not backup.exists():
+                atomic_text(backup, upgraded, mode=main.stat().st_mode & 0o777)
+            atomic_text(main, locked, mode=main.stat().st_mode & 0o777)
         return
     text = main.read_text() if main.exists() else defaults
     if main.exists():
@@ -181,7 +203,7 @@ def migrate(config, state, defaults, launcher, atomic_text):
     mode = main.stat().st_mode & 0o777 if main.exists() else 0o644
     for path in legacy:
         mode &= path.stat().st_mode & 0o777
-    atomic_text(main, current_wm_commands(text), mode=mode)
+    atomic_text(main, lock_screen_bindings(current_wm_commands(text), defaults), mode=mode)
     for path in legacy:
         path.unlink()
 

@@ -218,6 +218,11 @@ FocusScope {
                 x: Theme.spacingXL,
                 y: height - Theme.spacingXL - item.height
             };
+        case "lockControls":
+            return {
+                x: width - Theme.spacingXL - item.width,
+                y: height - Theme.spacingXL - item.height
+            };
         case "greeterSession":
             return {
                 x: width - Theme.spacingXL - item.width,

@@ -16,8 +16,8 @@ Rectangle {
     property bool showBrightness: true
     property string screenName: ""
 
-    readonly property var screen: Quickshell.screens.find(s => s.name === screenName) ?? null
-    readonly property var pinnedDevices: BrightnessService.screenPinnedDevices(screen)
+    readonly property var targetScreen: Quickshell.screens.find(s => s.name === screenName) ?? null
+    readonly property var pinnedDevices: BrightnessService.screenPinnedDevices(targetScreen)
     readonly property string brightnessDevice: pinnedDevices[0] || BrightnessService.getDefaultDevice()
     readonly property var device: BrightnessService.getCurrentDeviceInfoByName(brightnessDevice)
     readonly property int brightness: {

@@ -23,6 +23,8 @@ Loader {
             return lockNotificationsSettings;
         case "lockStatus":
             return lockStatusSettings;
+        case "lockControls":
+            return lockControlsSettings;
         case "lockDate":
             return lockDateSettings;
         case "lockPower":
@@ -77,6 +79,15 @@ Loader {
             instanceId: root.instanceId
             instanceData: root.instanceData
             parentModal: root.parentModal
+        }
+    }
+
+    Component {
+        id: lockControlsSettings
+
+        LWS.LockControlsSettings {
+            instanceId: root.instanceId
+            instanceData: root.instanceData
         }
     }
 

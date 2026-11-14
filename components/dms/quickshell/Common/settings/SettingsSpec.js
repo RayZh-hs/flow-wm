@@ -4,7 +4,21 @@
 .import "DockConfig.js" as DockConfig
 
 function lockWidgetDefaults() {
-    return Shared.lockWidgetDefaults();
+    return Shared.lockWidgetDefaults().concat([lockControlsDefault()]);
+}
+
+function lockControlsDefault() {
+    return {
+        id: "lock_controls",
+        widgetType: "lockControls",
+        enabled: true,
+        config: {
+            displayPreferences: ["all"],
+            syncPositionAcrossScreens: true,
+            showVolume: true,
+            showBrightness: true
+        }
+    };
 }
 
 function greeterWidgetsFromLock(lockInstances, previous) {
@@ -27,6 +41,9 @@ function followFocusMode(v) {
 }
 
 var LOCAL_SPEC = {
+    lockScreenWidgetInstances: {
+        def: lockWidgetDefaults()
+    },
     dockConfigs: {
         def: [DockConfig.create("dock", "Dock")]
     },

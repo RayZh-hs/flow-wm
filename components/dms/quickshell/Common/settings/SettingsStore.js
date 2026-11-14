@@ -789,7 +789,28 @@ function migrateToVersion(obj, targetVersion) {
         settings.configVersion = 43;
     }
 
+    if (currentVersion < 44 && targetVersion >= 44) {
+        migrateLockControls(settings);
+        settings.configVersion = 44;
+    }
+
     return settings;
+}
+
+function migrateLockControls(settings) {
+    const instances = settings.lockScreenWidgetInstances;
+    if (!Array.isArray(instances) || instances.some(inst => inst.widgetType === "lockControls"))
+        return;
+    const controls = SpecModule.lockControlsDefault();
+    const status = instances.find(inst => inst.widgetType === "lockStatus");
+    for (const key of ["displayPreferences", "syncPositionAcrossScreens", "showVolume", "showBrightness"]) {
+        if (status?.config && key in status.config)
+            controls.config[key] = status.config[key];
+    }
+    const baseId = controls.id;
+    for (let suffix = 1; instances.some(inst => inst.id === controls.id); suffix++)
+        controls.id = baseId + "_" + suffix;
+    settings.lockScreenWidgetInstances = instances.concat([controls]);
 }
 
 // v43: focused window compact mode split into separate app name and title toggles

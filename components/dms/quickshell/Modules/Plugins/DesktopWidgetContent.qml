@@ -31,6 +31,8 @@ Loader {
             return lockNotificationsComponent;
         case "lockStatus":
             return lockStatusComponent;
+        case "lockControls":
+            return lockControlsComponent;
         case "lockPower":
             return lockPowerComponent;
         case "greeterSession":
@@ -68,6 +70,10 @@ Loader {
 
     property Component lockStatusComponent: Component {
         LockStatusWidget {}
+    }
+
+    property Component lockControlsComponent: Component {
+        LockControlsWidget {}
     }
 
     property Component lockPowerComponent: Component {

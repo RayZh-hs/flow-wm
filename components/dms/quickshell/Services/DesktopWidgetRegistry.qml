@@ -109,6 +109,7 @@ Singleton {
         lockWidget("lockAuth", I18n.tr("Password"), "lock", true);
         lockWidget("lockNotifications", I18n.tr("Notifications"), "notifications", false);
         lockWidget("lockStatus", I18n.tr("Status"), "wifi", true);
+        lockWidget("lockControls", I18n.tr("Volume") + " / " + I18n.tr("Brightness"), "tune", false);
         lockWidget("lockPower", I18n.tr("Power"), "power_settings_new", true);
         registerWidget({
             id: "greeterSession",
