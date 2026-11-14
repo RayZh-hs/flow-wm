@@ -17,7 +17,7 @@ try:
         temporary.write_text(json.dumps({"harness": os.environ["FLOWWM_AGENT_HARNESS"], "session": session}))
         temporary.chmod(0o600)
         temporary.replace(path)
-        Client().emit(node, "on_session_finish", args)
+        Client().emit(node, "on_session_finish", args, retry_seconds=5)
         Path(os.environ["FLOWWM_AGENT_FINISHED"]).touch()
 finally:
     if agent == "codex":

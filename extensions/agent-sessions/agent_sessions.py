@@ -79,7 +79,7 @@ def expose(node):
 
 def finish(node, agent, code=0, kind="", message="", session=""):
     error = {"code": code, "kind": kind or ("none" if code == 0 else "process_exit"), "message": message}
-    Client().emit(node, "on_session_finish", {"ERROR": error, "AGENT": agent, "SESSION": session})
+    Client().emit(node, "on_session_finish", {"ERROR": error, "AGENT": agent, "SESSION": session}, retry_seconds=5)
 
 
 def executable(agent):

@@ -59,5 +59,31 @@ class NativeClient(unittest.TestCase):
             with patch('flow_sdk.exchange',return_value={'ok':reply}),self.assertRaisesRegex(RuntimeError,'mismatched'):
                 self.client.request({'command':'snapshot'},request_id='known')
 
+class CompletionRetry(unittest.TestCase):
+    def test_fresh_application_registration_is_retried(self):
+        client = Client()
+        with patch.object(client, "application", side_effect=[RuntimeError("Application is not registered"), {"token":"new", "incarnation":"login"}]), patch.object(client, "request", return_value={"accepted":True}) as request, patch("flow_sdk.time.sleep"):
+            self.assertEqual(client.emit("fresh", "finished", {}, retry_seconds=5), {"accepted":True})
+            self.assertEqual(request.call_args.args[0]["token"], "new")
+
+    def test_lost_reply_reuses_delivery_identity_and_refreshes_registration(self):
+        client = Client()
+        with patch.object(client, "application", return_value={"token":"new", "incarnation":"login"}), patch.object(client, "request", side_effect=[OSError("reply lost"), {}]) as request, patch("flow_sdk.time.sleep"):
+            client.emit("fresh", "finished", {}, retry_seconds=5)
+            self.assertEqual(request.call_args_list[0].args[0]["delivery"], request.call_args_list[1].args[0]["delivery"])
+
+    def test_invalid_payload_is_not_retried(self):
+        client = Client()
+        with patch.object(client, "application", return_value={"token":"new", "incarnation":"login"}), patch.object(client, "request", side_effect=RuntimeError("Invalid signal arguments")) as request, self.assertRaisesRegex(RuntimeError, "Invalid signal"):
+            client.emit("fresh", "finished", {}, retry_seconds=5)
+        self.assertEqual(request.call_count, 1)
+
+    def test_retry_deadline_is_bounded(self):
+        client = Client()
+        with patch.object(client, "application", side_effect=RuntimeError("Application is not registered")) as application, patch("flow_sdk.time.monotonic", side_effect=[0, 6]), self.assertRaisesRegex(RuntimeError, "not registered"):
+            client.emit("fresh", "finished", {}, retry_seconds=5)
+        self.assertEqual(application.call_count, 1)
+
+
 if __name__=='__main__':
     unittest.main()

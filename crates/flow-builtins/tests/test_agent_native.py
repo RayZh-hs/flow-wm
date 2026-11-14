@@ -19,7 +19,7 @@ class NativeTests(unittest.TestCase):
         exec(compile(SDK.read_text() + "\n" + (SOURCE / "native.py").read_text(), "native.py", "exec"), self.scope)
         self.events = []
         class Client:
-            def emit(_, *args):
+            def emit(_, *args, **kwargs):
                 self.events.append(args)
         self.scope["Client"] = Client
         self.environment = patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(self.path), "FLOWWM_STATE_DIR": str(self.path / "state"), "CODEX_HOME": str(self.path / "codex")})

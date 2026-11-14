@@ -91,16 +91,10 @@ def native(request):
     code = child.wait()
     if code != 0 or not marker.exists():
         error = {"code": code, "kind": "none" if code == 0 else "process_exit", "message": "" if code == 0 else f"{request['harness']} exited with status {code}"}
-        until = time.monotonic() + 5
-        while True:
-            try:
-                Client().emit(node, "on_session_finish", {"ERROR": error, "AGENT": request["harness"], "SESSION": session})
-                break
-            except (OSError, RuntimeError) as failure:
-                if time.monotonic() >= until:
-                    print(f"FlowWM completion: {failure}", file=sys.stderr)
-                    break
-                time.sleep(0.1)
+        try:
+            Client().emit(node, "on_session_finish", {"ERROR": error, "AGENT": request["harness"], "SESSION": session}, retry_seconds=5)
+        except (OSError, RuntimeError) as failure:
+            print(f"FlowWM completion: {failure}", file=sys.stderr)
     lock.close()
     return code if code >= 0 else 128 - code
 

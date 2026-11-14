@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import time
 import uuid
 
 
@@ -69,11 +70,28 @@ class Client:
     def publish(self, workflow, node, values):
         return self.request({"command": "publish", "workflow": workflow, "node": node, "values": values})
 
-    def emit(self, node, pin, args, delivery_id=None):
-        registration = self.application(node)
-        return self.request({"command": "application_event", "node": node,
-                             "token": registration["token"], "incarnation": registration["incarnation"],
-                             "pin": pin, "delivery": delivery_id or str(uuid.uuid4()), "args": args})
+    def emit(self, node, pin, args, delivery_id=None, retry_seconds=0):
+        """Optionally wait for a newly opened application's registration.
+
+        A stable delivery identity also makes a lost reply safe to retry.
+        Schema and payload errors still fail immediately.
+        """
+        delivery_id = delivery_id or str(uuid.uuid4())
+        deadline = time.monotonic() + retry_seconds
+        while True:
+            try:
+                registration = self.application(node)
+                return self.request({"command": "application_event", "node": node,
+                                     "token": registration["token"], "incarnation": registration["incarnation"],
+                                     "pin": pin, "delivery": delivery_id, "args": args})
+            except (OSError, RuntimeError) as error:
+                transient = isinstance(error, OSError) or str(error) in (
+                    "Application is not registered", "Application registration unavailable", "Stale application event",
+                    "Application session ended")
+                remaining = deadline - time.monotonic()
+                if not transient or remaining <= 0:
+                    raise
+                time.sleep(min(0.1, remaining))
 
     def broadcast(self, target, channel, signal_type, args, delivery_id=None, sequence=0):
         if not self.caller:
