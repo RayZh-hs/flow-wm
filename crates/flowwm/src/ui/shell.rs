@@ -192,6 +192,7 @@ struct Shell {
     paint_started: Cell<Option<std::time::Instant>>,
     frame_monitors: RefCell<HashSet<usize>>,
     pinned_rows: RefCell<HashSet<u64>>,
+    code_editors: RefCell<HashMap<String, super::code::Editor>>,
 }
 impl Shell {
     fn window(&self) -> gtk::ApplicationWindow {
@@ -620,6 +621,7 @@ impl Shell {
                 paint_started: Cell::new(None),
                 frame_monitors: RefCell::new(HashSet::new()),
                 pinned_rows: RefCell::new(HashSet::new()),
+                code_editors: RefCell::new(HashMap::new()),
             }
         });
         on_click(&workspace_button, &shell, |s| s.row_settings());
@@ -652,8 +654,26 @@ impl Shell {
         shell.refresh();
         shell
     }
+    fn hover_pin(&self, hover: Option<(crate::graph::Endpoint, bool)>) {
+        let hover = hover.filter(|_| crate::config::flow().pin_usage_highlight.unwrap_or(true));
+        self.view.borrow_mut().hovered_pin = hover.clone();
+        for (id, editor) in self.code_editors.borrow().iter() {
+            editor.highlight(
+                hover
+                    .as_ref()
+                    .filter(|(endpoint, _)| endpoint.node == *id)
+                    .map(|(endpoint, output)| super::code::Usage {
+                        name: endpoint.pin.clone(),
+                        output: *output,
+                    }),
+            );
+        }
+        self.canvas().queue_draw();
+    }
+
     fn canvas_action(&self, action: CanvasAction) {
         match action {
+            CanvasAction::HoverPin(hover) => self.hover_pin(hover),
             CanvasAction::Workflow(id) => self.control(UiCommand::Workspace { id }),
             CanvasAction::Select(id) => self.select(id),
             CanvasAction::Open(id) => self.open(&id),
@@ -695,7 +715,7 @@ impl Shell {
                     .node(&id)
                     .is_some_and(|node| node.kind == NodeKind::Vox)
                 {
-                    self.edit_code(&id);
+                    self.edit(&id);
                 } else {
                     self.edit_value(&id);
                 }
@@ -2784,7 +2804,7 @@ impl Shell {
             return;
         }
         if node.kind == NodeKind::Vox {
-            self.edit_code(id);
+            self.edit(id);
             return;
         }
         if flow_builtins::agent::is_session(&node.spec().type_id) && node.window_id.is_none() {
@@ -3724,171 +3744,11 @@ impl Shell {
         editor.grab_focus();
     }
 
-    fn edit_code(&self, id: &str) {
-        let state = self.engine.snapshot().state;
-        let Some(node) = state.node(id).cloned() else {
-            return;
-        };
-        if node.status.active() {
-            self.show_error("Stop this node before editing its code.");
-            return;
-        }
-        self.canvas().dismiss_popovers();
-        let popup = gtk::Popover::new();
-        popup.set_parent(&self.canvas());
-        popup.set_has_arrow(false);
-        popup.set_position(gtk::PositionType::Right);
-        popup.set_autohide(false);
-        let view = self.view.borrow();
-        let p = view.position(&node);
-        popup.set_pointing_to(Some(&gdk::Rectangle::new(
-            (p.x * view.zoom + view.pan_x) as i32,
-            ((p.y + 70.) * view.zoom + view.pan_y) as i32,
-            (canvas::WIDTH * view.zoom) as i32,
-            1,
-        )));
-        drop(view);
-        let body = column(10);
-        body.add_css_class("dialog-body");
-        let title = entry(&node.title);
-        body.append(&title);
-        let editor = gtk::TextView::new();
-        editor.set_monospace(true);
-        editor.set_wrap_mode(gtk::WrapMode::None);
-        editor.set_top_margin(10);
-        editor.set_bottom_margin(10);
-        editor.set_left_margin(10);
-        editor.set_right_margin(10);
-        editor.buffer().set_text(&node.command);
-        editor.add_css_class("code-editor");
-        let fields = Rc::new(super::parameters::Fields::new(&state, &node));
-        let f = fields.clone();
-        let draft = (*state).clone();
-        let original = node.clone();
-        super::code::attach(
-            &editor,
-            &self.view.borrow().theme,
-            Rc::new(move || {
-                let mut node = original.clone();
-                let _ = f.apply(&mut node);
-                // Resolve the draft's added fields against the existing connections.
-                let mut draft = draft.clone();
-                *draft.node_mut(&node.id).unwrap() = node.clone();
-                crate::graph::pins(&draft, &node, false)
-            }),
-        );
-        let code_scroll = gtk::ScrolledWindow::builder()
-            .min_content_height(220)
-            .min_content_width(580)
-            .vexpand(true)
-            .child(&editor)
-            .build();
-        let fields_scroll = gtk::ScrolledWindow::builder()
-            .min_content_height(120)
-            .max_content_height(220)
-            .propagate_natural_height(true)
-            .propagate_natural_width(true)
-            .max_content_width((self.canvas().width() - 80).clamp(300, 760))
-            .child(&fields.widget)
-            .build();
-        let split = gtk::Paned::new(gtk::Orientation::Vertical);
-        split.set_start_child(Some(&code_scroll));
-        split.set_end_child(Some(&fields_scroll));
-        split.set_shrink_start_child(false);
-        split.set_shrink_end_child(false);
-        body.append(&split);
-        let error = label("", "error");
-        error.set_wrap(true);
-        body.append(&error);
-        let diagnostics = error.clone();
-        editor.buffer().connect_changed(move |buffer| {
-            let source = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
-            diagnostics.set_text(&crate::graph::vox_syntax_error(&source).unwrap_or_default());
-        });
-        let actions = row(8);
-        let cancel = gtk::Button::with_label("Cancel");
-        let save = gtk::Button::with_label("Apply code and IO");
-        save.add_css_class("accent");
-        actions.append(&cancel);
-        actions.append(&save);
-        body.append(&actions);
-        let scroll = gtk::ScrolledWindow::builder()
-            .propagate_natural_height(true)
-            .propagate_natural_width(true)
-            .max_content_width((self.canvas().width() - 80).clamp(300, 760))
-            .max_content_height((self.canvas().height() - 60).max(300))
-            .child(&body)
-            .build();
-        popup.set_child(Some(&scroll));
-        let p = popup.downgrade();
-        cancel.connect_clicked(move |_| {
-            if let Some(popup) = p.upgrade() {
-                popup.popdown();
-            }
-        });
-        let p = popup.downgrade();
-        let engine = self.engine.clone();
-        let b = editor.buffer();
-        save.connect_clicked(move |_| {
-            let mut node = node.clone();
-            node.title = title.text().into();
-            node.command = b.text(&b.start_iter(), &b.end_iter(), true).into();
-            if let Some(message) = crate::graph::vox_syntax_error(&node.command) {
-                error.set_text(&message);
-                return;
-            }
-            let result = fields.apply(&mut node).and_then(|_| {
-                engine.request(Action::Update {
-                    node: Box::new(node),
-                })
-            });
-            match result {
-                Ok(_) => {
-                    if let Some(popup) = p.upgrade() {
-                        popup.popdown();
-                    }
-                }
-                Err(failure) => error.set_text(&failure.to_string()),
-            }
-        });
-        let key = gtk::EventControllerKey::new();
-        key.set_propagation_phase(gtk::PropagationPhase::Capture);
-        let bindings = crate::config::shortcuts();
-        let p = popup.downgrade();
-        key.connect_key_pressed(move |_, key, _, modifiers| {
-            if crate::config::matches_graph_action(&bindings, "save_code", key, modifiers) {
-                save.emit_clicked();
-                glib::Propagation::Stop
-            } else if crate::config::matches_graph_action(&bindings, "escape", key, modifiers) {
-                if let Some(popup) = p.upgrade() {
-                    popup.popdown();
-                }
-                glib::Propagation::Stop
-            } else {
-                glib::Propagation::Proceed
-            }
-        });
-        body.add_controller(key);
-        let area = self.canvas().downgrade();
-        popup.connect_closed(move |popup| {
-            popup.unparent();
-            if let Some(area) = area.upgrade() {
-                area.grab_focus();
-            }
-        });
-        popup.popup();
-        editor.grab_focus();
-    }
-
     fn edit(&self, id: &str) {
         let state = self.engine.snapshot().state;
         let Some(node) = state.node(id).cloned() else {
             return;
         };
-        if node.kind == NodeKind::Vox {
-            self.edit_code(id);
-            return;
-        }
         let supervised = flow_builtins::agent::is_session(&node.spec().type_id)
             && !flow_builtins::agent::is_interactive(&node.spec().type_id);
         if node.status.active()
@@ -3907,7 +3767,15 @@ impl Shell {
             super::extension_settings::open(dialog, self.engine.clone(), node, command);
             return;
         }
-        let dialog = self.dialog("Node parameters", 560, -1);
+        let dialog = self.dialog(
+            "Node parameters",
+            if node.kind == NodeKind::Vox {
+                1000
+            } else {
+                560
+            },
+            -1,
+        );
         let root = column(14);
         root.add_css_class("dialog-body");
         let environment_node = matches!(
@@ -3949,18 +3817,32 @@ impl Shell {
             || flow_builtins::agent::is_session(&node.spec().type_id))
             && !environment_node
         {
-            root.append(&inherit);
-            field(&root, "Working directory", &directory);
+            if node.kind == NodeKind::Vox {
+                let options = column(10);
+                options.append(&inherit);
+                field(&options, "Working directory", &directory);
+                let execution = gtk::Expander::new(Some("Execution settings"));
+                execution.set_child(Some(&options));
+                root.append(&execution);
+            } else {
+                root.append(&inherit);
+                field(&root, "Working directory", &directory);
+            }
         }
         let fields = super::parameters::Fields::new(&state, &node);
         root.append(&fields.widget);
+        let source_body = if node.kind == NodeKind::Vox {
+            column(10)
+        } else {
+            root.clone()
+        };
         let editor = gtk::TextView::new();
         editor.set_monospace(true);
         editor.set_wrap_mode(gtk::WrapMode::WordChar);
         editor.buffer().set_text(&node.command);
         editor.add_css_class("code-editor");
         let editor_scroll = gtk::ScrolledWindow::builder()
-            .min_content_height(160)
+            .min_content_height(if node.kind == NodeKind::Vox { 360 } else { 160 })
             .vexpand(true)
             .child(&editor)
             .build();
@@ -3977,7 +3859,7 @@ impl Shell {
             );
         if has_source {
             field(
-                &root,
+                &source_body,
                 if flow_builtins::agent::is_session(&node.spec().type_id) {
                     "Initial prompt"
                 } else {
@@ -3991,6 +3873,75 @@ impl Shell {
                 },
                 &editor_scroll,
             );
+        }
+        let code_draft =
+            (node.kind == NodeKind::Vox).then(|| super::vox_parameters::Draft::new(&state, &node));
+        let code_error = label("", "error");
+        code_error.set_wrap(true);
+        if let Some(draft) = &code_draft {
+            let d = draft.clone();
+            let buffer = editor.buffer();
+            let highlighted = super::code::attach(
+                &editor,
+                &self.view.borrow().theme,
+                Rc::new(move || {
+                    d.completion_pins(&buffer.text(&buffer.start_iter(), &buffer.end_iter(), true))
+                }),
+            );
+            self.code_editors
+                .borrow_mut()
+                .insert(node.id.clone(), highlighted);
+            let weak = self.weak.clone();
+            let id = node.id.clone();
+            let hover = Rc::new(move |usage: Option<super::code::Usage>| {
+                if let Some(shell) = weak.upgrade() {
+                    shell.hover_pin(usage.map(|usage| {
+                        (
+                            crate::graph::Endpoint {
+                                node: id.clone(),
+                                pin: usage.name,
+                            },
+                            usage.output,
+                        )
+                    }));
+                }
+            });
+            code_error.set_max_width_chars(70);
+            source_body.append(&code_error);
+            let diagnostics = code_error.clone();
+            editor.buffer().connect_changed(move |buffer| {
+                diagnostics.set_text(
+                    &crate::graph::vox_syntax_error(&buffer.text(
+                        &buffer.start_iter(),
+                        &buffer.end_iter(),
+                        true,
+                    ))
+                    .unwrap_or_default(),
+                );
+            });
+            let ports = super::vox_parameters::interface(draft.clone(), &editor.buffer(), hover);
+            let ports_scroll = gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .min_content_width(280)
+                .vexpand(true)
+                .child(&ports)
+                .build();
+            let split = gtk::Paned::new(gtk::Orientation::Horizontal);
+            split.set_start_child(Some(&source_body));
+            split.set_end_child(Some(&ports_scroll));
+            split.set_shrink_start_child(true);
+            split.set_shrink_end_child(false);
+            split.set_position(560);
+            root.append(&split);
+            let weak = self.weak.clone();
+            let id = node.id.clone();
+            dialog.connect_close_request(move |_| {
+                if let Some(shell) = weak.upgrade() {
+                    shell.code_editors.borrow_mut().remove(&id);
+                    shell.hover_pin(None);
+                }
+                glib::Propagation::Proceed
+            });
         }
         if matches!(node.kind, NodeKind::Shell | NodeKind::Metric) {
             let info = label(
@@ -4063,12 +4014,31 @@ impl Shell {
         dialog.set_default_widget(Some(&save));
         actions.append(&cancel);
         actions.append(&save);
-        root.append(&actions);
+        if node.kind != NodeKind::Vox {
+            root.append(&actions);
+        }
+        if node.kind == NodeKind::Vox {
+            let key = gtk::EventControllerKey::new();
+            key.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let bindings = crate::config::shortcuts();
+            let button = save.clone();
+            key.connect_key_pressed(move |_, key, _, mods| {
+                if crate::config::matches_graph_action(&bindings, "save_code", key, mods) {
+                    button.emit_clicked();
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            });
+            root.add_controller(key);
+        }
+
         let d = dialog.clone();
         cancel.connect_clicked(move |_| d.close());
         let w = self.weak.clone();
         let d = dialog.clone();
         let original = node.clone();
+        let focus_editor = editor.clone();
         save.connect_clicked(move |_| {
             let Some(s) = w.upgrade() else {
                 return;
@@ -4086,6 +4056,13 @@ impl Shell {
             };
             let b = editor.buffer();
             node.command = b.text(&b.start_iter(), &b.end_iter(), true).to_string();
+            if let Some(draft) = &code_draft {
+                if let Some(error) = crate::graph::vox_syntax_error(&node.command) {
+                    code_error.set_text(&error);
+                    return;
+                }
+                draft.apply(&mut node);
+            }
             if flow_builtins::agent::is_session(&node.spec().type_id) {
                 node.writable = writable.is_active();
                 node.flow
@@ -4118,8 +4095,22 @@ impl Shell {
             .max_content_height(680)
             .child(&root)
             .build();
-        dialog.set_child(Some(&scroll));
+        if node.kind == NodeKind::Vox {
+            let body = column(0);
+            body.append(&scroll);
+            actions.set_margin_start(28);
+            actions.set_margin_end(28);
+            actions.set_margin_bottom(20);
+            actions.set_margin_top(12);
+            body.append(&actions);
+            dialog.set_child(Some(&body));
+        } else {
+            dialog.set_child(Some(&scroll));
+        }
         dialog.present();
+        if node.kind == NodeKind::Vox {
+            focus_editor.grab_focus();
+        }
     }
     fn rebuild_panel(&self) {
         let selected = self.view.borrow().selected.clone();
@@ -4736,6 +4727,9 @@ impl Shell {
         let d = dialog.clone();
         key.connect_key_pressed(move |_, key, _, _| {
             if key == gdk::Key::Escape {
+                if super::code::dismiss_completion(&d) {
+                    return glib::Propagation::Stop;
+                }
                 if d.has_css_class("row-settings-window")
                     && let Some(popup) = d.child().and_downcast::<super::popup::Popup>()
                 {

@@ -34,6 +34,10 @@ pub struct Flow {
     #[knuffel(child, unwrap(argument))]
     pub undo_limit: Option<u32>,
     #[knuffel(child, unwrap(argument))]
+    pub code_auto_complete: Option<bool>,
+    #[knuffel(child, unwrap(argument))]
+    pub pin_usage_highlight: Option<bool>,
+    #[knuffel(child, unwrap(argument))]
     pub running_color: Option<String>,
     #[knuffel(child, unwrap(argument))]
     pub running_opacity: Option<f64>,
@@ -78,6 +82,8 @@ impl crate::utils::MergeWith<Flow> for Flow {
             arrange_gap,
             arrange_drag,
             undo_limit,
+            code_auto_complete,
+            pin_usage_highlight,
             running_color,
             running_opacity,
             running_width

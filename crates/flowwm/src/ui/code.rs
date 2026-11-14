@@ -2,7 +2,11 @@
 use super::theme::Theme;
 use crate::graph::{Pin, Type};
 use gtk::{gdk, glib, prelude::*};
-use std::{collections::BTreeSet, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::BTreeSet,
+    rc::Rc,
+};
 use vox_compiler::frontend::lexer::{Lexer, TokenKind};
 
 fn spans(source: &str) -> Vec<(usize, usize, usize)> {
@@ -35,18 +39,78 @@ fn spans(source: &str) -> Vec<(usize, usize, usize)> {
     spans
 }
 
-pub fn markup(source: &str, theme: &Theme) -> String {
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Usage {
+    pub name: String,
+    pub output: bool,
+}
+
+pub fn markup_for_usage(source: &str, theme: &Theme, usage: Option<&Usage>) -> String {
     let colors = [theme.muted, theme.text, theme.running, theme.primary];
-    spans(source)
-        .into_iter()
-        .map(|(start, end, style)| {
-            format!(
-                "<span foreground=\"{}\">{}</span>",
-                colors[style].hex(),
-                glib::markup_escape_text(&source[start..end])
-            )
-        })
-        .collect()
+    let references = usage
+        .map(|usage| crate::graph::vox_pin_spans(source, &usage.name, usage.output))
+        .unwrap_or_default();
+    let mut markup = String::new();
+    for (start, end, style) in spans(source) {
+        let mut points = vec![start, end];
+        for &(a, b) in &references {
+            if a > start && a < end {
+                points.push(a);
+            }
+            if b > start && b < end {
+                points.push(b);
+            }
+        }
+        points.sort_unstable();
+        points.dedup();
+        for pair in points.windows(2) {
+            let selected = references.iter().any(|&(a, b)| a < pair[1] && b > pair[0]);
+            let attributes = if selected {
+                format!(
+                    "background=\"{}\" foreground=\"{}\" underline=\"single\"",
+                    theme.primary.hex(),
+                    theme.on_primary.hex()
+                )
+            } else {
+                format!("foreground=\"{}\"", colors[style].hex())
+            };
+            markup.push_str(&format!(
+                "<span {attributes}>{}</span>",
+                glib::markup_escape_text(&source[pair[0]..pair[1]])
+            ));
+        }
+    }
+    markup
+}
+
+#[derive(Clone)]
+pub struct Editor {
+    view: glib::WeakRef<gtk::TextView>,
+    tag: gtk::TextTag,
+    usage: Rc<RefCell<Option<Usage>>>,
+}
+impl Editor {
+    pub fn highlight(&self, usage: Option<Usage>) {
+        *self.usage.borrow_mut() = usage;
+        self.refresh();
+    }
+    fn refresh(&self) {
+        let Some(view) = self.view.upgrade() else {
+            return;
+        };
+        let buffer = view.buffer();
+        buffer.remove_tag(&self.tag, &buffer.start_iter(), &buffer.end_iter());
+        if let Some(usage) = self.usage.borrow().as_ref() {
+            let source = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+            for (start, end) in crate::graph::vox_pin_spans(&source, &usage.name, usage.output) {
+                buffer.apply_tag(
+                    &self.tag,
+                    &buffer.iter_at_offset(source[..start].chars().count() as i32),
+                    &buffer.iter_at_offset(source[..end].chars().count() as i32),
+                );
+            }
+        }
+    }
 }
 
 pub fn completions(prefix: &str, pins: &[Pin], source: &str) -> Vec<String> {
@@ -88,6 +152,27 @@ pub fn completions(prefix: &str, pins: &[Pin], source: &str) -> Vec<String> {
         .collect()
 }
 
+fn automatic_completion(source: &str, cursor: usize, prefix: &str) -> bool {
+    if prefix.is_empty()
+        || prefix.ends_with("..")
+        || !prefix.starts_with(|ch: char| ch.is_alphabetic() || ch == '_')
+    {
+        return false;
+    }
+    let (tokens, _) = Lexer::new(&source[..cursor], 0).lex_lossy();
+    tokens
+        .iter()
+        .rev()
+        .find(|token| token.kind != TokenKind::Eof)
+        .is_some_and(|token| {
+            token.span.end == cursor
+                && !matches!(
+                    token.kind,
+                    TokenKind::StringLiteral(_) | TokenKind::DocComment(_)
+                )
+        })
+}
+
 fn prefix(buffer: &gtk::TextBuffer) -> (String, i32) {
     let cursor = buffer.cursor_position();
     let before = buffer.text(&buffer.start_iter(), &buffer.iter_at_offset(cursor), true);
@@ -103,7 +188,7 @@ fn prefix(buffer: &gtk::TextBuffer) -> (String, i32) {
     (prefix, start)
 }
 
-pub fn attach(editor: &gtk::TextView, theme: &Theme, pins: Rc<dyn Fn() -> Vec<Pin>>) {
+pub fn attach(editor: &gtk::TextView, theme: &Theme, pins: Rc<dyn Fn() -> Vec<Pin>>) -> Editor {
     let buffer = editor.buffer();
     let colors = [theme.muted, theme.text, theme.running, theme.primary];
     let tags: Vec<_> = colors
@@ -130,8 +215,25 @@ pub fn attach(editor: &gtk::TextView, theme: &Theme, pins: Rc<dyn Fn() -> Vec<Pi
     };
     highlight(&buffer);
     buffer.connect_changed(highlight);
+    let usage = Editor {
+        view: editor.downgrade(),
+        tag: buffer
+            .create_tag(
+                Some("vox-pin-usage"),
+                &[
+                    ("background", &theme.primary.hex()),
+                    ("foreground", &theme.on_primary.hex()),
+                    ("underline", &gtk::pango::Underline::Single),
+                ],
+            )
+            .unwrap(),
+        usage: Rc::new(RefCell::new(None)),
+    };
+    let highlighted = usage.clone();
+    buffer.connect_changed(move |_| highlighted.refresh());
     let popup = gtk::Popover::new();
     popup.set_parent(editor);
+    popup.add_css_class("vox-completion");
     popup.set_autohide(false);
     popup.set_has_arrow(false);
     let list = gtk::ListBox::new();
@@ -175,7 +277,19 @@ pub fn attach(editor: &gtk::TextView, theme: &Theme, pins: Rc<dyn Fn() -> Vec<Pi
         };
         let buffer = editor.buffer();
         let (prefix, _) = prefix(&buffer);
-        if !explicit && (!prefix.contains('.') || prefix.ends_with("..")) {
+        let source = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+        let byte = buffer
+            .text(
+                &buffer.start_iter(),
+                &buffer.iter_at_offset(buffer.cursor_position()),
+                true,
+            )
+            .len();
+        if !explicit
+            && (!crate::config::flow().code_auto_complete.unwrap_or(true)
+                || !editor.has_focus()
+                || !automatic_completion(&source, byte, &prefix))
+        {
             popup.popdown();
             return;
         }
@@ -202,8 +316,20 @@ pub fn attach(editor: &gtk::TextView, theme: &Theme, pins: Rc<dyn Fn() -> Vec<Pi
         popup.popup();
         editor.grab_focus();
     });
+    let pending = Rc::new(Cell::new(false));
+    let scheduled = pending.clone();
     let u = update.clone();
-    buffer.connect_changed(move |_| u(false));
+    buffer.connect_changed(move |_| {
+        if scheduled.replace(true) {
+            return;
+        }
+        let u = u.clone();
+        let pending = scheduled.clone();
+        glib::idle_add_local_once(move || {
+            pending.set(false);
+            u(false);
+        });
+    });
     let key = gtk::EventControllerKey::new();
     key.set_propagation_phase(gtk::PropagationPhase::Capture);
     let p = popup.downgrade();
@@ -236,6 +362,25 @@ pub fn attach(editor: &gtk::TextView, theme: &Theme, pins: Rc<dyn Fn() -> Vec<Pi
         glib::Propagation::Proceed
     });
     editor.add_controller(key);
+    usage
+}
+
+pub fn dismiss_completion(widget: &impl IsA<gtk::Widget>) -> bool {
+    if let Some(popover) = widget.as_ref().downcast_ref::<gtk::Popover>()
+        && popover.has_css_class("vox-completion")
+        && popover.is_visible()
+    {
+        popover.popdown();
+        return true;
+    }
+    let mut child = widget.as_ref().first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        if dismiss_completion(&widget) {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -245,7 +390,8 @@ mod tests {
     fn highlighting_preserves_unicode_comments_and_markup_characters() {
         let source = "// 中文 <tag>\n{ value = \"你好 & $world\", ok = 42 < 100, }";
         let (_, text, _) =
-            gtk::pango::parse_markup(&markup(source, &Theme::default()), '\0').unwrap();
+            gtk::pango::parse_markup(&markup_for_usage(source, &Theme::default(), None), '\0')
+                .unwrap();
         assert_eq!(text, source);
     }
     #[test]
@@ -272,5 +418,49 @@ mod tests {
         );
         assert_eq!(completions("args.ex", &pins, ""), vec!["args.exit_code"]);
         assert!(completions("lo", &pins, "val local_name = 1;").contains(&"local_name".into()));
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+    #[test]
+    fn automatic_completion_triggers_on_identifiers_and_ignores_comments_and_strings() {
+        for source in ["in", "{ value = tr", "inputs.", "inputs.pay"] {
+            let prefix = source
+                .rsplit(|ch: char| !ch.is_alphanumeric() && ch != '.' && ch != '_')
+                .next()
+                .unwrap();
+            assert!(
+                automatic_completion(source, source.len(), prefix),
+                "{source}"
+            );
+        }
+        for source in ["// inputs.pay", "\"inputs.pay", "/* inputs.pay", " "] {
+            let prefix = source
+                .rsplit(|ch: char| !ch.is_alphanumeric() && ch != '.' && ch != '_')
+                .next()
+                .unwrap();
+            assert!(
+                !automatic_completion(source, source.len(), prefix),
+                "{source}"
+            );
+        }
+    }
+    #[test]
+    fn hover_markup_preserves_unicode_and_uses_exact_pin_references() {
+        let source = "{ val note = \"你好 inputs.x\"; { result = inputs.x + inputs.xx, } }";
+        let usage = Usage {
+            name: "x".into(),
+            output: false,
+        };
+        let markup = markup_for_usage(source, &Theme::default(), Some(&usage));
+        let (_, text, _) = gtk::pango::parse_markup(&markup, '\0').unwrap();
+        assert_eq!(text, source);
+        let matches = markup.matches("background=").count();
+        assert_eq!(
+            matches, 3,
+            "only the inputs, dot, and x tokens should be highlighted"
+        );
     }
 }

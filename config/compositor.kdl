@@ -215,6 +215,8 @@ flow {
     arrange-gap 48.0
     arrange-drag true
     undo-limit 100
+    code-auto-complete true
+    pin-usage-highlight true
     running-color "#71c68c"
     running-opacity 0.17
     binds {

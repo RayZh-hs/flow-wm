@@ -116,6 +116,7 @@ fn zoomed_out_grid_replays_without_cairo_allocation_errors() {
 type Callback = Rc<dyn Fn(CanvasAction)>;
 #[derive(Clone)]
 pub enum CanvasAction {
+    HoverPin(Option<(crate::graph::Endpoint, bool)>),
     Workflow(String),
     Select(Option<String>),
     Open(String),
@@ -173,6 +174,7 @@ enum Drag {
 }
 #[derive(Clone)]
 pub struct View {
+    pub hovered_pin: Option<(crate::graph::Endpoint, bool)>,
     pub annotation: Option<String>,
     pub annotation_preview: Option<(String, super::collapse::Rect)>,
     pub gpu: bool,
@@ -225,6 +227,7 @@ pub struct View {
 impl Default for View {
     fn default() -> Self {
         Self {
+            hovered_pin: None,
             annotation: None,
             annotation_preview: None,
             gpu: false,
@@ -355,6 +358,7 @@ pub fn suspend(view: &Rc<RefCell<View>>) {
     view.annotation_preview = None;
     view.preview = None;
     view.empty_hover = None;
+    view.hovered_pin = None;
 }
 
 pub fn restore(view: &Rc<RefCell<View>>, mut saved: View) {
@@ -1122,7 +1126,28 @@ fn make_scoped(
     let e = engine.clone();
     let v = view.clone();
     let a = area.clone();
+    let hover_callback = callback.clone();
     motion.connect_motion(move |_, x, y| {
+        let state = e.snapshot().state;
+        let hovered = {
+            let view = v.borrow();
+            let (wx, wy) = view.world(x, y);
+            if view.drag.is_some()
+                || view.space_down
+                || !crate::config::flow().pin_usage_highlight.unwrap_or(true)
+            {
+                None
+            } else {
+                hit_pin(&state, &view, wx, wy, true)
+                    .map(|pin| (pin, true))
+                    .or_else(|| hit_pin(&state, &view, wx, wy, false).map(|pin| (pin, false)))
+            }
+        };
+        if v.borrow().hovered_pin != hovered {
+            v.borrow_mut().hovered_pin = hovered.clone();
+            hover_callback(CanvasAction::HoverPin(hovered));
+            a.queue_draw();
+        }
         let hit = super::empty::hit(a.width() as f64, a.height() as f64, x, y);
         let hover = hit.filter(|_| !v.borrow().space_down && workspace_empty(&e.snapshot().state));
         if !v.borrow().space_down {
@@ -1163,7 +1188,13 @@ fn make_scoped(
     });
     let v = view.clone();
     let a = area.clone();
+    let hover_callback = callback.clone();
     motion.connect_leave(move |_| {
+        let leaving = v.borrow_mut().hovered_pin.take().is_some();
+        if leaving {
+            hover_callback(CanvasAction::HoverPin(None));
+            a.queue_draw();
+        }
         if v.borrow_mut().empty_hover.take().is_some() {
             a.set_cursor_from_name(Some("default"));
             a.queue_draw();
@@ -1674,7 +1705,9 @@ fn make_scoped(
         })
         .collect();
     key.connect_key_pressed(move |_, key, _, modifiers| {
-        if !a.has_focus() { return glib::Propagation::Proceed; }
+        if !a.has_focus() {
+            return glib::Propagation::Proceed;
+        }
         let selected = v.borrow().selected.clone();
         let state = e.snapshot().state;
         let alt = modifiers.contains(gdk::ModifierType::ALT_MASK);
@@ -2092,11 +2125,39 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
         c.push_group();
         if node.closed_window() {
             c.translate(0.0, 48.0 * (1.0 - view.chrome));
-            draw_node_with_border(c, node, &p, super::gpu::border_opacity(node, view), theme);
+            draw_node_with_border(
+                c,
+                node,
+                &p,
+                super::gpu::border_opacity(node, view),
+                theme,
+                view.hovered_pin
+                    .as_ref()
+                    .filter(|(endpoint, _)| endpoint.node == node.id)
+                    .map(|(endpoint, output)| super::code::Usage {
+                        name: endpoint.pin.clone(),
+                        output: *output,
+                    })
+                    .as_ref(),
+            );
         } else if node.window_id.is_some() || node.desktop_window {
             draw_window_node(c, node, &p, visible_rect, progress, selected, view);
         } else {
-            draw_node_with_border(c, node, &p, super::gpu::border_opacity(node, view), theme);
+            draw_node_with_border(
+                c,
+                node,
+                &p,
+                super::gpu::border_opacity(node, view),
+                theme,
+                view.hovered_pin
+                    .as_ref()
+                    .filter(|(endpoint, _)| endpoint.node == node.id)
+                    .map(|(endpoint, output)| super::code::Usage {
+                        name: endpoint.pin.clone(),
+                        output: *output,
+                    })
+                    .as_ref(),
+            );
         }
         if !node.closed_window() {
             draw_pin_markers(c, state, node, &p, theme);
@@ -2364,9 +2425,25 @@ fn crossing(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)) -> bool 
 }
 
 pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, theme: &Theme) {
-    draw_node_with_border(c, n, p, f64::from(selected), theme);
+    draw_node_with_border(c, n, p, f64::from(selected), theme, None);
 }
-fn draw_node_with_border(c: &Context, n: &Node, p: &Position, selection: f64, theme: &Theme) {
+pub(super) fn draw_node_with_usage(
+    c: &Context,
+    n: &Node,
+    p: &Position,
+    theme: &Theme,
+    usage: Option<&super::code::Usage>,
+) {
+    draw_node_with_border(c, n, p, 0., theme, usage);
+}
+fn draw_node_with_border(
+    c: &Context,
+    n: &Node,
+    p: &Position,
+    selection: f64,
+    theme: &Theme,
+    usage: Option<&super::code::Usage>,
+) {
     let (x, y) = (p.x, p.y);
     let height = node_height(n);
     let accent = if n.kind == NodeKind::Constant {
@@ -2458,7 +2535,7 @@ fn draw_node_with_border(c: &Context, n: &Node, p: &Position, selection: f64, th
         layout.set_single_paragraph_mode(false);
         layout.set_width(((WIDTH - 34.) * pango::SCALE as f64) as i32);
         layout.set_wrap(pango::WrapMode::WordChar);
-        layout.set_markup(&super::code::markup(&n.command, theme));
+        layout.set_markup(&super::code::markup_for_usage(&n.command, theme, usage));
         c.move_to(x + 17., y + 76.);
         pangocairo::functions::show_layout(c, &layout);
         let _ = c.restore();

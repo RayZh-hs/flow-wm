@@ -4,12 +4,14 @@ mod runtime;
 mod specialize;
 mod types;
 mod vox;
+mod vox_symbols;
 
 pub use runtime::{Activation, Evaluation, evaluate, validate_signal_args};
 pub use runtime::{EvaluationContext, ScriptEvaluator, evaluate_input_with, evaluate_with};
 pub use specialize::specialized_pins;
 pub use types::*;
 pub use vox::{vox_outputs, vox_syntax_error};
+pub use vox_symbols::{vox_inputs, vox_pin_spans};
 
 use crate::domain::{FlowNet, NodeSpec as Node};
 use anyhow::{Context, Result, ensure};
@@ -298,6 +300,19 @@ pub fn pins_for(node: &Node, definition: Option<&NodeDefinition>, output: bool) 
             default: Some(json!({})),
             ..Pin::new("env", Type::Env)
         });
+    }
+    if type_id(node) == "vox" && !output {
+        let source = node
+            .flow
+            .properties
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        for name in vox_inputs(source) {
+            if !pins.iter().any(|pin| pin.name == name) {
+                pins.push(Pin::new(&name, Type::Any));
+            }
+        }
     }
     pins
 }

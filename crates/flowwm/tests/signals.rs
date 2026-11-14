@@ -833,3 +833,44 @@ fn vox_outputs_infer_record_fields_from_code_connections_and_signal_arguments() 
     assert!(result.errors.is_empty(), "{:?}", result.errors);
     assert_eq!(result.values[&script]["result"], 42);
 }
+
+#[test]
+fn vox_input_fields_are_created_from_code_and_specialize_when_connected() {
+    let mut state = State::empty("/tmp".into());
+    let constant = node(&mut state, NodeKind::Constant);
+    state
+        .node_mut(&constant)
+        .unwrap()
+        .flow
+        .properties
+        .insert("value".into(), json!(21));
+    let script = node(&mut state, NodeKind::Vox);
+    state.node_mut(&script).unwrap().command = "{ result = inputs.amount * 2, }".into();
+    assert!(state.node(&script).unwrap().flow.inputs.is_empty());
+    assert_eq!(
+        pins(&state, state.node(&script).unwrap(), false)
+            .iter()
+            .find(|pin| pin.name == "amount")
+            .unwrap()
+            .ty,
+        Type::Any
+    );
+    wire(&mut state, &constant, "value", &script, "amount");
+    assert_eq!(
+        pins(&state, state.node(&script).unwrap(), false)
+            .iter()
+            .find(|pin| pin.name == "amount")
+            .unwrap()
+            .ty,
+        Type::Int
+    );
+    assert_eq!(
+        pins(&state, state.node(&script).unwrap(), true)
+            .iter()
+            .find(|pin| pin.name == "result")
+            .unwrap()
+            .ty,
+        Type::Int
+    );
+    assert_eq!(run(state, &script, None).values[&script]["result"], 42);
+}

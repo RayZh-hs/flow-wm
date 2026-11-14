@@ -19,6 +19,7 @@ mod shell;
 mod surface;
 pub mod theme;
 mod wires;
+mod vox_parameters;
 pub use shell::run;
 #[derive(Clone, Copy, Default)]
 pub struct Options {

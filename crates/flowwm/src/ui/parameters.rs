@@ -157,7 +157,7 @@ impl Fields {
                     "Sends the incoming event through true or false according to the condition input."
                 }
                 NodeKind::Vox => {
-                    "Return a record, for example { value = inputs.x + 1, }. Use args for signal arguments."
+                    "Inputs and outputs follow the code. Hover a port to highlight its usage."
                 }
                 NodeKind::Python => {
                     "Assign an outputs dictionary. Read inputs and args as records. Connect Env to override the row environment."
@@ -296,13 +296,15 @@ impl Fields {
                 }));
             }
         }
-        if matches!(
-            node.kind,
-            NodeKind::Vox | NodeKind::Python | NodeKind::Extension
-        ) && !matches!(
-            node.flow.node_type.as_str(),
-            "local.set_env" | "local.unset_env" | "local.empty_env" | "local.bake_args_into_env"
-        ) {
+        if matches!(node.kind, NodeKind::Python | NodeKind::Extension)
+            && !matches!(
+                node.flow.node_type.as_str(),
+                "local.set_env"
+                    | "local.unset_env"
+                    | "local.empty_env"
+                    | "local.bake_args_into_env"
+            )
+        {
             let pins = PinEditor::new(state, node);
             root.append(&pins.widget);
             setters.push(Rc::new(move |node| {

@@ -150,6 +150,25 @@ def run():
             def xd(*args):
                 subprocess.run(["xdotool", *map(str, args)], env=env, check=True)
 
+            def focus_properties():
+                dialog = wait(
+                    lambda: subprocess.check_output(
+                        [
+                            "xdotool",
+                            "search",
+                            "--onlyvisible",
+                            "--name",
+                            "^Node parameters$",
+                        ],
+                        env=env,
+                        text=True,
+                    ).splitlines()
+                )[-1]
+                xd("windowfocus", "--sync", dialog)
+
+            def focus_canvas():
+                xd("windowfocus", "--sync", window)
+
             xd("windowsize", window, 1400, 900)
             xd("windowfocus", "--sync", window)
             time.sleep(0.4)
@@ -158,6 +177,7 @@ def run():
             xd("key", "ctrl+shift+v")
             wait(lambda: len(state()["nodes"]) == 1)
             time.sleep(0.6)
+            focus_properties()
             xd("key", "ctrl+a")
             xd("type", "--clearmodifiers", '{ value = 17, text = "canvas edit", }')
             xd("key", "ctrl+Return")
@@ -167,6 +187,7 @@ def run():
                     == '{ value = 17, text = "canvas edit", }'
                 )
             )
+            focus_canvas()
             ui("capture", path=str(ART / "vox-card.png"))
             time.sleep(0.3)
             # Complete a typed nested input, accepting suggestions with Enter and Tab.
@@ -185,10 +206,9 @@ def run():
             action(action="update", node=script)
             ui("edit", id=script["id"])
             time.sleep(0.4)
+            focus_properties()
             xd("key", "ctrl+a")
             xd("type", "--clearmodifiers", "{ value = inputs.pay")
-            time.sleep(0.2)
-            xd("key", "ctrl+space")
             time.sleep(0.2)
             xd("key", "Return")
             xd("type", "--clearmodifiers", ".co")
@@ -207,6 +227,7 @@ def run():
                 )
             )
             # Create and edit a note, then group a second node with the first.
+            focus_canvas()
             xd("key", "ctrl+t")
             wait(lambda: sum(len(w["canvas"]) for w in state()["workflows"]) == 1)
             time.sleep(0.4)
@@ -230,7 +251,9 @@ def run():
             xd("key", "ctrl+shift+v")
             wait(lambda: len(state()["nodes"]) == 2)
             time.sleep(0.4)
+            focus_properties()
             xd("key", "Escape")
+            focus_canvas()
             time.sleep(0.2)
             xd("key", "ctrl+a")
             xd("key", "ctrl+g")

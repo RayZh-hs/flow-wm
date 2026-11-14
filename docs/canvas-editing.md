@@ -2,17 +2,29 @@
 
 Vox code is visible directly on its node card, with the same lexer-based syntax
 colors used by the editor. Click the code body, double-click the node, or use
-**Shift+Enter** to open the code and IO editor in the canvas. **Ctrl+Shift+V**
-creates a new Vox node and opens its editor.
+**Shift+Enter** to open the normal node properties editor. Source and ports appear
+side by side, so both stay visible while inspecting a binding. **Ctrl+Shift+V**
+creates a new Vox node and opens its properties.
 
 The editor offers completion for `inputs`, nested input records, signal `args`,
-Vox keywords, and names in the current source. Member suggestions appear while
-typing; **Ctrl+Space** also requests completion. Use the arrow keys to choose a
-suggestion and Enter or Tab to insert it. The IO section exposes **Add pin**,
-input/output direction, and a type selector. New inputs can use `Any` to follow
-the connected data type, or an explicit type to constrain accepted connections.
-**Ctrl+Enter** applies code and IO changes. Escape cancels the edit. Syntax errors
-and incompatible graph changes appear in the editor.
+Vox keywords, and names in the current source. Suggestions appear automatically
+as identifiers and members are typed; **Ctrl+Space** also requests completion.
+Use the arrow keys to choose a suggestion and Enter or Tab to insert it.
+Completion stays quiet in comments and ordinary string text.
+
+Typing `inputs.name` creates an input automatically. Returned record fields
+create outputs. Separate Inputs and Outputs lists show the resolved type of each
+port. Their type selector defaults to **Automatic**; choose an explicit type to
+constrain accepted connections. Existing explicit bindings and defaults are
+preserved. **Ctrl+Enter** saves the node. Escape dismisses completion first, then
+closes the properties editor.
+
+Hover an input or output port on the node card or in its properties to highlight
+its code usage. Input highlighting follows qualified references such as
+`inputs.name`, including string interpolations; it skips unrelated names,
+comments, and literal text. Output highlighting marks the returned field and the
+expression that produces its value. Moving away clears the highlight. The card
+preview and editor share the same source-location analysis.
 
 Vox output fields and their types are inferred from returned records, literals,
 local values, connected inputs, and signal arguments. Explicit output declarations
@@ -52,6 +64,8 @@ All shortcuts are configured in `~/.config/flow-wm/config.kdl`, using the existi
 
 ```kdl
 flow {
+    code-auto-complete true
+    pin-usage-highlight true
     binds {
         Ctrl+g action="group" title="Group selected nodes"
         Ctrl+Shift+g action="ungroup" title="Ungroup selected frame"
@@ -63,6 +77,8 @@ flow {
 }
 ```
 
-Override a key with `action="none"` to disable its default binding. Graph shortcut
-changes take effect when the UI restarts. Code and text editors retain their own
+Override a key with `action="none"` to disable its default binding.
+Set `code-auto-complete false` for manual completion, or `pin-usage-highlight false`
+to disable code usage highlighting. Both features are enabled by default.
+Configuration changes take effect when the UI restarts. Code and text editors retain their own
 text-editing shortcuts while focused.

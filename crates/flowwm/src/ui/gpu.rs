@@ -214,6 +214,14 @@ fn metadata<'a>(
     // Rasterize local card contents once per resolution tier instead. Rounding
     // up keeps text sharp throughout a zoom without allocating on every frame.
     let scale = (scale * view.output_scale).max(0.125).log2().ceil().exp2();
+    let usage = view
+        .hovered_pin
+        .as_ref()
+        .filter(|(endpoint, _)| endpoint.node == node.id)
+        .map(|(endpoint, output)| super::code::Usage {
+            name: endpoint.pin.clone(),
+            output: *output,
+        });
     let mut hash = DefaultHasher::new();
     (
         view.numbers,
@@ -221,6 +229,7 @@ fn metadata<'a>(
         theme_key(view),
         node_height(node).to_bits(),
         scale.to_bits(),
+        &usage,
     )
         .hash(&mut hash);
     let key = hash.finish();
@@ -242,7 +251,7 @@ fn metadata<'a>(
             c.rectangle(-8.0, node_height(node) - 39.0, WIDTH + 16.0, 48.0);
             c.clip();
         }
-        canvas::draw_node(&c, node, &Position::default(), false, &view.theme);
+        canvas::draw_node_with_usage(&c, node, &Position::default(), &view.theme, usage.as_ref());
         drop(c);
         if !node.closed_window() {
             let c = meta.append_cairo(&graphene::Rect::new(
@@ -342,8 +351,18 @@ fn graph_key(width: i32, height: i32, state: &State, revision: u64, view: &View)
     let mut h = DefaultHasher::new();
     (width, height, revision, theme_key(view)).hash(&mut h);
     view.selected.hash(&mut h);
+    view.hovered_pin.hash(&mut h);
     view.annotation.hash(&mut h);
-    if let Some((id, r)) = &view.annotation_preview { (id, r.x.to_bits(), r.y.to_bits(), r.width.to_bits(), r.height.to_bits()).hash(&mut h); }
+    if let Some((id, r)) = &view.annotation_preview {
+        (
+            id,
+            r.x.to_bits(),
+            r.y.to_bits(),
+            r.width.to_bits(),
+            r.height.to_bits(),
+        )
+            .hash(&mut h);
+    }
     view.query.hash(&mut h);
     view.numbers.hash(&mut h);
     (
@@ -358,7 +377,9 @@ fn graph_key(width: i32, height: i32, state: &State, revision: u64, view: &View)
         linked.insert(edge.target.node.as_str());
     }
     for item in &state.workspace().canvas {
-        if let crate::annotations::Content::Group { nodes } = &item.content { linked.extend(nodes.iter().map(String::as_str)); }
+        if let crate::annotations::Content::Group { nodes } = &item.content {
+            linked.extend(nodes.iter().map(String::as_str));
+        }
     }
 
     for node in state
