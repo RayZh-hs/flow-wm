@@ -663,7 +663,7 @@ fn provider_observes_application_exit_after_the_gtk_client_closes() {
     );
 }
 #[test]
-fn compositor_teardown_cleans_current_desktop_assignments_without_killing_shared_applications() {
+fn event_stream_disconnect_preserves_workflows_and_reconnects_the_same_applications() {
     let mut application = Process::new("sleep").arg("20").spawn().unwrap();
     let compositor = Compositor::new(application.id() as i32);
     let (desktop, _) =
@@ -706,20 +706,97 @@ fn compositor_teardown_cleans_current_desktop_assignments_without_killing_shared
             )
             .unwrap();
     }
+    let bindings = desktop.bindings();
     desktop.shutdown();
-    compositor.disconnect();
-    support::wait(|| {
+    for _ in 0..2 {
+        compositor.disconnect();
+        // The observer retries after two seconds. Wait for the new stream,
+        // rather than mistaking the old snapshot for a successful reconnect.
+        support::wait(|| !compositor.streams.lock().unwrap().is_empty());
+        support::wait(|| desktop.bindings() == bindings);
         let snapshot = desktop
             .orchestrate(Command::Snapshot, Some("session-parent".into()))
             .unwrap();
-        snapshot["workflows"].get("session-parent").is_none()
-            && snapshot["workflows"].get("private-child").is_none()
-    });
+        assert!(snapshot["workflows"].get("session-parent").is_some());
+        assert!(snapshot["workflows"].get("private-child").is_some());
+        assert!(snapshot["destroyed"].as_array().unwrap().is_empty());
+    }
     assert!(
         desktop.orchestrate(Command::Snapshot, None).unwrap()["workflows"]
             .get("unrelated")
             .is_some()
     );
+    assert!(application.try_wait().unwrap().is_none());
+    let _ = application.kill();
+    let _ = application.wait();
+}
+
+#[test]
+fn compositor_process_exit_cleans_desktop_workflows_without_killing_shared_applications() {
+    let mut application = Process::new("sleep").arg("20").spawn().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("niri.sock");
+    let initial = [
+        json!({"Ok":"Handled"}),
+        json!({"WorkspacesChanged":{"workspaces":[{"id":1,"idx":1,"name":null,"output":"TEST","is_urgent":false,"is_active":true,"is_focused":true,"active_window_id":1}]}}),
+        json!({"WindowsChanged":{"windows":[window(application.id() as i32, 1, "Shared app")]}}),
+    ]
+    .map(|event| format!("{event}\n"))
+    .concat();
+    // The IPC peer must be a separate process: closing a stream in this test
+    // process deliberately models a recoverable transport failure instead.
+    let mut compositor = Process::new("python3")
+        .args([
+            "-c",
+            r#"import socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.bind(sys.argv[1])
+s.listen()
+peers = []
+while True:
+    client, _ = s.accept()
+    if client.makefile('rb').readline().strip() == b'"EventStream"':
+        client.sendall(sys.argv[2].encode())
+        peers.append(client)
+    else:
+        client.close()
+"#,
+        ])
+        .arg(&socket)
+        .arg(initial)
+        .spawn()
+        .unwrap();
+    support::wait(|| socket.exists());
+    let (desktop, _) = support::fixture_with_niri(State::empty("/tmp".into()), Some(&socket));
+    support::wait(|| !desktop.bindings().applications.is_empty());
+    let workflow = desktop
+        .bindings()
+        .applications
+        .values()
+        .next()
+        .unwrap()
+        .workflow
+        .clone();
+    desktop
+        .orchestrate(
+            Command::Move {
+                workflow: workflow.clone().into(),
+                workspace: "local:desktop".into(),
+            },
+            None,
+        )
+        .unwrap();
+    desktop.shutdown();
+    compositor.kill().unwrap();
+    compositor.wait().unwrap();
+    // Leave the socket pathname behind, as a crashed compositor can do.
+    assert!(socket.exists());
+    support::wait(|| {
+        desktop.orchestrate(Command::Snapshot, None).unwrap()["destroyed"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(workflow))
+    });
     assert!(application.try_wait().unwrap().is_none());
     let _ = application.kill();
     let _ = application.wait();

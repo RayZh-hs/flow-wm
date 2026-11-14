@@ -597,7 +597,7 @@ pub fn run() -> Result<()> {
             }
             Event::Desktop(mut desktop) => {
                 if !desktop.connected {
-                    if !bindings.session.is_empty() {
+                    if desktop.session_ended && !bindings.session.is_empty() {
                         let runtime = host.snapshot()?;
                         let _ = host.command(Command::EndSession {
                             workspace: WorkspaceId::new(&runtime.host_id.0, "desktop")?,

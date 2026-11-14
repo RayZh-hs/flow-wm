@@ -5,6 +5,12 @@ FlowWM has one independent runtime. `flow-core` is the headless executable;
 GTK client. Restarting GTK leaves the other two processes and their work running.
 All three are required for desktop startup. There is no embedded runtime.
 
+A dropped compositor IPC event stream reconnects without ending the desktop
+session. The observer holds a Linux pidfd for the IPC peer and ends its session
+only after that process exits. Slow readers and other temporary transport
+failures preserve workflow identities, owned work, and application bindings;
+reconnection reconciles them against the next complete compositor snapshot.
+
 ## Ownership and package boundaries
 
 | Package | Owns |

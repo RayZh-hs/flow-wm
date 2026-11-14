@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use niri_ipc::{Action, Request, Response, WorkspaceReferenceArg, socket::Socket};
 use serde::{Deserialize, Serialize};
 use std::{
+    os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -19,6 +20,9 @@ pub struct Desktop {
     #[serde(default)]
     pub workspaces_ready: bool,
     pub connected: bool,
+    /// A transport failure alone does not end the compositor's session.
+    #[serde(default)]
+    pub session_ended: bool,
     pub windows: Vec<niri_ipc::Window>,
     pub workspaces: Vec<niri_ipc::Workspace>,
     pub error: Option<String>,
@@ -204,10 +208,14 @@ pub fn listen_observed(
     let desktop = Arc::new(Mutex::new(Desktop::default()));
     let shared = desktop.clone();
     thread::spawn(move || {
+        let mut process = None;
         while !stop.load(Ordering::Relaxed) {
-            if let Err(error) = event_stream(&shared, &stop, &observer) {
+            if let Err(error) = event_stream(&shared, &stop, &observer, &mut process) {
                 let mut state = shared.lock().unwrap();
                 state.connected = false;
+                state.session_ended = process
+                    .as_ref()
+                    .is_some_and(|process| process.has_exited().unwrap_or(false));
                 state.error = Some(error.to_string());
                 let snapshot = state.clone();
                 drop(state);
@@ -227,14 +235,17 @@ fn event_stream(
     desktop: &Mutex<Desktop>,
     stop: &AtomicBool,
     observer: &Arc<dyn Fn(Desktop) + Send + Sync>,
+    process: &mut Option<CompositorProcess>,
 ) -> Result<()> {
     let mut socket = Socket::connect()?;
+    *process = Some(CompositorProcess::observe(&socket)?);
     socket
         .send(Request::EventStream)?
         .map_err(anyhow::Error::msg)?;
     {
         let mut d = desktop.lock().unwrap();
         d.connected = true;
+        d.session_ended = false;
         d.windows_ready = false;
         d.workspaces_ready = false;
         d.session = std::env::var("NIRI_SOCKET").unwrap_or_default();
@@ -252,4 +263,43 @@ fn event_stream(
         }
     }
     Ok(())
+}
+
+/// Keep a stable reference to the IPC server, independently of its event stream.
+struct CompositorProcess(OwnedFd);
+
+impl CompositorProcess {
+    fn observe(socket: &impl AsFd) -> std::io::Result<Self> {
+        let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+        let mut length = std::mem::size_of_val(&credentials) as libc::socklen_t;
+        if unsafe {
+            libc::getsockopt(
+                socket.as_fd().as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERCRED,
+                (&mut credentials as *mut libc::ucred).cast(),
+                &mut length,
+            )
+        } < 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, credentials.pid, 0) };
+        if raw < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self(unsafe { OwnedFd::from_raw_fd(raw as i32) }))
+    }
+
+    fn has_exited(&self) -> std::io::Result<bool> {
+        let mut fd = libc::pollfd {
+            fd: self.0.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut fd, 1, 0) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(fd.revents & (libc::POLLIN | libc::POLLHUP) != 0)
+    }
 }

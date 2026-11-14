@@ -10,6 +10,7 @@ fn window(id: u64, row: u64, title: &str) -> Window {
 fn desktop() -> Desktop {
     Desktop {
         connected: true,
+        session_ended: false,
         session: "niri.session.1".into(),
         windows_ready: true,
         workspaces_ready: true,

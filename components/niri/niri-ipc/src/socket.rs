@@ -3,6 +3,7 @@
 use std::env;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::Shutdown;
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
@@ -17,6 +18,12 @@ pub const SOCKET_PATH_ENV: &str = "NIRI_SOCKET";
 /// and serialization/deserialization of messages.
 pub struct Socket {
     stream: BufReader<UnixStream>,
+}
+
+impl AsFd for Socket {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.stream.get_ref().as_fd()
+    }
 }
 
 impl Socket {
