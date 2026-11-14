@@ -20,23 +20,39 @@ fn occupied_rows(state: &State, bindings: &Bindings) -> Vec<u64> {
 #[derive(Default)]
 pub(super) struct Publisher {
     last: Option<(String, Vec<u64>)>,
+    unsupported_session: Option<String>,
 }
 
 impl Publisher {
     pub(super) fn publish(&mut self, state: &State, bindings: &Bindings) {
-        if bindings.session.is_empty() {
+        self.publish_with(state, bindings, crate::niri::request);
+    }
+
+    fn publish_with(
+        &mut self,
+        state: &State,
+        bindings: &Bindings,
+        request: impl FnOnce(niri_ipc::Request) -> anyhow::Result<niri_ipc::Response>,
+    ) {
+        if bindings.session.is_empty()
+            || self.unsupported_session.as_ref() == Some(&bindings.session)
+        {
             return;
         }
         let current = (bindings.session.clone(), occupied_rows(state, bindings));
         if self.last.as_ref() == Some(&current) {
             return;
         }
-        if crate::niri::request(niri_ipc::Request::SetNodeRowContents {
+        match request(niri_ipc::Request::SetNodeRowContents {
             workspace_ids: current.1.clone(),
-        })
-        .is_ok()
-        {
-            self.last = Some(current);
+        }) {
+            Ok(_) => self.last = Some(current),
+            Err(error) if error.to_string() == "error parsing request" => {
+                // A compatible shell replacement can leave an older compositor
+                // running until the next login. Probe this optional request once.
+                self.unsupported_session = Some(bindings.session.clone());
+            }
+            Err(_) => (), // Retry transport errors on the next snapshot.
         }
     }
 }
@@ -45,6 +61,38 @@ impl Publisher {
 mod tests {
     use super::*;
     use crate::model::{Node, NodeKind, Row, RowView};
+
+    #[test]
+    fn unsupported_compositors_are_probed_once_but_transport_errors_are_retried() {
+        let state = State::empty("/tmp".into());
+        let mut bindings = Bindings {
+            session: "old-compositor".into(),
+            ..Default::default()
+        };
+        let mut publisher = Publisher::default();
+        publisher.publish_with(&state, &bindings, |_| {
+            anyhow::bail!("error parsing request")
+        });
+        for _ in 0..100 {
+            publisher.publish_with(&state, &bindings, |_| {
+                panic!("unsupported request was sent again")
+            });
+        }
+        bindings.session = "new-compositor".into();
+        publisher.publish_with(&state, &bindings, |_| anyhow::bail!("Connection refused"));
+        let mut received = false;
+        publisher.publish_with(&state, &bindings, |_| {
+            received = true;
+            Ok(niri_ipc::Response::Handled)
+        });
+        assert!(
+            received,
+            "a new compositor or a failed transport must retry"
+        );
+        publisher.publish_with(&state, &bindings, |_| {
+            panic!("unchanged contents were resent")
+        });
+    }
 
     #[test]
     fn rows_follow_the_last_node_even_in_windows_view_and_ignore_stale_sessions() {
