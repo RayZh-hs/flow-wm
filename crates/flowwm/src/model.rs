@@ -293,6 +293,8 @@ impl Node {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Workspace {
+    #[serde(default)]
+    pub canvas: Vec<crate::annotations::Annotation>,
     pub id: String,
     pub name: String,
     pub cwd: PathBuf,
@@ -316,6 +318,8 @@ pub struct Row {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Recipe {
+    #[serde(default)]
+    pub canvas: Vec<crate::annotations::Annotation>,
     pub id: String,
     pub name: String,
     pub nodes: Vec<Node>,
@@ -349,6 +353,7 @@ pub struct State {
 impl State {
     pub fn empty(cwd: PathBuf) -> Self {
         let workspace = Workspace {
+            canvas: vec![],
             id: id(),
             name: "My workspace".into(),
             cwd,
@@ -449,7 +454,13 @@ impl State {
             .filter(|n| selected.contains(&n.id))
             .cloned()
             .collect();
-        ensure!(!nodes.is_empty(), "Select at least one node");
+        let canvas: Vec<_> = self.workspaces.iter().flat_map(|row| &row.canvas).filter(|item| {
+            selected.contains(&item.id) || matches!(&item.content, crate::annotations::Content::Group { nodes } if !nodes.is_empty() && nodes.iter().all(|id| selected.contains(id)))
+        }).cloned().collect();
+        ensure!(
+            !nodes.is_empty() || !canvas.is_empty(),
+            "Select at least one node or text field"
+        );
         for n in &mut nodes {
             n.status = Status::Idle;
             n.output.clear();
@@ -468,6 +479,7 @@ impl State {
             n.flow.properties.remove("_alert");
         }
         Ok(Recipe {
+            canvas,
             connections: self
                 .connections
                 .iter()
@@ -493,6 +505,10 @@ impl State {
             "Workspace not found"
         );
         ensure!(recipe.nodes.len() <= 500, "Recipe is too large");
+        ensure!(
+            recipe.canvas.len() <= 500,
+            "Too many canvas items in recipe"
+        );
         let mapping: std::collections::HashMap<_, _> =
             recipe.nodes.iter().map(|n| (n.id.clone(), id())).collect();
         ensure!(
@@ -557,6 +573,29 @@ impl State {
             candidate.connections.push(edge);
         }
         candidate.nodes.extend(nodes);
+        for template in &recipe.canvas {
+            let mut item = template.clone();
+            item.id = id();
+            item.validate()?;
+            if let crate::annotations::Content::Group { nodes } = &mut item.content {
+                *nodes = nodes
+                    .iter()
+                    .map(|id| {
+                        mapping
+                            .get(id)
+                            .cloned()
+                            .context("Missing recipe group member")
+                    })
+                    .collect::<Result<_>>()?;
+            }
+            candidate
+                .workspaces
+                .iter_mut()
+                .find(|row| row.id == workspace)
+                .unwrap()
+                .canvas
+                .push(item);
+        }
         candidate.validate()?;
         *self = candidate;
         Ok(ids)
@@ -571,6 +610,16 @@ impl State {
         self.nodes.retain(|n| n.id != id);
         self.connections
             .retain(|e| e.source.node != id && e.target.node != id);
+        for row in &mut self.workspaces {
+            row.canvas.retain_mut(|item| {
+                if let crate::annotations::Content::Group { nodes } = &mut item.content {
+                    nodes.retain(|member| member != id);
+                    !nodes.is_empty()
+                } else {
+                    true
+                }
+            });
+        }
         Ok(())
     }
 }

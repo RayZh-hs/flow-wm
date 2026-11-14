@@ -162,6 +162,9 @@ impl Flow {
                 bind.action.as_str(),
                 "none"
                     | "create_vox"
+                    | "group"
+                    | "ungroup"
+                    | "text"
                     | "complete_code"
                     | "save_code"
                     | "zoom_in"

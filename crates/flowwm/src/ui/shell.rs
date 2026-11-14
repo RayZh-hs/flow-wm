@@ -658,11 +658,15 @@ impl Shell {
             CanvasAction::Select(id) => self.select(id),
             CanvasAction::Open(id) => self.open(&id),
             CanvasAction::Add => self.palette(),
-            CanvasAction::CreateVox => {
+            CanvasAction::CreateVox(position) => {
                 if let Some(index) = self.macros.iter().position(|m| m.id == "vox") {
-                    self.create_macro(index);
+                    self.create_macro_at(index, None, position);
                 }
             }
+            CanvasAction::Group => self.group_selection(),
+            CanvasAction::Ungroup => self.ungroup_selection(),
+            CanvasAction::Text(position) => self.create_text(position),
+            CanvasAction::EditAnnotation(id) => self.edit_annotation(&id),
             CanvasAction::Edit(id) => self.edit(&id),
             CanvasAction::Delete(ids) => self.engine.dispatch(Action::DeleteMany { ids }),
             CanvasAction::Run(id) => self.engine.dispatch(Action::Run {
@@ -755,7 +759,7 @@ impl Shell {
     fn copy_selection(&self, cut: bool) {
         let state = self.engine.snapshot().state;
         let view = self.view.borrow();
-        let selected: Vec<_> = state
+        let mut selected: Vec<_> = state
             .nodes
             .iter()
             .filter(|n| {
@@ -764,6 +768,10 @@ impl Shell {
             })
             .map(|n| n.id.clone())
             .collect();
+        let annotation = view.annotation.clone();
+        if let Some(id) = &annotation {
+            selected.push(id.clone());
+        }
         let Ok(mut recipe) = state.recipe("Clipboard".into(), &selected) else {
             return;
         };
@@ -776,7 +784,14 @@ impl Shell {
         let text = serde_json::json!({"flowwm_clipboard":1,"recipe":recipe}).to_string();
         self.canvas().clipboard().set_text(&text);
         if cut {
-            self.engine.dispatch(Action::DeleteMany { ids: selected });
+            selected.retain(|id| state.node(id).is_some());
+            if !selected.is_empty() {
+                self.engine.dispatch(Action::DeleteMany { ids: selected });
+            } else if let Some(id) = annotation {
+                self.engine.dispatch(Action::Canvas {
+                    edit: crate::annotations::Edit::Remove { id },
+                });
+            }
         }
     }
     fn paste_selection(&self) {
@@ -821,6 +836,8 @@ impl Shell {
                         serde_json::from_value(result["ids"].clone()).unwrap_or_default();
                     shell.view.borrow_mut().selection = ids.iter().cloned().collect();
                     shell.select(ids.first().cloned());
+                    shell.view.borrow_mut().annotation =
+                        result["canvas_ids"][0].as_str().map(str::to_owned);
                     shell.canvas().grab_focus();
                 }
                 Err(error) => shell.show_error(&error.to_string()),
@@ -903,6 +920,8 @@ impl Shell {
             return;
         }
         self.select(None);
+        self.view.borrow_mut().annotation = None;
+        self.canvas().queue_draw();
     }
     fn fit_immediate(&self) -> bool {
         canvas::fit_immediate(&self.canvas(), &self.view, &self.engine.snapshot().state)
@@ -3417,6 +3436,14 @@ impl Shell {
         index: usize,
         application: Option<(String, String, String)>,
     ) {
+        self.create_macro_at(index, application, None);
+    }
+    fn create_macro_at(
+        &self,
+        index: usize,
+        application: Option<(String, String, String)>,
+        position: Option<Position>,
+    ) {
         let Some(m) = self.macros.get(index) else {
             return;
         };
@@ -3426,7 +3453,7 @@ impl Shell {
             self.canvas().width() as f64 / 2.0,
             self.canvas().height() as f64 / 2.0,
         );
-        let mut position =
+        let mut position = position.unwrap_or_else(|| {
             if let Some(selected) = view.selected.as_deref().and_then(|id| state.node(id)) {
                 Position {
                     x: selected.position.x,
@@ -3437,20 +3464,28 @@ impl Shell {
                     x: ((center.0 - canvas::WIDTH / 2.0) / 20.0).round() * 20.0,
                     y: ((center.1 - canvas::HEIGHT / 2.0) / 20.0).round() * 20.0,
                 }
-            };
-        while state.nodes.iter().any(|n| {
-            n.workspace == state.selected_workspace
-                && (n.position.x - position.x).abs() < canvas::WIDTH + 20.0
-                && (n.position.y - position.y).abs() < canvas::node_height(n) + 20.0
-        }) {
-            position.x += 360.0;
-        }
+            }
+        });
         let mut node = Node::new(
             &state.selected_workspace,
             m.kind,
             state.workspace().cwd.clone(),
-            position,
+            position.clone(),
         );
+        while state.nodes.iter().any(|n| {
+            n.workspace == state.selected_workspace
+                && (n.position.x - position.x).abs() < canvas::WIDTH + 20.0
+                && (n.position.y - position.y).abs() < canvas::node_height(n) + 20.0
+        }) || state.workspace().canvas.iter().any(|item| {
+            matches!(item.content, crate::annotations::Content::Text { .. })
+                && position.x < item.position.x + item.width + 20.
+                && position.x + canvas::WIDTH + 20. > item.position.x
+                && position.y < item.position.y + item.height + 20.
+                && position.y + canvas::node_height(&node) + 20. > item.position.y
+        }) {
+            position.x += 360.0;
+        }
+        node.position = position;
         node.title = m.name.clone();
         node.command = m.command.clone();
         node.flow = m.flow.clone();
@@ -3480,6 +3515,215 @@ impl Shell {
             Err(error) => self.show_error(&error.to_string()),
         }
     }
+    fn group_selection(&self) {
+        let view = self.view.borrow();
+        let mut nodes: Vec<_> = view.selection.iter().cloned().collect();
+        if nodes.is_empty() {
+            nodes.extend(view.selected.clone());
+        }
+        drop(view);
+        match self.engine.request(Action::Canvas {
+            edit: crate::annotations::Edit::Group { nodes },
+        }) {
+            Ok(result) => {
+                self.view.borrow_mut().annotation = result["id"].as_str().map(str::to_owned);
+                self.canvas().queue_draw();
+            }
+            Err(error) => self.show_error(&error.to_string()),
+        }
+    }
+    fn ungroup_selection(&self) {
+        let state = self.engine.snapshot().state;
+        let view = self.view.borrow();
+        let group = state
+            .workspace()
+            .canvas
+            .iter()
+            .rev()
+            .find(|item| match &item.content {
+                crate::annotations::Content::Group { nodes } => {
+                    view.annotation.as_ref() == Some(&item.id)
+                        || (!view.selection.is_empty()
+                            && view.selection.iter().all(|id| nodes.contains(id)))
+                }
+                _ => false,
+            })
+            .map(|item| item.id.clone());
+        drop(view);
+        if let Some(id) = group {
+            self.engine.dispatch(Action::Canvas {
+                edit: crate::annotations::Edit::Remove { id },
+            });
+            self.view.borrow_mut().annotation = None;
+            self.canvas().queue_draw();
+        }
+    }
+    fn create_text(&self, position: Option<Position>) {
+        let state = self.engine.snapshot().state;
+        let view = self.view.borrow();
+        let center = view.world(
+            self.canvas().width() as f64 / 2.,
+            self.canvas().height() as f64 / 2.,
+        );
+        let automatic = position.is_none();
+        let mut item = crate::annotations::Annotation::text(position.unwrap_or(Position {
+            x: center.0 - 160.,
+            y: center.1 - 90.,
+        }));
+        if automatic {
+            while state
+                .nodes
+                .iter()
+                .filter(|node| node.workspace == state.selected_workspace)
+                .any(|node| {
+                    let p = view.position(node);
+                    item.position.x < p.x + canvas::WIDTH + 20.
+                        && item.position.x + item.width + 20. > p.x
+                        && item.position.y < p.y + canvas::node_height(node) + 20.
+                        && item.position.y + item.height + 20. > p.y
+                })
+            {
+                item.position.y += item.height + 40.;
+            }
+        }
+        drop(view);
+        let id = item.id.clone();
+        let center = (
+            item.position.x + item.width / 2.,
+            item.position.y + item.height / 2.,
+        );
+        match self.engine.request(Action::Canvas {
+            edit: crate::annotations::Edit::Put { item },
+        }) {
+            Ok(_) => {
+                self.select(None);
+                let mut view = self.view.borrow_mut();
+                view.annotation = Some(id.clone());
+                view.pan_x = self.canvas().width() as f64 / 2. - center.0 * view.zoom;
+                view.pan_y = self.canvas().height() as f64 / 2. - center.1 * view.zoom;
+                drop(view);
+                self.edit_annotation(&id);
+            }
+            Err(error) => self.show_error(&error.to_string()),
+        }
+    }
+    fn edit_annotation(&self, id: &str) {
+        let state = self.engine.snapshot().state;
+        let Some(item) = state
+            .workspace()
+            .canvas
+            .iter()
+            .find(|item| item.id == id)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(r) = super::annotations::rect(&item, &state, &self.view.borrow()) else {
+            return;
+        };
+        self.canvas().dismiss_popovers();
+        let popup = gtk::Popover::new();
+        popup.set_parent(&self.canvas());
+        popup.set_has_arrow(false);
+        popup.set_position(gtk::PositionType::Right);
+        popup.set_autohide(false);
+        let view = self.view.borrow();
+        popup.set_pointing_to(Some(&gdk::Rectangle::new(
+            (r.x * view.zoom + view.pan_x) as i32,
+            (r.y * view.zoom + view.pan_y) as i32,
+            (r.width * view.zoom) as i32,
+            1,
+        )));
+        drop(view);
+        let body = column(10);
+        body.add_css_class("dialog-body");
+        let title = entry(&item.title);
+        field(&body, "Name", &title);
+        let editor = gtk::TextView::new();
+        editor.set_wrap_mode(gtk::WrapMode::WordChar);
+        if let crate::annotations::Content::Text { text } = &item.content {
+            editor.buffer().set_text(text);
+            body.append(
+                &gtk::ScrolledWindow::builder()
+                    .min_content_width(400)
+                    .min_content_height(240)
+                    .child(&editor)
+                    .build(),
+            );
+        }
+        let buttons = row(8);
+        let cancel = gtk::Button::with_label("Cancel");
+        let save = gtk::Button::with_label("Apply");
+        buttons.append(&cancel);
+        buttons.append(&save);
+        body.append(&buttons);
+        let error = label("", "error");
+        body.append(&error);
+        let scroll = gtk::ScrolledWindow::builder()
+            .propagate_natural_height(true)
+            .propagate_natural_width(true)
+            .max_content_width((self.canvas().width() - 80).clamp(300, 760))
+            .max_content_height((self.canvas().height() - 60).max(300))
+            .child(&body)
+            .build();
+        popup.set_child(Some(&scroll));
+        let p = popup.downgrade();
+        cancel.connect_clicked(move |_| {
+            if let Some(popup) = p.upgrade() {
+                popup.popdown();
+            }
+        });
+        let p = popup.downgrade();
+        let engine = self.engine.clone();
+        let buffer = editor.buffer();
+        save.connect_clicked(move |_| {
+            let mut item = item.clone();
+            item.title = title.text().into();
+            if let crate::annotations::Content::Text { text } = &mut item.content {
+                *text = buffer
+                    .text(&buffer.start_iter(), &buffer.end_iter(), true)
+                    .into();
+            }
+            match engine.request(Action::Canvas {
+                edit: crate::annotations::Edit::Put { item },
+            }) {
+                Ok(_) => {
+                    if let Some(popup) = p.upgrade() {
+                        popup.popdown();
+                    }
+                }
+                Err(failure) => error.set_text(&failure.to_string()),
+            }
+        });
+        let key = gtk::EventControllerKey::new();
+        key.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let bindings = crate::config::shortcuts();
+        let p = popup.downgrade();
+        key.connect_key_pressed(move |_, key, _, mods| {
+            if crate::config::matches_graph_action(&bindings, "save_code", key, mods) {
+                save.emit_clicked();
+                glib::Propagation::Stop
+            } else if crate::config::matches_graph_action(&bindings, "escape", key, mods) {
+                if let Some(p) = p.upgrade() {
+                    p.popdown();
+                }
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        body.add_controller(key);
+        let area = self.canvas().downgrade();
+        popup.connect_closed(move |popup| {
+            popup.unparent();
+            if let Some(area) = area.upgrade() {
+                area.grab_focus();
+            }
+        });
+        popup.popup();
+        editor.grab_focus();
+    }
+
     fn edit_code(&self, id: &str) {
         let state = self.engine.snapshot().state;
         let Some(node) = state.node(id).cloned() else {
@@ -3493,6 +3737,7 @@ impl Shell {
         let popup = gtk::Popover::new();
         popup.set_parent(&self.canvas());
         popup.set_has_arrow(false);
+        popup.set_position(gtk::PositionType::Right);
         popup.set_autohide(false);
         let view = self.view.borrow();
         let p = view.position(&node);
@@ -3542,6 +3787,8 @@ impl Shell {
             .min_content_height(120)
             .max_content_height(220)
             .propagate_natural_height(true)
+            .propagate_natural_width(true)
+            .max_content_width((self.canvas().width() - 80).clamp(300, 760))
             .child(&fields.widget)
             .build();
         let split = gtk::Paned::new(gtk::Orientation::Vertical);
@@ -3565,7 +3812,14 @@ impl Shell {
         actions.append(&cancel);
         actions.append(&save);
         body.append(&actions);
-        popup.set_child(Some(&body));
+        let scroll = gtk::ScrolledWindow::builder()
+            .propagate_natural_height(true)
+            .propagate_natural_width(true)
+            .max_content_width((self.canvas().width() - 80).clamp(300, 760))
+            .max_content_height((self.canvas().height() - 60).max(300))
+            .child(&body)
+            .build();
+        popup.set_child(Some(&scroll));
         let p = popup.downgrade();
         cancel.connect_clicked(move |_| {
             if let Some(popup) = p.upgrade() {
@@ -3598,6 +3852,7 @@ impl Shell {
             }
         });
         let key = gtk::EventControllerKey::new();
+        key.set_propagation_phase(gtk::PropagationPhase::Capture);
         let bindings = crate::config::shortcuts();
         let p = popup.downgrade();
         key.connect_key_pressed(move |_, key, _, modifiers| {
@@ -3614,7 +3869,13 @@ impl Shell {
             }
         });
         body.add_controller(key);
-        popup.connect_closed(|popup| popup.unparent());
+        let area = self.canvas().downgrade();
+        popup.connect_closed(move |popup| {
+            popup.unparent();
+            if let Some(area) = area.upgrade() {
+                area.grab_focus();
+            }
+        });
         popup.popup();
         editor.grab_focus();
     }

@@ -106,13 +106,17 @@ See the [user guide](docs/guide.md) for configuration, updates, rollback, and CL
 | Ctrl+P | Compact, align and frame the graph |
 | Ctrl+Shift+P | Search workflow macros in Nodes view |
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo graph edits |
+| Ctrl+G / Ctrl+Shift+G | Group / ungroup selected nodes |
+| Ctrl+T | Add a resizable text field |
+| Ctrl+Shift+V | Create a Vox code node |
 | Win+Enter / Win+Q | Run / stop selected nodes (terminal / close in Windows) |
 | R | Run the selected node |
 | Win+- / Win+= | Zoom out / in in Nodes |
 | Win+? | Show all shortcuts |
 
 Graph shortcuts apply in Nodes view. The [user guide](docs/guide.md#keyboard-and-mouse)
-has the full keyboard and mouse reference.
+has the full keyboard and mouse reference. See [canvas editing](docs/canvas-editing.md)
+for Vox code, type inference, groups, text fields, and context menus.
 
 ## Development
 

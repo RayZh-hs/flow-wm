@@ -143,7 +143,7 @@ fn creation_and_paste_are_reversible_without_reusing_native_handles() {
     let recipe = client
         .snapshot()
         .state
-        .recipe("copy".into(), &[id.clone()])
+        .recipe("copy".into(), std::slice::from_ref(&id))
         .unwrap();
     let result = client
         .request(Action::Paste {

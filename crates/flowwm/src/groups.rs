@@ -127,6 +127,7 @@ pub(crate) fn synchronize_with_processes(
             .unwrap_or_else(|| {
                 let cwd = state.workspace().cwd.clone();
                 state.workspaces.push(Workspace {
+                    canvas: vec![],
                     id: id(),
                     name: row
                         .name

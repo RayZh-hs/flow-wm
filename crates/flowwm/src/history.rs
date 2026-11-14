@@ -21,6 +21,7 @@ pub struct Edit {
     graphs: Vec<GraphEdit>,
     positions: Vec<(String, Change<Option<Position>>)>,
     arranged: Vec<(String, Change<bool>)>,
+    canvas: Vec<(String, Change<Vec<crate::annotations::Annotation>>)>,
 }
 #[derive(Default)]
 pub struct History {
@@ -100,6 +101,15 @@ impl Edit {
         }
         for a in &before.workspaces {
             if let Some(b) = after.workspaces.iter().find(|w| w.id == a.id) {
+                if !same(&a.canvas, &b.canvas) {
+                    edit.canvas.push((
+                        a.id.clone(),
+                        Change {
+                            before: a.canvas.clone(),
+                            after: b.canvas.clone(),
+                        },
+                    ));
+                }
                 if a.graph_arranged != b.graph_arranged {
                     edit.arranged.push((
                         a.id.clone(),
@@ -179,6 +189,11 @@ impl Edit {
         Ok(result)
     }
     pub fn apply_view(&self, state: &mut State, redo: bool) {
+        for (id, change) in &self.canvas {
+            if let Some(row) = state.workspaces.iter_mut().find(|row| row.id == *id) {
+                row.canvas = if redo { &change.after } else { &change.before }.clone();
+            }
+        }
         for (id, change) in &self.positions {
             if let (Some(node), Some(position)) = (
                 state.node_mut(id),
@@ -201,7 +216,11 @@ impl History {
             self.redo.clear();
             return;
         }
-        if edit.graphs.is_empty() && edit.positions.is_empty() && edit.arranged.is_empty() {
+        if edit.graphs.is_empty()
+            && edit.positions.is_empty()
+            && edit.arranged.is_empty()
+            && edit.canvas.is_empty()
+        {
             return;
         }
         self.undo.push(edit);

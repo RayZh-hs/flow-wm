@@ -120,7 +120,11 @@ pub enum CanvasAction {
     Select(Option<String>),
     Open(String),
     Add,
-    CreateVox,
+    CreateVox(Option<Position>),
+    Group,
+    Ungroup,
+    Text(Option<Position>),
+    EditAnnotation(String),
     Edit(String),
     Delete(Vec<String>),
     Run(String),
@@ -144,6 +148,10 @@ pub enum CanvasAction {
 }
 #[derive(Clone)]
 enum Drag {
+    Annotation {
+        item: crate::annotations::Annotation,
+        resize: bool,
+    },
     Node,
     Align,
     Pan {
@@ -165,6 +173,8 @@ enum Drag {
 }
 #[derive(Clone)]
 pub struct View {
+    pub annotation: Option<String>,
+    pub annotation_preview: Option<(String, super::collapse::Rect)>,
     pub gpu: bool,
     pub native_nodes: bool,
     pub local_windows: Option<HashSet<u64>>,
@@ -215,6 +225,8 @@ pub struct View {
 impl Default for View {
     fn default() -> Self {
         Self {
+            annotation: None,
+            annotation_preview: None,
             gpu: false,
             native_nodes: false,
             local_windows: None,
@@ -340,6 +352,7 @@ pub fn suspend(view: &Rc<RefCell<View>>) {
     view.numbers = false;
     view.previews.clear();
     view.drag = None;
+    view.annotation_preview = None;
     view.preview = None;
     view.empty_hover = None;
 }
@@ -555,7 +568,13 @@ impl View {
             .filter(|n| n.workspace == state.selected_workspace)
             .collect();
         let regions = super::regions::layout(state, self);
-        if nodes.is_empty() && regions.is_empty() {
+        let annotations: Vec<_> = state
+            .workspace()
+            .canvas
+            .iter()
+            .filter_map(|item| super::annotations::rect(item, state, self))
+            .collect();
+        if nodes.is_empty() && regions.is_empty() && annotations.is_empty() {
             self.zoom = 1.0;
             self.pan_x = 60.0;
             self.pan_y = 60.0;
@@ -582,6 +601,12 @@ impl View {
             min_y = min_y.min(r.rect.y);
             max_x = max_x.max(r.rect.x + r.rect.width);
             max_y = max_y.max(r.rect.y + r.rect.height);
+        }
+        for r in annotations {
+            min_x = min_x.min(r.x);
+            min_y = min_y.min(r.y);
+            max_x = max_x.max(r.x + r.width);
+            max_y = max_y.max(r.y + r.height);
         }
         self.zoom = ((width - FIT_PADDING) / (max_x - min_x))
             .min((height - FIT_PADDING) / (max_y - min_y))
@@ -979,6 +1004,33 @@ fn make_scoped(
         let hit = state.nodes.iter().rev().find(|n| {
             n.workspace == state.selected_workspace && contains(n, &view.position(n), x, y)
         });
+        if hit.is_none()
+            && let Some(item) = super::annotations::hit(&state, &view, x, y)
+        {
+            view.annotation = Some(item.id.clone());
+            view.selection = match &item.content {
+                crate::annotations::Content::Group { nodes } => nodes
+                    .iter()
+                    .filter(|id| {
+                        state
+                            .node(id)
+                            .is_some_and(|node| node.workspace == state.selected_workspace)
+                    })
+                    .cloned()
+                    .collect(),
+                _ => HashSet::new(),
+            };
+            view.selected = view.selection.iter().next().cloned();
+            let selected = view.selected.clone();
+            drop(view);
+            cb(CanvasAction::Select(selected));
+            if count == 2 {
+                cb(CanvasAction::EditAnnotation(item.id.clone()));
+            }
+            a.queue_draw();
+            return;
+        }
+        view.annotation = None;
         let additive = gesture
             .current_event_state()
             .intersects(gdk::ModifierType::SHIFT_MASK | gdk::ModifierType::CONTROL_MASK);
@@ -1055,6 +1107,17 @@ fn make_scoped(
         }
     });
     area.add_controller(click);
+    let context = gtk::GestureClick::new();
+    context.set_button(3);
+    let e = engine.clone();
+    let v = view.clone();
+    let cb = callback.clone();
+    let a = area.clone();
+    context.connect_pressed(move |gesture, _, x, y| {
+        super::context_menu::open(&a, &e, &v, cb.clone(), x, y);
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+    });
+    area.add_controller(context);
     let motion = gtk::EventControllerMotion::new();
     let e = engine.clone();
     let v = view.clone();
@@ -1062,6 +1125,32 @@ fn make_scoped(
     motion.connect_motion(move |_, x, y| {
         let hit = super::empty::hit(a.width() as f64, a.height() as f64, x, y);
         let hover = hit.filter(|_| !v.borrow().space_down && workspace_empty(&e.snapshot().state));
+        if !v.borrow().space_down {
+            let state = e.snapshot().state;
+            let view = v.borrow();
+            let (wx, wy) = view.world(x, y);
+            let cursor = super::annotations::hit(&state, &view, wx, wy)
+                .and_then(|item| {
+                    super::annotations::rect(item, &state, &view).map(|r| {
+                        if matches!(item.content, crate::annotations::Content::Text { .. })
+                            && wx > r.x + r.width - 18.
+                            && wy > r.y + r.height - 18.
+                        {
+                            "se-resize"
+                        } else if wy < r.y + 32. {
+                            "grab"
+                        } else {
+                            "default"
+                        }
+                    })
+                })
+                .unwrap_or(if hover.is_some() {
+                    "pointer"
+                } else {
+                    "default"
+                });
+            a.set_cursor_from_name(Some(cursor));
+        }
         if v.borrow().empty_hover != hover {
             v.borrow_mut().empty_hover = hover;
             a.set_cursor_from_name(Some(if hover.is_some() {
@@ -1151,6 +1240,22 @@ fn make_scoped(
                     Drag::Node
                 },
             );
+        } else if let Some(item) = super::annotations::hit(&state, &view, wx, wy).cloned() {
+            view.annotation = Some(item.id.clone());
+            if let crate::annotations::Content::Group { nodes } = &item.content {
+                view.origins = nodes
+                    .iter()
+                    .filter_map(|id| state.node(id))
+                    .filter(|node| node.workspace == state.selected_workspace)
+                    .map(|node| (node.id.clone(), view.position(node)))
+                    .collect();
+                view.selection = view.origins.keys().cloned().collect();
+                view.selected = view.selection.iter().next().cloned();
+                view.drag = Some(Drag::Node);
+            } else if let Some(r) = super::annotations::rect(&item, &state, &view) {
+                let resize = wx > r.x + r.width - 18. && wy > r.y + r.height - 18.;
+                view.drag = Some(Drag::Annotation { item, resize });
+            }
         } else {
             let additive = g
                 .current_event_state()
@@ -1172,6 +1277,19 @@ fn make_scoped(
     gesture.connect_drag_update(move |g, dx, dy| {
         let mut view = v.borrow_mut();
         match view.drag.clone() {
+            Some(Drag::Annotation { item, resize }) => {
+                let dx = dx / view.zoom;
+                let dy = dy / view.zoom;
+                view.annotation_preview = Some((
+                    item.id,
+                    super::collapse::Rect {
+                        x: item.position.x + if resize { 0. } else { dx },
+                        y: item.position.y + if resize { 0. } else { dy },
+                        width: (item.width + if resize { dx } else { 0. }).clamp(160., 20000.),
+                        height: (item.height + if resize { dy } else { 0. }).clamp(100., 20000.),
+                    },
+                ));
+            }
             Some(Drag::Align) => {
                 if dx.hypot(dy) >= 8. {
                     view.previews = super::layout::align_selection(
@@ -1254,6 +1372,16 @@ fn make_scoped(
         }
         let mut pending_search = None;
         match view.drag.take() {
+            Some(Drag::Annotation { mut item, .. }) => {
+                if let Some((_, r)) = view.annotation_preview.take() {
+                    item.position = Position { x: r.x, y: r.y };
+                    item.width = r.width;
+                    item.height = r.height;
+                    e.dispatch(Action::Canvas {
+                        edit: crate::annotations::Edit::Put { item },
+                    });
+                }
+            }
             Some(Drag::Pin { source, output }) => {
                 if let Some(other) = hit_pin(&state, &view, view.pointer.0, view.pointer.1, !output)
                 {
@@ -1546,6 +1674,7 @@ fn make_scoped(
         })
         .collect();
     key.connect_key_pressed(move |_, key, _, modifiers| {
+        if !a.has_focus() { return glib::Propagation::Proceed; }
         let selected = v.borrow().selected.clone();
         let state = e.snapshot().state;
         let alt = modifiers.contains(gdk::ModifierType::ALT_MASK);
@@ -1644,7 +1773,10 @@ fn make_scoped(
             Some("cut") => cb(CanvasAction::Copy(true)),
             Some("paste") => cb(CanvasAction::Paste),
             Some("duplicate") => cb(CanvasAction::Duplicate),
-            Some("create_vox") => cb(CanvasAction::CreateVox),
+            Some("create_vox") => cb(CanvasAction::CreateVox(None)),
+            Some("group") => cb(CanvasAction::Group),
+            Some("ungroup") => cb(CanvasAction::Ungroup),
+            Some("text") => cb(CanvasAction::Text(None)),
             Some("select_all") => {
                 v.borrow_mut().selection = state
                     .nodes
@@ -1660,6 +1792,11 @@ fn make_scoped(
                 if let Some(id) = selected {
                     cb(CanvasAction::Open(id));
                 }
+            }
+            Some("edit") if v.borrow().annotation.is_some() => {
+                cb(CanvasAction::EditAnnotation(
+                    v.borrow().annotation.clone().unwrap(),
+                ));
             }
             Some("edit") => {
                 if let Some(id) = selected {
@@ -1685,6 +1822,13 @@ fn make_scoped(
                 }
             }
             Some("clear_history") => cb(CanvasAction::ClearHistory),
+            Some("delete") if v.borrow().annotation.is_some() => {
+                let id = v.borrow_mut().annotation.take().unwrap();
+                e.dispatch(Action::Canvas {
+                    edit: crate::annotations::Edit::Remove { id },
+                });
+                a.queue_draw();
+            }
             Some("delete") => {
                 let mut ids = v.borrow().selection.clone();
                 ids.extend(selected);
@@ -1760,6 +1904,9 @@ fn contains(node: &Node, p: &Position, x: f64, y: f64) -> bool {
     x >= p.x && x <= p.x + WIDTH && y >= p.y - 8.0 && y <= p.y + node_height(node) + 8.0
 }
 fn workspace_empty(state: &State) -> bool {
+    if !state.workspace().canvas.is_empty() {
+        return false;
+    }
     if state.orchestration.as_ref().is_some_and(|runtime| {
         let id = flow_core::domain::WorkflowId(state.selected_workspace.clone());
         runtime
@@ -1820,6 +1967,7 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
     c.translate(view.pan_x, view.pan_y);
     c.scale(view.zoom, view.zoom);
     super::regions::draw(c, state, view);
+    super::annotations::draw(c, state, view);
     let nodes: Vec<_> = state
         .nodes
         .iter()
@@ -2032,7 +2180,8 @@ pub(super) fn has_foreground(view: &View) -> bool {
 }
 
 pub(super) fn has_graph_layer(state: &State, view: &View) -> bool {
-    !state.connections.is_empty()
+    !state.workspace().canvas.is_empty()
+        || !state.connections.is_empty()
         || !super::regions::layout(state, view).is_empty()
         || workspace_empty(state)
         || matches!(view.drag, Some(Drag::Pin { .. }))
@@ -2515,7 +2664,7 @@ fn pin_position(
         ))
     }
 }
-fn hit_pin(
+pub(super) fn hit_pin(
     state: &State,
     view: &View,
     x: f64,

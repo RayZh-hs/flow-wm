@@ -342,6 +342,8 @@ fn graph_key(width: i32, height: i32, state: &State, revision: u64, view: &View)
     let mut h = DefaultHasher::new();
     (width, height, revision, theme_key(view)).hash(&mut h);
     view.selected.hash(&mut h);
+    view.annotation.hash(&mut h);
+    if let Some((id, r)) = &view.annotation_preview { (id, r.x.to_bits(), r.y.to_bits(), r.width.to_bits(), r.height.to_bits()).hash(&mut h); }
     view.query.hash(&mut h);
     view.numbers.hash(&mut h);
     (
@@ -354,6 +356,9 @@ fn graph_key(width: i32, height: i32, state: &State, revision: u64, view: &View)
     for edge in &state.connections {
         linked.insert(edge.source.node.as_str());
         linked.insert(edge.target.node.as_str());
+    }
+    for item in &state.workspace().canvas {
+        if let crate::annotations::Content::Group { nodes } = &item.content { linked.extend(nodes.iter().map(String::as_str)); }
     }
 
     for node in state

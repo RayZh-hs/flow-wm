@@ -1,7 +1,9 @@
 mod background;
+mod annotations;
 mod canvas;
 mod collapse;
 mod code;
+mod context_menu;
 mod empty;
 mod environment;
 mod extension_settings;

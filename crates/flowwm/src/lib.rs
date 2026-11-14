@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod annotations;
 pub mod catalog;
 pub mod client;
 pub mod config;

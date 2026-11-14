@@ -23,6 +23,7 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
     for workflow in runtime.workflows.values() {
         if !state.workspaces.iter().any(|w| w.id == workflow.id.0) {
             state.workspaces.push(Workspace {
+                canvas: vec![],
                 id: workflow.id.0.clone(),
                 name: workflow.name.clone(),
                 cwd: std::path::PathBuf::from("."),

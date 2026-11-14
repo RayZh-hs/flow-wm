@@ -111,6 +111,9 @@ fn notify_default() -> bool {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Action {
+    Canvas {
+        edit: crate::annotations::Edit,
+    },
     Undo,
     Redo,
     MoveMany {
@@ -685,7 +688,8 @@ impl DesktopClient {
         };
         let record = matches!(
             &action,
-            Action::Create { .. }
+            Action::Canvas { .. }
+                | Action::Create { .. }
                 | Action::Update { .. }
                 | Action::Move { .. }
                 | Action::MoveMany { .. }
@@ -702,7 +706,8 @@ impl DesktopClient {
         );
         let refresh_runtime = !matches!(
             &action,
-            Action::Ui { .. }
+            Action::Canvas { .. }
+                | Action::Ui { .. }
                 | Action::Shutdown
                 | Action::Move { .. }
                 | Action::MoveMany { .. }
@@ -779,6 +784,9 @@ impl DesktopClient {
                 })?;
                 result = json!({"id":node.id});
                 state.nodes.push(*node);
+            }
+            Action::Canvas { edit } => {
+                result = json!({"id":crate::annotations::apply(&mut state, edit)?});
             }
             Action::Update { node } => {
                 let mut spec = node.spec();
@@ -1072,6 +1080,7 @@ impl DesktopClient {
                     },
                 })?;
                 state.workspaces.push(Workspace {
+                    canvas: vec![],
                     id: id.clone(),
                     name,
                     cwd,
@@ -1318,6 +1327,16 @@ impl DesktopClient {
         Ok(result)
     }
     fn paste(&self, state: &mut State, mut recipe: Recipe, offset: Position) -> Result<Value> {
+        for item in &mut recipe.canvas {
+            item.position.x += offset.x;
+            item.position.y += offset.y;
+        }
+        let previous_items: std::collections::HashSet<_> = state
+            .workspace()
+            .canvas
+            .iter()
+            .map(|item| item.id.clone())
+            .collect();
         for node in &mut recipe.nodes {
             node.position.x += offset.x;
             node.position.y += offset.y;
@@ -1336,12 +1355,21 @@ impl DesktopClient {
             .filter(|e| ids.contains(&e.source.node) && ids.contains(&e.target.node))
             .cloned()
             .collect();
-        self.edit_graph(&workflow, |g| {
-            g.nodes.extend(nodes);
-            g.connections.extend(edges);
-            Ok(())
-        })?;
-        Ok(json!({"ids":ids}))
+        if !nodes.is_empty() {
+            self.edit_graph(&workflow, |g| {
+                g.nodes.extend(nodes);
+                g.connections.extend(edges);
+                Ok(())
+            })?;
+        }
+        let canvas_ids: Vec<_> = state
+            .workspace()
+            .canvas
+            .iter()
+            .filter(|item| !previous_items.contains(&item.id))
+            .map(|item| &item.id)
+            .collect();
+        Ok(json!({"ids":ids,"canvas_ids":canvas_ids}))
     }
     fn synchronize(&self, state: &mut State, _desktop: &crate::niri::Desktop) -> Result<()> {
         crate::desktop_provider::bindings_at(&self.inner.provider_socket)?.apply(state);
