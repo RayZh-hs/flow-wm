@@ -707,3 +707,84 @@ fn alert_nodes_evaluate_their_message_lazily_and_emit_only_when_triggered() {
         "The alert provider must complete before downstream work starts"
     );
 }
+
+#[test]
+fn template_ports_follow_connections_and_reset_after_disconnect() {
+    let mut state = State::empty("/tmp".into());
+    let source = node(&mut state, NodeKind::Window);
+    let split = node(&mut state, NodeKind::BreakSignal);
+    let display = node(&mut state, NodeKind::Display);
+    let tail = node(&mut state, NodeKind::Display);
+    wire(&mut state, &source, "on_exit", &split, "in");
+    wire(&mut state, &split, "args", &display, "value");
+    wire(&mut state, &display, "value", &tail, "value");
+    let expected = Type::Record {
+        fields: [("exit_code".into(), Type::UInt8)].into(),
+        open: false,
+    };
+    assert_eq!(
+        pins(&state, state.node(&split).unwrap(), true)[1].ty,
+        expected
+    );
+    for id in [&display, &tail] {
+        for output in [false, true] {
+            assert_eq!(
+                pins(&state, state.node(id).unwrap(), output)[0].ty,
+                expected
+            );
+            assert_eq!(
+                flow_core::graph::pins(&state.graph(), &state.node(id).unwrap().spec(), output)[0]
+                    .ty,
+                expected
+            );
+        }
+    }
+    state.connections.retain(|edge| edge.target.node != split);
+    assert_eq!(
+        pins(&state, state.node(&split).unwrap(), true)[1].ty,
+        Type::record()
+    );
+    state.connections.clear();
+    assert_eq!(
+        pins(&state, state.node(&tail).unwrap(), true)[0].ty,
+        Type::Any
+    );
+}
+
+#[test]
+fn specializing_a_display_revalidates_existing_downstream_edges() {
+    let mut state = State::empty("/tmp".into());
+    let source = node(&mut state, NodeKind::Constant);
+    state
+        .node_mut(&source)
+        .unwrap()
+        .flow
+        .properties
+        .insert("value".into(), json!({"code": 0}));
+    let display = node(&mut state, NodeKind::Display);
+    let sink = node(&mut state, NodeKind::Vox);
+    state
+        .node_mut(&sink)
+        .unwrap()
+        .flow
+        .inputs
+        .push(Pin::new("flag", Type::Bool));
+    wire(&mut state, &display, "value", &sink, "flag");
+    assert!(
+        connect(
+            &mut state,
+            Connection {
+                source: Endpoint {
+                    node: source,
+                    pin: "value".into()
+                },
+                target: Endpoint {
+                    node: display,
+                    pin: "value".into()
+                },
+            }
+        )
+        .is_err()
+    );
+    assert_eq!(state.connections.len(), 1);
+}

@@ -65,11 +65,29 @@ pub fn type_id(node: &Node) -> &str {
     }
 }
 pub fn pins(state: &State, node: &Node, output: bool) -> Vec<Pin> {
-    let spec = node.spec();
-    flow_core::graph::pins_for(
-        &spec,
-        state.node_types.iter().find(|d| d.id == spec.type_id),
+    flow_core::graph::specialized_pins(
+        &node.id,
         output,
+        &state.connections,
+        &|id, output| {
+            state
+                .node(id)
+                .map(|node| {
+                    let spec = node.spec();
+                    flow_core::graph::pins_for(
+                        &spec,
+                        state.node_types.iter().find(|d| d.id == spec.type_id),
+                        output,
+                    )
+                })
+                .unwrap_or_default()
+        },
+        &|id| {
+            state
+                .node(id)
+                .map(|node| type_id(node).to_owned())
+                .unwrap_or_default()
+        },
     )
 }
 pub fn constant_type(node: &Node) -> Type {

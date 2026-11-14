@@ -1,10 +1,12 @@
 //! Typed pins, extension definitions, and the Vox graph evaluator.
 mod bindings;
 mod runtime;
+mod specialize;
 mod types;
 
 pub use runtime::{Activation, Evaluation, evaluate, validate_signal_args};
 pub use runtime::{EvaluationContext, ScriptEvaluator, evaluate_input_with, evaluate_with};
+pub use specialize::specialized_pins;
 pub use types::*;
 
 use crate::domain::{FlowNet, NodeSpec as Node};
@@ -56,10 +58,22 @@ pub fn infer_type(value: &Value) -> Type {
         Value::Number(n) if n.is_u64() => Type::UInt,
         Value::Number(_) => Type::Float,
         Value::String(_) => Type::String,
-        Value::Array(_) => Type::List {
-            item: Box::new(Type::Any),
+        Value::Array(values) => Type::List {
+            item: Box::new(
+                values
+                    .first()
+                    .map(infer_type)
+                    .filter(|ty| values.iter().all(|v| infer_type(v) == *ty))
+                    .unwrap_or(Type::Any),
+            ),
         },
-        Value::Object(_) => Type::record(),
+        Value::Object(values) => Type::Record {
+            fields: values
+                .iter()
+                .map(|(name, value)| (name.clone(), infer_type(value)))
+                .collect(),
+            open: false,
+        },
         _ => Type::Any,
     }
 }
@@ -140,10 +154,35 @@ pub fn type_id(node: &Node) -> &str {
 }
 
 pub fn pins(state: &FlowNet, node: &Node, output: bool) -> Vec<Pin> {
-    pins_for(
-        node,
-        state.node_types.iter().find(|d| d.id == node.type_id),
+    if state.node(&node.id.0).is_none() {
+        return pins_for(
+            node,
+            state.node_types.iter().find(|d| d.id == node.type_id),
+            output,
+        );
+    }
+    specialized_pins(
+        &node.id.0,
         output,
+        &state.connections,
+        &|id, output| {
+            state
+                .node(id)
+                .map(|node| {
+                    pins_for(
+                        node,
+                        state.node_types.iter().find(|d| d.id == node.type_id),
+                        output,
+                    )
+                })
+                .unwrap_or_default()
+        },
+        &|id| {
+            state
+                .node(id)
+                .map(|node| type_id(node).to_owned())
+                .unwrap_or_default()
+        },
     )
 }
 /// Inspect a single node without cloning a graph or requiring its other instances.
