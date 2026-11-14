@@ -44,9 +44,31 @@ click either screenshot for the full image.
 
 ## Getting started
 
-FlowWM currently builds from source on Linux. You need a working Wayland graphics
-stack, a systemd user session, and the [build and runtime dependencies](docs/guide.md#install).
-From a checkout of this repository:
+FlowWM currently builds from source on Linux. From your regular user account in a
+working systemd login session, run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/RayZh-hs/flow-wm/main/install.sh | bash
+```
+
+The script installs build and desktop dependencies with pacman, apt, or dnf,
+prepares Rust if needed, downloads FlowWM, and builds an installed snapshot.
+Package installation uses `sudo` and asks for confirmation; on Arch it includes
+a full system upgrade. Your Wayland graphics stack must already work. Sources and
+builds stay in `${XDG_CACHE_HOME:-~/.cache}/flowwm/source` for future updates.
+See the [installation guide](docs/guide.md#install) for requirements, other Linux
+distributions, and installer options, or download the script to inspect it first.
+
+**Arch dependency note:** install `gtk4-layer-shell` from the official **Extra**
+repository. `gtk4-layer-shell-0` is its pkg-config module name, not an AUR package:
+
+```sh
+sudo pacman -Syu --needed gtk4-layer-shell
+pkg-config --modversion gtk4-layer-shell-0
+```
+
+To build from an existing checkout after installing the
+[dependencies](docs/guide.md#install):
 
 ```sh
 python3 scripts/components.py bootstrap

@@ -14,7 +14,80 @@ FlowWM is under active development. Review commands in workflow nodes before run
 
 ## Install
 
-The complete desktop requires Linux, a working Wayland graphics stack, a session supervisor (the installer supplies systemd user units), Python 3.11+, Rust 1.92+ with Cargo, Go as specified in [DMS's go.mod](../components/dms/core/go.mod), and Quickshell. Native build dependencies include GTK 4.14+, gtk4-layer-shell, pkg-config, Cairo/Pango, Wayland, libxkbcommon, libinput, libdisplay-info, libgbm, libseat, systemd/libudev, and PipeWire. The compositor's [build definition](../components/niri/flake.nix) lists its native dependencies. Dux's [manual installation guide](https://duxlabs.dev/docs/dms/installation) covers its runtime packages. Install at least one terminal such as Foot, Alacritty, or Kitty.
+The complete desktop requires Linux, a working Wayland graphics stack, a running systemd user session, Python 3.11+, Rust 1.92+ with Cargo, Go as specified in [DMS's go.mod](../components/dms/core/go.mod), and Quickshell (`qs`). Go 1.21+ can download the required toolchain automatically; if you set `GOTOOLCHAIN=local`, install the matching version yourself. Native build dependencies include a C/C++ compiler, Clang/libclang, make, GTK 4.14+, gtk4-layer-shell 1.0+, pkg-config, Cairo/Pango, Wayland, libxkbcommon, libinput, libdisplay-info, libgbm/EGL/GLES, libseat, systemd/libudev, D-Bus, Pixman, and PipeWire. The compositor's [build definition](../components/niri/flake.nix) lists its native dependencies. Dux's [manual installation guide](https://duxlabs.dev/docs/dms/installation) covers its runtime packages. Install at least one terminal such as Foot, Alacritty, or Kitty.
+
+### One-line installation
+
+Run from your regular user account, without putting `sudo` before `bash`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/RayZh-hs/flow-wm/main/install.sh | bash
+```
+
+The [bootstrap script](../install.sh) installs distribution packages through
+pacman, apt-get, or dnf, prepares the required Rust toolchain with rustup if your
+current compiler is missing or too old, initializes pinned component submodules,
+and calls the snapshot installer. Package managers retain their confirmation
+prompts; `sudo` is used only for system packages. **On Arch this runs
+`pacman -Syu`, including a full system upgrade.** The bootstrap checks native
+library versions, Quickshell, and the user session before compiling.
+
+Use a recent distribution whose configured repositories provide the required
+libraries and Quickshell. Older releases may lack GTK 4.14+ or GTK4 Layer Shell.
+If a package is unavailable, follow your distribution's packaging instructions
+and the [Dux dependency guide](https://duxlabs.dev/docs/dms/installation), then
+rerun. The script uses your configured repositories. On other distributions,
+install the development and runtime dependencies yourself and use `--skip-deps`.
+
+Sources and build caches default to `$XDG_CACHE_HOME/flowwm/source` (normally
+`~/.cache/flowwm/source`). Rerunning the command fast-forwards that checkout and
+installs a new snapshot for the next login. Existing source checkouts must have
+the expected origin and no local changes. A divergent or older Git ref requires
+a separate source directory. Your FlowWM settings are preserved by the snapshot
+installer.
+
+To inspect the script and choose options:
+
+```sh
+curl -fL https://raw.githubusercontent.com/RayZh-hs/flow-wm/main/install.sh -o flowwm-install.sh
+less flowwm-install.sh
+bash flowwm-install.sh --help
+bash flowwm-install.sh --skip-deps --source-dir "$HOME/src/flow-wm" --ref main
+```
+
+`--skip-deps` checks requirements without installing system packages or Rust.
+`--yes` accepts package manager transactions; sudo may still need a password.
+Options also work with a pipe:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/RayZh-hs/flow-wm/main/install.sh | bash -s -- --skip-deps
+```
+
+### GTK4 Layer Shell package names
+
+`gtk4-layer-shell-0` is the **pkg-config module** requested by the Rust build.
+Install the distribution's development package that provides it:
+
+| Distribution | Package |
+| --- | --- |
+| Arch Linux | [`gtk4-layer-shell`](https://archlinux.org/packages/extra/x86_64/gtk4-layer-shell/) in **Extra**; no AUR helper needed |
+| Debian / Ubuntu (where available) | `libgtk4-layer-shell-dev` |
+| Fedora | `gtk4-layer-shell-devel` |
+
+Arch's [package file list](https://archlinux.org/packages/extra/x86_64/gtk4-layer-shell/files/)
+includes `/usr/lib/pkgconfig/gtk4-layer-shell-0.pc`. On Arch:
+
+```sh
+sudo pacman -Syu --needed gtk4-layer-shell
+pkg-config --modversion gtk4-layer-shell-0
+```
+
+The reported version must be at least 1.0. GTK3's `gtk-layer-shell` is a separate
+library. For a library installed to a custom prefix, make its `.pc` directory
+available through `PKG_CONFIG_PATH` and its shared library through your loader's
+search path.
+
+### From a checkout
 
 From a checkout of this repository:
 
