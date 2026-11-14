@@ -226,6 +226,15 @@ def run():
                     state()["nodes"][0]["command"] == "{ value = inputs.payload.code, }"
                 )
             )
+            # Hover an actual canvas output port without changing the graph.
+            focus_canvas()
+            ui("fit")
+            time.sleep(0.5)
+            xd("mousemove", round(700 + 146 * 1.2), 485)
+            time.sleep(0.15)
+            ui("capture", path=str(ART / "vox-port-hover.png"))
+            assert state()["nodes"][0]["command"] == "{ value = inputs.payload.code, }"
+            xd("mousemove", 1100, 750)
             # Create and edit a note, then group a second node with the first.
             focus_canvas()
             xd("key", "ctrl+t")
