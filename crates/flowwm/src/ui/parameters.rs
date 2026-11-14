@@ -557,6 +557,7 @@ impl PinEditor {
     fn new(state: &State, node: &Node) -> Self {
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 8);
         let expander = gtk::Expander::new(Some("Custom pins"));
+        expander.set_expanded(node.kind == NodeKind::Vox);
         let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
         expander.set_child(Some(&body));
         widget.append(&expander);

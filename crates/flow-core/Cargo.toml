@@ -10,3 +10,4 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 vox-core = { path = "../../vendor/vox/crates/vox-core" }
 vox-runtime = { path = "../../vendor/vox/crates/vox-runtime" }
+vox-compiler = { path = "../../vendor/vox/crates/vox-compiler" }

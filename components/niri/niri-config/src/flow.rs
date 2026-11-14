@@ -161,6 +161,9 @@ impl Flow {
             if !matches!(
                 bind.action.as_str(),
                 "none"
+                    | "create_vox"
+                    | "complete_code"
+                    | "save_code"
                     | "zoom_in"
                     | "zoom_out"
                     | "connect"

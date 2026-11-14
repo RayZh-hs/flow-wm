@@ -3,11 +3,13 @@ mod bindings;
 mod runtime;
 mod specialize;
 mod types;
+mod vox;
 
 pub use runtime::{Activation, Evaluation, evaluate, validate_signal_args};
 pub use runtime::{EvaluationContext, ScriptEvaluator, evaluate_input_with, evaluate_with};
 pub use specialize::specialized_pins;
 pub use types::*;
+pub use vox::{vox_outputs, vox_syntax_error};
 
 use crate::domain::{FlowNet, NodeSpec as Node};
 use anyhow::{Context, Result, ensure};
@@ -182,6 +184,14 @@ pub fn pins(state: &FlowNet, node: &Node, output: bool) -> Vec<Pin> {
                 .node(id)
                 .map(|node| type_id(node).to_owned())
                 .unwrap_or_default()
+        },
+        &|id| {
+            state
+                .node(id)
+                .and_then(|node| node.flow.properties.get("command"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
         },
     )
 }

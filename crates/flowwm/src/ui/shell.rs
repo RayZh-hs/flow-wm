@@ -658,6 +658,11 @@ impl Shell {
             CanvasAction::Select(id) => self.select(id),
             CanvasAction::Open(id) => self.open(&id),
             CanvasAction::Add => self.palette(),
+            CanvasAction::CreateVox => {
+                if let Some(index) = self.macros.iter().position(|m| m.id == "vox") {
+                    self.create_macro(index);
+                }
+            }
             CanvasAction::Edit(id) => self.edit(&id),
             CanvasAction::Delete(ids) => self.engine.dispatch(Action::DeleteMany { ids }),
             CanvasAction::Run(id) => self.engine.dispatch(Action::Run {
@@ -678,7 +683,19 @@ impl Shell {
                 self.copy_selection(false);
                 self.paste_selection();
             }
-            CanvasAction::EditValue(id) => self.edit_value(&id),
+            CanvasAction::EditValue(id) => {
+                if self
+                    .engine
+                    .snapshot()
+                    .state
+                    .node(&id)
+                    .is_some_and(|node| node.kind == NodeKind::Vox)
+                {
+                    self.edit_code(&id);
+                } else {
+                    self.edit_value(&id);
+                }
+            }
             CanvasAction::Search => self.search_nodes(),
             CanvasAction::Help => self.help(),
             CanvasAction::ClearHistory => self.engine.dispatch(Action::ClearHistory),
@@ -2743,6 +2760,10 @@ impl Shell {
             self.edit_value(id);
             return;
         }
+        if node.kind == NodeKind::Vox {
+            self.edit_code(id);
+            return;
+        }
         if flow_builtins::agent::is_session(&node.spec().type_id) && node.window_id.is_none() {
             if let Err(error) = self.engine.open_window(id) {
                 self.show_error(&format!("Open agent terminal: {error:#}"));
@@ -3455,11 +3476,154 @@ impl Shell {
             Err(error) => self.show_error(&error.to_string()),
         }
     }
+    fn edit_code(&self, id: &str) {
+        let state = self.engine.snapshot().state;
+        let Some(node) = state.node(id).cloned() else {
+            return;
+        };
+        if node.status.active() {
+            self.show_error("Stop this node before editing its code.");
+            return;
+        }
+        self.canvas().dismiss_popovers();
+        let popup = gtk::Popover::new();
+        popup.set_parent(&self.canvas());
+        popup.set_has_arrow(false);
+        popup.set_autohide(false);
+        let view = self.view.borrow();
+        let p = view.position(&node);
+        popup.set_pointing_to(Some(&gdk::Rectangle::new(
+            (p.x * view.zoom + view.pan_x) as i32,
+            ((p.y + 70.) * view.zoom + view.pan_y) as i32,
+            (canvas::WIDTH * view.zoom) as i32,
+            1,
+        )));
+        drop(view);
+        let body = column(10);
+        body.add_css_class("dialog-body");
+        let title = entry(&node.title);
+        body.append(&title);
+        let editor = gtk::TextView::new();
+        editor.set_monospace(true);
+        editor.set_wrap_mode(gtk::WrapMode::None);
+        editor.set_top_margin(10);
+        editor.set_bottom_margin(10);
+        editor.set_left_margin(10);
+        editor.set_right_margin(10);
+        editor.buffer().set_text(&node.command);
+        editor.add_css_class("code-editor");
+        let fields = Rc::new(super::parameters::Fields::new(&state, &node));
+        let f = fields.clone();
+        let draft = (*state).clone();
+        let original = node.clone();
+        super::code::attach(
+            &editor,
+            &self.view.borrow().theme,
+            Rc::new(move || {
+                let mut node = original.clone();
+                let _ = f.apply(&mut node);
+                // Resolve the draft's added fields against the existing connections.
+                let mut draft = draft.clone();
+                *draft.node_mut(&node.id).unwrap() = node.clone();
+                crate::graph::pins(&draft, &node, false)
+            }),
+        );
+        let code_scroll = gtk::ScrolledWindow::builder()
+            .min_content_height(220)
+            .min_content_width(580)
+            .vexpand(true)
+            .child(&editor)
+            .build();
+        let fields_scroll = gtk::ScrolledWindow::builder()
+            .min_content_height(120)
+            .max_content_height(220)
+            .propagate_natural_height(true)
+            .child(&fields.widget)
+            .build();
+        let split = gtk::Paned::new(gtk::Orientation::Vertical);
+        split.set_start_child(Some(&code_scroll));
+        split.set_end_child(Some(&fields_scroll));
+        split.set_shrink_start_child(false);
+        split.set_shrink_end_child(false);
+        body.append(&split);
+        let error = label("", "error");
+        error.set_wrap(true);
+        body.append(&error);
+        let diagnostics = error.clone();
+        editor.buffer().connect_changed(move |buffer| {
+            let source = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+            diagnostics.set_text(&crate::graph::vox_syntax_error(&source).unwrap_or_default());
+        });
+        let actions = row(8);
+        let cancel = gtk::Button::with_label("Cancel");
+        let save = gtk::Button::with_label("Apply code and IO");
+        save.add_css_class("accent");
+        actions.append(&cancel);
+        actions.append(&save);
+        body.append(&actions);
+        popup.set_child(Some(&body));
+        let p = popup.downgrade();
+        cancel.connect_clicked(move |_| {
+            if let Some(popup) = p.upgrade() {
+                popup.popdown();
+            }
+        });
+        let p = popup.downgrade();
+        let engine = self.engine.clone();
+        let b = editor.buffer();
+        save.connect_clicked(move |_| {
+            let mut node = node.clone();
+            node.title = title.text().into();
+            node.command = b.text(&b.start_iter(), &b.end_iter(), true).into();
+            if let Some(message) = crate::graph::vox_syntax_error(&node.command) {
+                error.set_text(&message);
+                return;
+            }
+            let result = fields.apply(&mut node).and_then(|_| {
+                engine.request(Action::Update {
+                    node: Box::new(node),
+                })
+            });
+            match result {
+                Ok(_) => {
+                    if let Some(popup) = p.upgrade() {
+                        popup.popdown();
+                    }
+                }
+                Err(failure) => error.set_text(&failure.to_string()),
+            }
+        });
+        let key = gtk::EventControllerKey::new();
+        let bindings = crate::config::shortcuts();
+        let p = popup.downgrade();
+        key.connect_key_pressed(move |_, key, _, modifiers| {
+            if crate::config::matches_graph_action(&bindings, "save_code", key, modifiers) {
+                save.emit_clicked();
+                glib::Propagation::Stop
+            } else if crate::config::matches_graph_action(&bindings, "escape", key, modifiers) {
+                if let Some(popup) = p.upgrade() {
+                    popup.popdown();
+                }
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        body.add_controller(key);
+        popup.connect_closed(|popup| popup.unparent());
+        popup.popup();
+        editor.grab_focus();
+    }
+
     fn edit(&self, id: &str) {
         let state = self.engine.snapshot().state;
         let Some(node) = state.node(id).cloned() else {
             return;
         };
+        if node.kind == NodeKind::Vox {
+            self.edit_code(id);
+            return;
+        }
         let supervised = flow_builtins::agent::is_session(&node.spec().type_id)
             && !flow_builtins::agent::is_interactive(&node.spec().type_id);
         if node.status.active()

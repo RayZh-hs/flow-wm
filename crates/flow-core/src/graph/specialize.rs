@@ -8,16 +8,27 @@ pub fn specialized_pins(
     connections: &[Connection],
     declared: &impl Fn(&str, bool) -> Vec<Pin>,
     kind: &impl Fn(&str) -> String,
+    source: &impl Fn(&str) -> String,
 ) -> Vec<Pin> {
-    resolve(id, output, connections, declared, kind, &mut HashSet::new())
+    resolve(
+        id,
+        output,
+        connections,
+        declared,
+        kind,
+        source,
+        &mut HashSet::new(),
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve(
     id: &str,
     output: bool,
     connections: &[Connection],
     declared: &impl Fn(&str, bool) -> Vec<Pin>,
     kind: &impl Fn(&str) -> String,
+    source: &impl Fn(&str) -> String,
     active: &mut HashSet<(String, bool)>,
 ) -> Vec<Pin> {
     let mut pins = declared(id, output);
@@ -30,10 +41,18 @@ fn resolve(
             .iter()
             .filter(|edge| edge.target.node == id && edge.target.pin == name)
             .filter_map(|edge| {
-                resolve(&edge.source.node, true, connections, declared, kind, active)
-                    .into_iter()
-                    .find(|pin| pin.name == edge.source.pin)
-                    .map(|pin| pin.ty)
+                resolve(
+                    &edge.source.node,
+                    true,
+                    connections,
+                    declared,
+                    kind,
+                    source,
+                    active,
+                )
+                .into_iter()
+                .find(|pin| pin.name == edge.source.pin)
+                .map(|pin| pin.ty)
             })
             .collect();
         let first = types.first()?.clone();
@@ -122,6 +141,23 @@ fn resolve(
                 && !output
             {
                 pin.default = None;
+            }
+        }
+    }
+    if output && node_kind == "vox" {
+        let inputs = resolve(id, false, connections, declared, kind, source, active);
+        if let Some(fields) = super::vox_outputs(&source(id), &inputs) {
+            pins.retain(|pin| {
+                pin.name != "value" || pin.ty != Type::Any || fields.contains_key("value")
+            });
+            for (name, ty) in fields {
+                if let Some(pin) = pins.iter_mut().find(|pin| pin.name == name) {
+                    if pin.ty == Type::Any {
+                        pin.ty = ty;
+                    }
+                } else {
+                    pins.push(Pin::new(&name, ty));
+                }
             }
         }
     }

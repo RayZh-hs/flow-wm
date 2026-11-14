@@ -103,6 +103,24 @@ pub fn graph_accelerator(key: &str) -> String {
     result
 }
 
+pub fn matches_graph_action(
+    shortcuts: &[Shortcut],
+    action: &str,
+    key: gtk::gdk::Key,
+    modifiers: gtk::gdk::ModifierType,
+) -> bool {
+    shortcuts
+        .iter()
+        .filter(|shortcut| shortcut.scope == "graph" && shortcut.action == action)
+        .flat_map(|shortcut| &shortcut.keys)
+        .any(|binding| {
+            gtk::accelerator_parse(graph_accelerator(binding)).is_some_and(|(expected, mods)| {
+                key.to_lower() == expected.to_lower()
+                    && modifiers & gtk::accelerator_get_default_mod_mask() == mods
+            })
+        })
+}
+
 pub fn shortcuts() -> Vec<Shortcut> {
     let config = match load() {
         Ok(config) => config,

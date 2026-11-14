@@ -1,6 +1,7 @@
 mod background;
 mod canvas;
 mod collapse;
+mod code;
 mod empty;
 mod environment;
 mod extension_settings;

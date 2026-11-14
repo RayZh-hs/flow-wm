@@ -25,6 +25,8 @@ pub fn node_height(node: &Node) -> f64 {
         super::layout::CLOSED_HEIGHT
     } else if node.kind == NodeKind::Window || node.window_id.is_some() {
         HEIGHT + 120.0
+    } else if node.kind == NodeKind::Vox {
+        280.
     } else {
         HEIGHT
     }
@@ -118,6 +120,7 @@ pub enum CanvasAction {
     Select(Option<String>),
     Open(String),
     Add,
+    CreateVox,
     Edit(String),
     Delete(Vec<String>),
     Run(String),
@@ -999,10 +1002,10 @@ fn make_scoped(
         let selected = view.selected.clone();
         let inline = hit
             .filter(|n| {
-                n.kind == NodeKind::Constant
+                matches!(n.kind, NodeKind::Constant | NodeKind::Vox)
                     && n.flow.editable_in_graph
                     && y > view.position(n).y + 70.
-                    && y < view.position(n).y + 112.
+                    && y < view.position(n).y + node_height(n) - 40.
             })
             .map(|n| n.id.clone());
         let background = hit.is_none();
@@ -1641,6 +1644,7 @@ fn make_scoped(
             Some("cut") => cb(CanvasAction::Copy(true)),
             Some("paste") => cb(CanvasAction::Paste),
             Some("duplicate") => cb(CanvasAction::Duplicate),
+            Some("create_vox") => cb(CanvasAction::CreateVox),
             Some("select_all") => {
                 v.borrow_mut().selection = state
                     .nodes
@@ -2297,7 +2301,19 @@ fn draw_node_with_border(c: &Context, n: &Node, p: &Position, selection: f64, th
     if n.closed_window() {
         return;
     }
-    if n.kind == NodeKind::Metric && !n.metric.samples.is_empty() {
+    if n.kind == NodeKind::Vox {
+        let _ = c.save();
+        c.rectangle(x + 16., y + 76., WIDTH - 32., height - 118.);
+        c.clip();
+        let layout = text_layout(c, "", 10.5, true);
+        layout.set_single_paragraph_mode(false);
+        layout.set_width(((WIDTH - 34.) * pango::SCALE as f64) as i32);
+        layout.set_wrap(pango::WrapMode::WordChar);
+        layout.set_markup(&super::code::markup(&n.command, theme));
+        c.move_to(x + 17., y + 76.);
+        pangocairo::functions::show_layout(c, &layout);
+        let _ = c.restore();
+    } else if n.kind == NodeKind::Metric && !n.metric.samples.is_empty() {
         let value = n.metric.samples.last().unwrap().value;
         text(
             c,

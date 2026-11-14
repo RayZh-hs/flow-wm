@@ -88,6 +88,12 @@ pub fn pins(state: &State, node: &Node, output: bool) -> Vec<Pin> {
                 .map(|node| type_id(node).to_owned())
                 .unwrap_or_default()
         },
+        &|id| {
+            state
+                .node(id)
+                .map(|node| node.command.clone())
+                .unwrap_or_default()
+        },
     )
 }
 pub fn constant_type(node: &Node) -> Type {

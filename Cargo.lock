@@ -722,6 +722,7 @@ dependencies = [
  "serde",
  "serde_json",
  "uuid",
+ "vox-compiler",
  "vox-core",
  "vox-runtime",
 ]

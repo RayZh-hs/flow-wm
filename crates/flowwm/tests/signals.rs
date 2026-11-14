@@ -788,3 +788,48 @@ fn specializing_a_display_revalidates_existing_downstream_edges() {
     );
     assert_eq!(state.connections.len(), 1);
 }
+
+#[test]
+fn vox_outputs_infer_record_fields_from_code_connections_and_signal_arguments() {
+    let mut state = State::empty("/tmp".into());
+    let constant = node(&mut state, NodeKind::Constant);
+    state
+        .node_mut(&constant)
+        .unwrap()
+        .flow
+        .properties
+        .insert("value".into(), json!(40));
+    let window = node(&mut state, NodeKind::Window);
+    let script = node(&mut state, NodeKind::Vox);
+    state.node_mut(&script).unwrap().command =
+        "{ val next = inputs.x + 2; { result = next, code = args.exit_code, text = \"你好\", } }"
+            .into();
+    state
+        .node_mut(&script)
+        .unwrap()
+        .flow
+        .inputs
+        .push(Pin::new("x", Type::Any));
+    wire(&mut state, &constant, "value", &script, "x");
+    wire(&mut state, &window, "on_exit", &script, "in");
+    let schema = pins(&state, state.node(&script).unwrap(), true);
+    for (name, ty) in [
+        ("result", Type::Int),
+        ("code", Type::UInt8),
+        ("text", Type::String),
+    ] {
+        assert_eq!(schema.iter().find(|pin| pin.name == name).unwrap().ty, ty);
+    }
+    assert!(!schema.iter().any(|pin| pin.name == "value"));
+    assert_eq!(
+        pins(&state, state.node(&script).unwrap(), false)
+            .iter()
+            .find(|pin| pin.name == "x")
+            .unwrap()
+            .ty,
+        Type::Int
+    );
+    let result = run(state, &window, Some(("on_exit", json!({"exit_code":0}))));
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    assert_eq!(result.values[&script]["result"], 42);
+}
