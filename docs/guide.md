@@ -291,6 +291,14 @@ Graph keys use niri's key names and modifiers. `action="none"` disables a graph 
 
 When an application window moves to another compositor row, its node moves with it using the same ID and attachment token. Connections to nodes left on the old row detach, and those nodes stay in place.
 
+Unnamed rows stay alive while they contain windows or workflow nodes, including
+nodes hidden in Windows view. After removing the last window and node, leave the
+row to let niri remove it. The empty trailing row remains available for new work;
+explicitly named rows stay in place when empty.
+Rows named automatically by older FlowWM versions retain their names; clear the
+workspace name once with `niri msg action unset-workspace-name` while focused on
+that row to restore automatic cleanup.
+
 `arrange-wrap-zoom` accepts values from `0.0` to `1.0`. Lower values keep more cards on each row before wrapping; `0.0` disables wrapping. The default `0.4` keeps six windows on one row even in a 1200-pixel-wide canvas. Arrange always zooms and centers the complete graph, including when starting from a single-node focus or a panned view.
 
 Running nodes use a green backdrop tint, including the headers and footers of live window cards. `running-color` sets the tint color, and `running-opacity` controls its strength from `0.0` (disabled) to `1.0` (solid), defaulting to `0.17`. Window previews and selection outlines retain their own colors. The former `running-width` setting is still accepted for compatibility: zero disables the tint when `running-opacity` is omitted; other widths use the default tint strength.

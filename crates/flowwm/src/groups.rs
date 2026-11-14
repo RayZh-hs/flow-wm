@@ -37,12 +37,22 @@ pub(crate) fn synchronize_with_processes(
     }
     let mut changed = false;
     let previous_session = state.workspace().row.as_ref().map(|b| b.session.clone());
+    let node_workspaces: HashSet<_> = state.nodes.iter().map(|n| n.workspace.as_str()).collect();
+    let node_rows: HashSet<_> = state
+        .workspaces
+        .iter()
+        .filter(|w| node_workspaces.contains(w.id.as_str()))
+        .filter_map(|w| w.row.as_ref())
+        .filter(|r| r.session == desktop.session)
+        .map(|r| r.id)
+        .collect();
     let mut rows: Vec<_> = desktop
         .workspaces
         .iter()
         .filter(|row| {
             row.is_focused
                 || row.name.is_some()
+                || node_rows.contains(&row.id)
                 || desktop
                     .windows
                     .iter()

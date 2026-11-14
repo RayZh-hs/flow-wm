@@ -49,6 +49,8 @@ pub struct Workspace<W: LayoutElement> {
     /// Native alternate presentation of this workspace's tiles.
     pub(crate) node_tile: Option<crate::node_row::NodeTile>,
     pub(crate) pending_node_scene: Option<niri_ipc::node_row::NodeRowScene>,
+    /// Workflow content exists independently of the canvas's mapping or presentation.
+    pub(crate) has_nodes: bool,
 
     /// The scrollable-tiling layout.
     scrolling: ScrollingSpace<W>,
@@ -267,6 +269,7 @@ impl<W: LayoutElement> Workspace<W> {
         Self {
             node_tile: None,
             pending_node_scene: None,
+            has_nodes: false,
             scrolling,
             floating,
             floating_is_active: FloatingActive::No,
@@ -331,6 +334,7 @@ impl<W: LayoutElement> Workspace<W> {
         Self {
             node_tile: None,
             pending_node_scene: None,
+            has_nodes: false,
             scrolling,
             floating,
             floating_is_active: FloatingActive::No,
@@ -368,7 +372,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn has_windows_or_name(&self) -> bool {
-        self.has_windows() || self.name.is_some() || self.node_tile.is_some()
+        self.has_windows() || self.name.is_some() || self.has_nodes
     }
 
     pub fn scale(&self) -> smithay::output::Scale {

@@ -1799,13 +1799,32 @@ impl<W: LayoutElement> Layout<W> {
         monitors.iter()
     }
 
+    pub(crate) fn set_node_row_contents(&mut self, workspace_ids: &[u64]) -> bool {
+        let ids: std::collections::HashSet<_> = workspace_ids.iter().copied().collect();
+        let mut changed = false;
+        for ws in self.workspaces_mut() {
+            let has_nodes = ids.contains(&ws.id().get());
+            changed |= ws.has_nodes != has_nodes;
+            ws.has_nodes = has_nodes;
+        }
+        if changed {
+            self.ensure_node_row_space();
+            for mon in self.monitors_mut() {
+                if mon.workspace_switch.is_none() {
+                    mon.clean_up_workspaces();
+                }
+            }
+        }
+        changed
+    }
+
     pub(crate) fn ensure_node_row_space(&mut self) {
         let empty_above = self.options.layout.empty_workspace_above_first;
         for mon in self.monitors_mut() {
             if mon
                 .workspaces
                 .last()
-                .is_some_and(|ws| ws.node_tile.is_some())
+                .is_some_and(|ws| ws.has_windows_or_name())
             {
                 mon.add_workspace_bottom();
             }
@@ -1813,7 +1832,7 @@ impl<W: LayoutElement> Layout<W> {
                 && mon
                     .workspaces
                     .first()
-                    .is_some_and(|ws| ws.node_tile.is_some())
+                    .is_some_and(|ws| ws.has_windows_or_name())
             {
                 mon.add_workspace_top();
             }

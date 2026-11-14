@@ -289,6 +289,17 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
             Response::Windows(windows)
         }
         Request::NodeRowSupport => Response::NodeRowSupport { version: 1 },
+        Request::SetNodeRowContents { workspace_ids } => {
+            let (tx, rx) = async_channel::bounded(1);
+            ctx.event_loop.insert_idle(move |state| {
+                if state.niri.layout.set_node_row_contents(&workspace_ids) {
+                    state.niri.queue_redraw_all();
+                }
+                let _ = tx.try_send(());
+            });
+            rx.recv().await.map_err(|e| e.to_string())?;
+            Response::Handled
+        }
         Request::NodeRows => {
             let (tx, rx) = async_channel::bounded(1);
             ctx.event_loop.insert_idle(move |state| {

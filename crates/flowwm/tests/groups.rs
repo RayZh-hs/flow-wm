@@ -85,6 +85,40 @@ fn active_niri_row_selects_its_group_and_empty_tail_does_not_create_groups() {
 }
 
 #[test]
+fn unnamed_node_only_rows_follow_reordering_and_output_changes_while_unfocused() {
+    let mut state = State::empty("/tmp".into());
+    let mut desktop = desktop();
+    desktop.windows.clear();
+    groups::synchronize(&mut state, &desktop);
+    let workflow = state.selected_workspace.clone();
+    state.nodes.push(Node::new(
+        &workflow,
+        NodeKind::Shell,
+        "/tmp".into(),
+        Default::default(),
+    ));
+    desktop.activate_row(20, true);
+    groups::synchronize(&mut state, &desktop);
+    desktop.workspaces[0].idx = 3;
+    desktop.workspaces[0].output = Some("DP-2".into());
+    assert!(groups::synchronize(&mut state, &desktop));
+    let binding = state
+        .workspaces
+        .iter()
+        .find(|w| w.id == workflow)
+        .unwrap()
+        .row
+        .as_ref()
+        .unwrap();
+    assert_eq!(binding.id, 10);
+    assert_eq!(binding.index, 3);
+    assert_eq!(binding.output.as_deref(), Some("DP-2"));
+    assert!(binding.name.is_none());
+    assert_eq!(state.workspaces.len(), 2);
+    assert!(!groups::synchronize(&mut state, &desktop));
+}
+
+#[test]
 fn row_views_survive_switching_reordering_and_new_windows() {
     let mut state = State::empty("/tmp".into());
     let mut desktop = desktop();

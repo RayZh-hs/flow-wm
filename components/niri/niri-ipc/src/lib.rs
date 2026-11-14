@@ -78,6 +78,12 @@ pub enum Request {
     Layers,
     /// Probe the native node tile and workspace presentation contract.
     NodeRowSupport,
+    /// Replace the set of workspaces containing workflow nodes.
+    /// Empty canvases do not count as content; named workspaces retain their normal lifetime.
+    SetNodeRowContents {
+        /// Stable workspace IDs with at least one node, including hidden node canvases.
+        workspace_ids: Vec<u64>,
+    },
     /// Stage geometry for the next node canvas commit.
     SetNodeRow {
         /// Stable workspace ID to update.

@@ -1,5 +1,6 @@
 //! Native window operations are separate from owned execution interruption.
 mod persistence;
+mod row_contents;
 
 use anyhow::{Result, ensure};
 use flow_core::providers::{ApplicationOperations, ApplicationProvider};
@@ -506,6 +507,7 @@ pub fn run() -> Result<()> {
     bindings.apply(&mut state);
     let mut watches = BTreeMap::<u64, (String, String, String)>::new();
     let mut watched = BTreeSet::new();
+    let mut row_contents = row_contents::Publisher::default();
     let mut token = 0u64;
     for event in rx {
         match event {
@@ -849,6 +851,7 @@ pub fn run() -> Result<()> {
                 }
             }
         }
+        row_contents.publish(&state, &bindings);
         let previous = shared.0.lock().unwrap().1.clone();
         if previous != bindings {
             // Attachment identity is durable before publication. Frequently

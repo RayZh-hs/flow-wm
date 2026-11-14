@@ -1703,7 +1703,8 @@ impl Shell {
         Ok(())
     }
     fn pin_groups(&self, state: &State) {
-        if !self.integrated {
+        // The desktop provider reports native row content without assigning persistent names.
+        if !self.integrated || self.native_nodes {
             return;
         }
         let desktop = self.desktop.lock().unwrap().clone();

@@ -36,6 +36,15 @@ pub(crate) struct NodeTile {
     >,
 }
 
+impl Drop for NodeTile {
+    fn drop(&mut self) {
+        // Workspace cleanup can remove an empty row while its canvas is still mapped.
+        if let Some(top) = self.canvas.toplevel() {
+            top.send_close();
+        }
+    }
+}
+
 niri_render_elements! {
     NodeRenderElement<R> => {
         Canvas = smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement<R>,

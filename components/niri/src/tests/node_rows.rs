@@ -671,6 +671,7 @@ fn node_rows_keep_an_empty_trailing_row_and_follow_output_removal() {
     f.add_output(1, (1920, 1080));
     let client = f.add_client();
     let workspace = f.niri().layout.active_workspace().unwrap().id().get();
+    f.niri().layout.set_node_row_contents(&[workspace]);
     let (_, surface) = canvas(&mut f, client, workspace);
     let output = f.niri_output(1);
     let rows: Vec<_> = f
@@ -697,6 +698,97 @@ fn node_rows_keep_an_empty_trailing_row_and_follow_output_removal() {
     assert!(ws.nodes_visible());
     assert_eq!(ws.node_canvas_geometry().size.w, 160.);
     assert_eq!(ws.node_canvas_geometry().size.h, 720.);
+}
+
+#[test]
+fn node_rows_remove_empty_canvases_after_leaving_the_row() {
+    for empty_above in [false, true] {
+        for clear_during_switch in [false, true] {
+            let config = if empty_above {
+                "layout { empty-workspace-above-first; }"
+            } else {
+                ""
+            };
+            let mut f = Fixture::with_config(Config::parse_mem(config).unwrap());
+            f.add_output(1, (1920, 1080));
+            let workspace = f.niri().layout.active_workspace().unwrap().id().get();
+            assert!(f.niri().layout.set_node_row_contents(&[workspace]));
+            let client = f.add_client();
+            let (surface, _) = canvas(&mut f, client, workspace);
+            assert_eq!(
+                f.niri().layout.workspaces().count(),
+                if empty_above { 3 } else { 2 }
+            );
+
+            if clear_during_switch {
+                f.niri().layout.switch_workspace_down();
+            }
+            f.niri().layout.set_node_row_contents(&[]);
+            assert!(f
+                .niri()
+                .layout
+                .workspaces()
+                .any(|(_, _, ws)| ws.id().get() == workspace));
+            if !clear_during_switch {
+                assert!(f.niri().layout.active_workspace().unwrap().nodes_visible());
+                f.niri().layout.switch_workspace_down();
+            }
+            f.niri_complete_animations();
+            f.double_roundtrip(client);
+            assert!(!f
+                .niri()
+                .layout
+                .workspaces()
+                .any(|(_, _, ws)| ws.id().get() == workspace));
+            assert_eq!(f.niri().layout.workspaces().count(), 1);
+            assert!(f.client(client).window(&surface).close_requested);
+        }
+    }
+}
+
+#[test]
+fn node_rows_keep_hidden_content_and_remove_it_when_the_last_node_disappears() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    let workspace = f.niri().layout.active_workspace().unwrap().id().get();
+    f.niri().layout.set_node_row_contents(&[workspace]);
+    let client = f.add_client();
+    let (surface, _) = canvas(&mut f, client, workspace);
+    f.client(client).window(&surface).surface.attach(None, 0, 0);
+    f.client(client).window(&surface).commit();
+    f.double_roundtrip(client);
+    assert!(!f.niri().layout.active_workspace().unwrap().nodes_visible());
+    f.niri().layout.switch_workspace_down();
+    f.niri_complete_animations();
+    assert!(f
+        .niri()
+        .layout
+        .workspaces()
+        .any(|(_, _, ws)| ws.id().get() == workspace));
+    f.niri().layout.set_node_row_contents(&[]);
+    f.double_roundtrip(client);
+    assert!(!f
+        .niri()
+        .layout
+        .workspaces()
+        .any(|(_, _, ws)| ws.id().get() == workspace));
+    assert!(f.client(client).window(&surface).close_requested);
+}
+
+#[test]
+fn node_rows_keep_named_rows_after_the_last_node_disappears() {
+    let mut f = Fixture::with_config(Config::parse_mem("workspace \"keep\"").unwrap());
+    f.add_output(1, (1920, 1080));
+    let workspace = f.niri().layout.active_workspace().unwrap().id().get();
+    f.niri().layout.set_node_row_contents(&[workspace]);
+    f.niri().layout.switch_workspace_down();
+    f.niri_complete_animations();
+    f.niri().layout.set_node_row_contents(&[]);
+    assert!(f
+        .niri()
+        .layout
+        .workspaces()
+        .any(|(_, _, ws)| ws.id().get() == workspace));
 }
 
 #[test]
