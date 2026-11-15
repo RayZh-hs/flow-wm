@@ -131,6 +131,7 @@ Bindings that require a newer compositor are activated at the next login, after 
 | --- | --- |
 | Win+Tab | Toggle windows/nodes; leave a window peek before switching views |
 | Win+L | Row settings and owning workspace |
+| Win+M | Dismiss all notification popups |
 | Win+Shift+Tab | Return to Windows view |
 | Win+Space | Open Dux app search in Windows; create a node in Nodes |
 | Alt+Space | Open Dux app search in either view |
@@ -395,6 +396,13 @@ that row to restore automatic cleanup.
 Running nodes use a green backdrop tint, including the headers and footers of live window cards. `running-color` sets the tint color, and `running-opacity` controls its strength from `0.0` (disabled) to `1.0` (solid), defaulting to `0.17`. Window previews and selection outlines retain their own colors. The former `running-width` setting is still accepted for compatibility: zero disables the tint when `running-opacity` is omitted; other widths use the default tint strength.
 
 `flow { notification-command "notify-send"; }` selects the notification command prefix. An empty `notification-command;` disables popups while retaining semantic attention.
+
+**Win+M** dismisses all visible notification popups and clears the popup queue.
+Notifications remain in Dux's notification center, and workflow alerts remain until
+you inspect them. Change the `Mod+M` entry in `binds` in
+`~/.config/flow-wm/config.kdl` to customize the shortcut. At the next login after an
+upgrade, FlowWM adds it when the key is unused and the action has not already been
+bound elsewhere, keeping a backup under `config-backups/before-launcher-input/`.
 
 Alerted nodes and urgent window previews have an orange outline, including when they are unselected. `flow { alert-color "#ff9e64"; }` changes that color. **Win+A** (`flowwm focus-alert`) focuses the next pending alert across workspaces, wrapping in workspace and graph order. A live window opens in Windows view; a workflow node is selected and centered in Nodes view. Selection acknowledges node alerts, and focusing a window clears its urgency. With no pending alerts, the shortcut leaves the view alone. Rebind the `Mod+A` entry in `binds` to change the shortcut. At the next login after an upgrade, FlowWM adds it when the key is unused, keeping a backup under `config-backups/before-launcher-input/`.
 

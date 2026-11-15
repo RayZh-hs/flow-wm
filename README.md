@@ -103,6 +103,7 @@ See the [user guide](docs/guide.md) for configuration, updates, rollback, and CL
 | Win+Shift+Space | Find a node |
 | Win+T, Win+K | Open a terminal |
 | Win+V / Win+P | Clipboard / power menu |
+| Win+M | Dismiss all notification popups |
 | Tab | Connect the selected node to another node or a new step |
 | Ctrl+P | Compact, align and frame the graph |
 | Ctrl+Shift+P | Search workflow macros in Nodes view |

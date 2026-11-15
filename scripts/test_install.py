@@ -39,12 +39,26 @@ class ProfileIsolation(unittest.TestCase):
             original = f'binds {{\n    {binding}\n}}\n'
             self.assertEqual(alert_focus_binding(original), original)
 
-    def test_existing_profile_adds_alert_focus_at_login_once_with_backup(self):
+    def test_notification_dismiss_upgrade_preserves_custom_bindings_and_remapping(self):
+        from configuration import notification_dismiss_binding
+        for original in ('binds {\n}\n', '// Mod+M is available\nbinds {}\n', ''):
+            with self.subTest(original=original):
+                upgraded = notification_dismiss_binding(original)
+                self.assertIn('"notifications" "dismissAllPopups"', upgraded)
+                self.assertEqual(notification_dismiss_binding(upgraded), upgraded)
+        for binding in ('Mod+M { spawn "custom"; }', 'Super+m repeat=false { spawn "custom"; }',
+                        '"Mod+M" { spawn "custom"; }',
+                        'Mod+F9 { spawn "dms" "ipc" "call" "notifications" "dismissAllPopups"; }'):
+            with self.subTest(binding=binding):
+                original = f'binds {{\n    {binding}\n}}\n'
+                self.assertEqual(notification_dismiss_binding(original), original)
+
+    def test_existing_profile_adds_alert_focus_and_popup_dismissal_at_login_once_with_backup(self):
         from configuration import activate_launcher_bindings
         with tempfile.TemporaryDirectory() as temporary:
             args = self.profile(Path(temporary))
             main = args[0] / 'config.kdl'
-            original = '\n'.join(line for line in main.read_text().splitlines() if '"focus-alert"' not in line) + '\n'
+            original = '\n'.join(line for line in main.read_text().splitlines() if '"focus-alert"' not in line and '"dismissAllPopups"' not in line) + '\n'
             main.write_text(original)
             main.chmod(0o600)
             installer.prepare_profile(*args)
@@ -53,6 +67,7 @@ class ProfileIsolation(unittest.TestCase):
                 self.assertTrue(activate_launcher_bindings(args[0], args[1], args[-1], Path(temporary) / 'niri'))
             upgraded = main.read_text()
             self.assertIn('Mod+A hotkey-overlay-title="Focus next alerted window or node"', upgraded)
+            self.assertIn('Mod+M hotkey-overlay-title="Dismiss all notification popups"', upgraded)
             self.assertEqual(main.stat().st_mode & 0o777, 0o600)
             backup = args[1] / 'config-backups/before-launcher-input/config.kdl'
             self.assertEqual(backup.read_text(), original)

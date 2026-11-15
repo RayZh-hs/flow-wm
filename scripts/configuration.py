@@ -89,6 +89,7 @@ def activate_launcher_bindings(config, state, launcher, compositor):
         return False
     original = main.read_text()
     upgraded = alert_focus_binding(node_view_macro_bindings(row_environment_bindings(launcher_focus_bindings(original, launcher)), launcher))
+    upgraded = notification_dismiss_binding(upgraded)
     if original == upgraded:
         return False
     backup = Path(state) / 'config-backups/before-launcher-input/config.kdl'
@@ -152,6 +153,18 @@ def alert_focus_binding(text):
     if re.search(r'(?i)(?<![\w+"])(?:Mod|Super)\+A(?=\s|\{)', active) or re.search(r'"focus-alert"', active):
         return text
     binding = '    Mod+A hotkey-overlay-title="Focus next alerted window or node" repeat=false allow-inhibiting=false { spawn "flowwm" "focus-alert"; }'
+    match = re.search(r'(?m)^binds\s*\{', text)
+    if match:
+        return text[:match.end()] + '\n' + binding + text[match.end():]
+    return text + '\nbinds {\n' + binding + '\n}\n'
+
+
+def notification_dismiss_binding(text):
+    """Add popup dismissal once, preserving a custom key or an existing remapping."""
+    active = '\n'.join(line for line in text.splitlines() if not line.lstrip().startswith('//'))
+    if re.search(r'(?i)(?<![\w+])"?(?:Mod|Super)\+M"?(?=\s|\{)', active) or re.search(r'"notifications"\s+"dismissAllPopups"', active):
+        return text
+    binding = '    Mod+M hotkey-overlay-title="Dismiss all notification popups" repeat=false allow-inhibiting=false { spawn "dms" "ipc" "call" "notifications" "dismissAllPopups"; }'
     match = re.search(r'(?m)^binds\s*\{', text)
     if match:
         return text[:match.end()] + '\n' + binding + text[match.end():]
