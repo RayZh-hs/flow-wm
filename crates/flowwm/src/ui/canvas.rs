@@ -14,8 +14,7 @@ use std::{
     rc::Rc,
 };
 
-pub const WIDTH: f64 = 292.0;
-pub const HEIGHT: f64 = 154.0;
+pub use crate::placement::{HEIGHT, WIDTH, node_height};
 const TITLE_HEIGHT: f64 = 28.;
 
 pub(super) fn body_top(node: &Node) -> f64 {
@@ -32,17 +31,6 @@ fn inline_editable(node: &Node) -> bool {
 const FIT_PADDING: f64 = 160.;
 fn usable_viewport(width: f64, height: f64) -> bool {
     width.is_finite() && height.is_finite() && width > FIT_PADDING && height > FIT_PADDING
-}
-pub fn node_height(node: &Node) -> f64 {
-    if node.closed_window() {
-        super::layout::CLOSED_HEIGHT
-    } else if node.kind == NodeKind::Window || node.window_id.is_some() {
-        HEIGHT + 120.0
-    } else if node.kind == NodeKind::Vox {
-        280. - TITLE_HEIGHT
-    } else {
-        HEIGHT - TITLE_HEIGHT
-    }
 }
 pub const GRID: f64 = 20.0;
 type GridTile = ([u64; 5], cairo::ImageSurface);

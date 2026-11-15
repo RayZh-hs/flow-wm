@@ -43,7 +43,7 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
         state
             .nodes
             .retain(|n| n.workspace != workflow.id.0 || nodes.contains(n.id.as_str()));
-        for (index, spec) in workflow.graph.nodes.iter().enumerate() {
+        for spec in &workflow.graph.nodes {
             let kind = match spec.type_id.as_str() {
                 "local.shell" => NodeKind::Shell,
                 "local.constant" => NodeKind::Constant,
@@ -80,31 +80,16 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
                 .nodes
                 .iter()
                 .position(|n| n.id == spec.id.0 && n.workspace == workflow.id.0);
+            let needs_position = existing.is_none()
+                && previous
+                    .get(&spec.id.0)
+                    .is_none_or(|n| n.workspace != workflow.id.0);
             let mut node = existing
                 .map(|i| state.nodes[i].clone())
                 .or_else(|| previous.get(&spec.id.0).cloned())
                 .unwrap_or_else(|| {
-                    Node::new(
-                        &workflow.id.0,
-                        kind,
-                        cwd.into(),
-                        Position {
-                            x: 100. + index as f64 * 360.,
-                            y: 80.,
-                        },
-                    )
+                    Node::new(&workflow.id.0, kind, cwd.into(), Position::default())
                 });
-            if node.workspace != workflow.id.0 {
-                node.position = Position {
-                    x: state
-                        .nodes
-                        .iter()
-                        .filter(|n| n.workspace == workflow.id.0 && n.id != node.id)
-                        .map(|n| n.position.x + 340.)
-                        .fold(100., f64::max),
-                    y: 80.,
-                };
-            }
             node.id = spec.id.0.clone();
             node.workspace = workflow.id.0.clone();
             node.kind = kind;
@@ -169,6 +154,14 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
             }
             if let Some(command) = spec.flow.properties.get("command").and_then(|v| v.as_str()) {
                 node.command = command.into();
+            }
+            if needs_position {
+                node.position =
+                    crate::placement::Space::new(state, &node.workspace, |n| n.position.clone())
+                        .append(
+                            crate::placement::WIDTH,
+                            crate::placement::node_height(&node),
+                        );
             }
             if let Some(index) = existing {
                 state.nodes[index] = node;
@@ -353,4 +346,96 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
         }
     }
     state.orchestration = Some(std::sync::Arc::new(runtime.clone()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::placement::{CLOSED_HEIGHT, HEIGHT, WIDTH, gap};
+    use flow_core::domain::{Visibility, Workflow};
+
+    fn runtime(state: &State) -> RuntimeState {
+        let mut runtime = RuntimeState::local();
+        let workflow = Workflow {
+            id: state.selected_workspace.clone().into(),
+            name: "Placement".into(),
+            row_settings: Default::default(),
+            workspace: Some("local:desktop".into()),
+            visibility: Visibility::Private,
+            owner: None,
+            references: Default::default(),
+            graph: Default::default(),
+            authority: runtime.host_id.clone(),
+            transfer: None,
+        };
+        runtime.workflows.insert(workflow.id.clone(), workflow);
+        runtime
+    }
+
+    #[test]
+    fn new_windows_fill_the_compact_graph_instead_of_using_their_list_indexes() {
+        let mut state = State::empty("/tmp".into());
+        state.workspaces[0].graph_arranged = true;
+        let mut runtime = runtime(&state);
+        let graph = &mut runtime
+            .workflows
+            .get_mut(&state.selected_workspace.clone().into())
+            .unwrap()
+            .graph;
+        let live_height = HEIGHT + 120.;
+        for (kind, x, y) in [
+            (NodeKind::Alert, 270., 80. + live_height + gap()),
+            (NodeKind::Window, 120., 80.),
+            (NodeKind::Vox, 100., 80. + 2. * (live_height + gap())),
+            (NodeKind::Display, 440., 80. + 2. * (live_height + gap())),
+        ] {
+            let mut node = Node::new(
+                &state.selected_workspace,
+                kind,
+                "/tmp".into(),
+                Position { x, y },
+            );
+            node.desktop_window = kind == NodeKind::Window;
+            graph.nodes.push(node.spec());
+            state.nodes.push(node);
+        }
+        assert_eq!(
+            crate::placement::node_height(&state.nodes[1]),
+            CLOSED_HEIGHT
+        );
+        let original: Vec<_> = state.nodes.iter().map(|n| n.position.clone()).collect();
+        let mut added = Vec::new();
+        for _ in 0..2 {
+            let node = Node::new(
+                &state.selected_workspace,
+                NodeKind::Window,
+                "/tmp".into(),
+                Position::default(),
+            );
+            added.push(node.id.clone());
+            graph.nodes.push(node.spec());
+        }
+        apply(&mut state, &runtime);
+        for (index, id) in added.iter().enumerate() {
+            let position = &state.node(id).unwrap().position;
+            assert_eq!(position.x, 120. + (index + 1) as f64 * (WIDTH + gap()));
+            assert_eq!(position.y, 80.);
+        }
+        for (node, position) in state.nodes.iter().zip(&original) {
+            assert_eq!((node.position.x, node.position.y), (position.x, position.y));
+        }
+        // Runtime reordering must not turn an initial placement into an ongoing layout.
+        runtime
+            .workflows
+            .values_mut()
+            .next()
+            .unwrap()
+            .graph
+            .nodes
+            .reverse();
+        state.node_mut(&added[0]).unwrap().position = Position { x: -600., y: 900. };
+        apply(&mut state, &runtime);
+        let position = &state.node(&added[0]).unwrap().position;
+        assert_eq!((position.x, position.y), (-600., 900.));
+    }
 }

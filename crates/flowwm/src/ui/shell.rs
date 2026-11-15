@@ -1890,21 +1890,12 @@ impl Shell {
         let Some(parent) = state.node(&source.node) else {
             return;
         };
-        let mut position = self.view.borrow().position(parent);
-        position.y += if reverse {
-            -canvas::HEIGHT - 110.
-        } else {
-            canvas::node_height(parent) + 110.
-        };
-        while state.nodes.iter().any(|n| {
-            n.workspace == parent.workspace
-                && (self.view.borrow().position(n).x - position.x).abs() < canvas::WIDTH + 20.
-                && (self.view.borrow().position(n).y - position.y).abs()
-                    < canvas::node_height(n) + 20.
-        }) {
-            position.x += canvas::WIDTH + 100.;
-        }
-        let mut node = Node::new(&parent.workspace, m.kind, parent.cwd.clone(), position);
+        let mut node = Node::new(
+            &parent.workspace,
+            m.kind,
+            parent.cwd.clone(),
+            Position::default(),
+        );
         node.command = m.command.clone();
         node.flow = m.flow.clone();
         if node.kind == NodeKind::Window || flow_builtins::agent::is_session(&node.spec().type_id) {
@@ -1925,6 +1916,17 @@ impl Shell {
                 );
             }
         }
+
+        let view = self.view.borrow();
+        let mut position = view.position(parent);
+        position.y += if reverse {
+            -canvas::node_height(&node) - crate::placement::gap()
+        } else {
+            canvas::node_height(parent) + crate::placement::gap()
+        };
+        node.position = crate::placement::Space::new(&state, &node.workspace, |n| view.position(n))
+            .near(position, canvas::WIDTH, canvas::node_height(&node));
+        drop(view);
 
         let id = node.id.clone();
         let mut edge = crate::graph::Connection {
@@ -3192,28 +3194,11 @@ impl Shell {
                         shell.canvas().width() as f64 / 2.0,
                         shell.canvas().height() as f64 / 2.0,
                     );
-                    let selected = view.selected.as_deref().and_then(|id| state.node(id));
-                    let mut position = selected
-                        .map(|n| Position {
-                            x: n.position.x,
-                            y: n.position.y + 340.0,
-                        })
-                        .unwrap_or(Position {
-                            x: center.0 - canvas::WIDTH / 2.0,
-                            y: center.1,
-                        });
-                    while state.nodes.iter().any(|n| {
-                        n.workspace == state.selected_workspace
-                            && (n.position.x - position.x).abs() < 320.0
-                            && (n.position.y - position.y).abs() < 220.0
-                    }) {
-                        position.x += 360.0;
-                    }
                     let mut node = Node::new(
                         &state.selected_workspace,
                         NodeKind::Agent,
                         state.workspace().cwd.clone(),
-                        position,
+                        Position::default(),
                     );
                     node.kind = NodeKind::Extension;
                     node.flow.node_type = flow_builtins::agent::TYPE_ID.into();
@@ -3221,6 +3206,8 @@ impl Shell {
                         .properties
                         .insert("writable".into(), serde_json::json!(true));
                     node.writable = true;
+                    node.position =
+                        super::layout::place_new_node(&state, &view, &node, center, None);
                     let id = node.id.clone();
                     drop(view);
                     if let Err(error) = shell.engine.request(Action::Create {
@@ -3467,39 +3454,12 @@ impl Shell {
             self.canvas().width() as f64 / 2.0,
             self.canvas().height() as f64 / 2.0,
         );
-        let mut position = position.unwrap_or_else(|| {
-            if let Some(selected) = view.selected.as_deref().and_then(|id| state.node(id)) {
-                Position {
-                    x: selected.position.x,
-                    y: selected.position.y + 240.0,
-                }
-            } else {
-                Position {
-                    x: ((center.0 - canvas::WIDTH / 2.0) / 20.0).round() * 20.0,
-                    y: ((center.1 - canvas::HEIGHT / 2.0) / 20.0).round() * 20.0,
-                }
-            }
-        });
         let mut node = Node::new(
             &state.selected_workspace,
             m.kind,
             state.workspace().cwd.clone(),
-            position.clone(),
+            Position::default(),
         );
-        while state.nodes.iter().any(|n| {
-            n.workspace == state.selected_workspace
-                && (n.position.x - position.x).abs() < canvas::WIDTH + 20.0
-                && (n.position.y - position.y).abs() < canvas::node_height(n) + 20.0
-        }) || state.workspace().canvas.iter().any(|item| {
-            matches!(item.content, crate::annotations::Content::Text { .. })
-                && position.x < item.position.x + item.width + 20.
-                && position.x + canvas::WIDTH + 20. > item.position.x
-                && position.y < item.position.y + item.height + 20.
-                && position.y + canvas::node_height(&node) + 20. > item.position.y
-        }) {
-            position.x += 360.0;
-        }
-        node.position = position;
         node.command = m.command.clone();
         node.flow = m.flow.clone();
         if node.kind == NodeKind::Window || flow_builtins::agent::is_session(&node.spec().type_id) {
@@ -3518,6 +3478,7 @@ impl Shell {
                 .properties
                 .insert("application".into(), serde_json::json!(id));
         }
+        node.position = super::layout::place_new_node(&state, &view, &node, center, position);
         let id = node.id.clone();
         drop(view);
         match self.engine.request(Action::Create {

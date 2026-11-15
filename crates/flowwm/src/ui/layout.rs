@@ -3,7 +3,7 @@ use super::canvas::{HEIGHT, WIDTH};
 use crate::model::{Node, Position, State};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-pub const CLOSED_HEIGHT: f64 = 78.0;
+pub use crate::placement::CLOSED_HEIGHT;
 const LIVE_STEP: f64 = 340.0;
 const HISTORY_STEP: f64 = 320.0;
 const HISTORY_ROW: f64 = 100.0;
@@ -150,7 +150,56 @@ impl Arrangement {
 pub const DEFAULT_WRAP_ZOOM: f64 = 0.4;
 
 fn gap() -> f64 {
-    crate::config::flow().arrange_gap.unwrap_or(48.)
+    crate::placement::gap()
+}
+
+pub fn place_new_node(
+    state: &State,
+    view: &super::canvas::View,
+    node: &Node,
+    center: (f64, f64),
+    preferred: Option<Position>,
+) -> Position {
+    let selected = view
+        .selected
+        .as_deref()
+        .and_then(|id| state.node(id))
+        .filter(|n| n.workspace == node.workspace);
+    let anchor = selected.or_else(|| {
+        state
+            .nodes
+            .iter()
+            .filter(|n| n.workspace == node.workspace)
+            .min_by(|a, b| {
+                let distance = |n: &Node| {
+                    let p = view.position(n);
+                    (p.x + WIDTH / 2. - center.0)
+                        .hypot(p.y + super::canvas::node_height(n) / 2. - center.1)
+                };
+                distance(a).total_cmp(&distance(b))
+            })
+    });
+    let preferred = preferred.unwrap_or_else(|| {
+        if let Some(anchor) = anchor {
+            let p = view.position(anchor);
+            Position {
+                x: p.x,
+                y: p.y + super::canvas::node_height(anchor) + gap(),
+            }
+        } else {
+            Position {
+                x: ((center.0 - WIDTH / 2.) / super::canvas::GRID).round() * super::canvas::GRID,
+                y: ((center.1 - super::canvas::node_height(node) / 2.) / super::canvas::GRID)
+                    .round()
+                    * super::canvas::GRID,
+            }
+        }
+    });
+    crate::placement::Space::new(state, &node.workspace, |n| view.position(n)).near(
+        preferred,
+        WIDTH,
+        super::canvas::node_height(node),
+    )
 }
 
 /// Arrange each connected component before packing it with its neighbours.
@@ -576,6 +625,43 @@ pub fn make_room(
 mod tests {
     use super::*;
     use crate::model::NodeKind;
+
+    #[test]
+    fn creation_uses_the_visible_selected_card_and_its_actual_height() {
+        let mut state = scene(1, 0);
+        state.nodes[0].position = Position { x: 8000., y: 6000. };
+        let mut view = super::super::canvas::View::default();
+        view.selected = Some(state.nodes[0].id.clone());
+        view.arrangement.update(&state, 1200, 800);
+        let anchor = view.position(&state.nodes[0]);
+        assert!(anchor.x < 1000.);
+        let node = Node::new(
+            &state.selected_workspace,
+            NodeKind::Vox,
+            "/tmp".into(),
+            Position::default(),
+        );
+        let position = place_new_node(&state, &view, &node, (5000., 4000.), None);
+        assert_eq!(position.x, anchor.x);
+        assert_eq!(
+            position.y,
+            anchor.y + super::super::canvas::node_height(&state.nodes[0]) + gap()
+        );
+        // A free context-menu position overrides the saved selection.
+        let position = place_new_node(
+            &state,
+            &view,
+            &node,
+            (5000., 4000.),
+            Some(Position { x: -600., y: 100. }),
+        );
+        assert_eq!((position.x, position.y), (-600., 100.));
+        // Keyboard creation without selection still stays near the current graph.
+        view.selected = None;
+        let position = place_new_node(&state, &view, &node, (5000., 4000.), None);
+        assert_eq!(position.x, anchor.x);
+        assert!(position.y < 1000.);
+    }
 
     #[test]
     fn peeks_clear_all_card_kinds_and_restore_the_saved_layout() {

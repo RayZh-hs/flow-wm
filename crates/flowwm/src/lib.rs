@@ -12,6 +12,7 @@ pub mod launch;
 pub mod model;
 pub mod niri;
 pub mod performance;
+mod placement;
 pub mod presentation;
 mod processes;
 mod projection;

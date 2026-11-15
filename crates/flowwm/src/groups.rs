@@ -223,33 +223,20 @@ pub(crate) fn synchronize_with_processes(
                 })
             });
         let index = existing.unwrap_or_else(|| {
-            let right = state
-                .nodes
-                .iter()
-                .filter(|n| n.workspace == group_id)
-                .map(|n| n.position.x + 360.0)
-                .fold(100.0, f64::max);
-            let mut node = Node::new(
-                &group_id,
-                NodeKind::Window,
-                cwd,
-                Position { x: right, y: 80.0 },
-            );
+            let position = crate::placement::Space::new(state, &group_id, |n| n.position.clone())
+                .append(crate::placement::WIDTH, crate::placement::HEIGHT + 120.);
+            let mut node = Node::new(&group_id, NodeKind::Window, cwd, position);
             node.desktop_window = true;
             state.nodes.push(node);
             changed = true;
             state.nodes.len() - 1
         });
         if state.nodes[index].workspace != group_id {
-            let right = state
-                .nodes
-                .iter()
-                .filter(|n| n.workspace == group_id)
-                .map(|n| n.position.x + 340.)
-                .fold(100., f64::max);
+            let position = crate::placement::Space::new(state, &group_id, |n| n.position.clone())
+                .append(crate::placement::WIDTH, crate::placement::HEIGHT + 120.);
             let node = &mut state.nodes[index];
             node.workspace = group_id;
-            node.position = Position { x: right, y: 80. };
+            node.position = position;
             node.column = None;
             node.column_mode = match view {
                 RowView::Nodes => ColumnMode::Node,
