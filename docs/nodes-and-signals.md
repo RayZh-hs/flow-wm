@@ -343,3 +343,10 @@ DMS also marks workspaces when an unfocused window sends a notification with a
 matching desktop entry. Native window urgency remains supported. Inspect the node,
 use Clear alert in its parameters, or focus the window to clear the workspace mark.
 Dismissing a notification popup does not silently clear an uninspected node alert.
+
+Alerted nodes and urgent window previews have an orange outline so the source of
+a workspace mark is visible in the graph. Press **Win+A** to visit the next alerted
+window or node, including alerts on another workspace. FlowWM switches to Windows
+view for live windows and selects and centers workflow nodes in Nodes view. The
+command is also available as `flowwm focus-alert`; its shortcut and `flow` block's
+`alert-color` are configurable in `~/.config/flow-wm/config.kdl`.

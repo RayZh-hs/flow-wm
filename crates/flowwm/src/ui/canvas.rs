@@ -200,6 +200,7 @@ pub struct View {
     pub(super) border_fades: HashMap<String, super::motion::Fade>,
     pub window_borders: bool,
     pub focused_window: Option<u64>,
+    pub urgent_windows: HashSet<u64>,
     pub live_fade: f64,
     pub chrome: f64,
     pub insets: [i32; 4],
@@ -251,6 +252,7 @@ impl Default for View {
             border_fades: HashMap::new(),
             window_borders: false,
             focused_window: None,
+            urgent_windows: HashSet::new(),
             live_fade: 0.0,
             chrome: 1.0,
             insets: [0; 4],
@@ -2361,7 +2363,8 @@ fn draw_window_node(
                 f64::from(selected)
             }
         });
-    theme.primary.alpha(c, border_alpha);
+    let (color, opacity) = super::gpu::border_style(n, view, border_alpha);
+    color.alpha(c, opacity);
     c.set_line_width((2.0 * (1.0 - t) + 2.0 * view.zoom * t) / view.zoom);
     let _ = c.stroke();
     if t < 0.001 {
@@ -2465,7 +2468,11 @@ fn draw_node_with_border(
     theme.outline.alpha(c, 0.5);
     c.set_line_width(1.0);
     let _ = c.stroke_preserve();
-    theme.primary.alpha(c, selection);
+    if n.alerted() {
+        theme.alert.source(c);
+    } else {
+        theme.primary.alpha(c, selection);
+    }
     c.set_line_width(2.0);
     let _ = c.stroke();
     rounded(c, x + 14.0, y + 16.0, 25.0, 23.0, 5.0);
@@ -2901,6 +2908,61 @@ fn bounded_text(
 #[cfg(test)]
 mod rendering_tests {
     use super::*;
+
+    #[test]
+    fn alerted_cards_have_orange_outlines_without_selection_and_clear_back_to_selection() {
+        let mut view = View {
+            zoom: 1.,
+            ..View::default()
+        };
+        view.theme.alert = super::super::theme::Color(1., 0.5, 0.);
+        view.theme.primary = super::super::theme::Color(0., 0., 1.);
+        for kind in [NodeKind::Shell, NodeKind::Window] {
+            let mut node = Node::new("row", kind, "/tmp".into(), Position { x: 80., y: 100. });
+            node.flow
+                .properties
+                .insert("_alert".into(), serde_json::json!({"message":"Ready"}));
+            if kind == NodeKind::Window {
+                node.window_id = Some(7);
+            }
+            let render = |node: &Node, view: &View| {
+                raster(500, 450, |c| {
+                    if node.window_id.is_some() {
+                        draw_window_node(
+                            c,
+                            node,
+                            &node.position,
+                            super::super::collapse::Rect {
+                                x: 80.,
+                                y: 100.,
+                                width: WIDTH,
+                                height: node_height(node),
+                            },
+                            1.,
+                            false,
+                            view,
+                        );
+                    } else {
+                        draw_node(c, node, &node.position, false, &view.theme);
+                    }
+                })
+            };
+            let alerted = render(&node, &view);
+            let rgb = pixel(&alerted, 500, 100, 100);
+            assert!(
+                rgb & 0xff0000 > 0xaa0000 && rgb & 0x0000ff < 0x28,
+                "{kind:?}: {rgb:x}"
+            );
+            node.flow.properties.remove("_alert");
+            let cleared = render(&node, &view);
+            assert_ne!(pixel(&cleared, 500, 100, 100), rgb);
+            if kind == NodeKind::Window {
+                view.urgent_windows.insert(7);
+                assert_eq!(pixel(&render(&node, &view), 500, 100, 100), rgb);
+                view.urgent_windows.clear();
+            }
+        }
+    }
 
     #[test]
     fn canvas_text_draws_available_fallback_glyphs_instead_of_missing_boxes() {

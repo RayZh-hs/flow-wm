@@ -64,6 +64,7 @@ recent-windows {
     }
 }
 binds {
+    Mod+A hotkey-overlay-title="Focus next alerted window or node" repeat=false allow-inhibiting=false { spawn "flowwm" "focus-alert"; }
     Mod+Tab hotkey-overlay-title="Nodes / Windows (leave window peek first)" repeat=false allow-inhibiting=false { spawn "flowwm" "toggle"; }
     Mod+Shift+Tab hotkey-overlay-title="Return to windows" repeat=false allow-inhibiting=false { spawn "flowwm" "windows"; }
     Mod+equal hotkey-overlay-title="Zoom in (Nodes) / increase column width (Windows)" repeat=true { spawn "flowwm" "send" "{\"action\": \"ui\", \"command\": {\"action\": \"zoom_in\"}}"; }
@@ -218,6 +219,7 @@ flow {
     code-auto-complete true
     pin-usage-highlight true
     running-color "#71c68c"
+    alert-color "#ff9e64"
     running-opacity 0.17
     binds {
         Tab action="connect" title="Choose an output, then a compatible node"

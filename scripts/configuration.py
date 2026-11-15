@@ -88,7 +88,7 @@ def activate_launcher_bindings(config, state, launcher, compositor):
     if not main.is_file():
         return False
     original = main.read_text()
-    upgraded = node_view_macro_bindings(row_environment_bindings(launcher_focus_bindings(original, launcher)), launcher)
+    upgraded = alert_focus_binding(node_view_macro_bindings(row_environment_bindings(launcher_focus_bindings(original, launcher)), launcher))
     if original == upgraded:
         return False
     backup = Path(state) / 'config-backups/before-launcher-input/config.kdl'
@@ -144,6 +144,18 @@ def row_environment_bindings(text):
     # Preserve the chosen terminal and flags while routing its launch through the row.
     pattern = re.compile(r'(\b(?:Mod|Super)\+(?:T|K)\b[^\n{]*\{\s*)spawn\s+("(?:alacritty|foot|kitty|konsole|gnome-terminal|xterm)")', re.IGNORECASE)
     return pattern.sub(r'\1spawn "flowwm" "launch" "--" \2', text)
+
+
+def alert_focus_binding(text):
+    """Add alert navigation once, preserving custom keys and an existing remapping."""
+    active = '\n'.join(line for line in text.splitlines() if not line.lstrip().startswith('//'))
+    if re.search(r'(?i)(?<![\w+"])(?:Mod|Super)\+A(?=\s|\{)', active) or re.search(r'"focus-alert"', active):
+        return text
+    binding = '    Mod+A hotkey-overlay-title="Focus next alerted window or node" repeat=false allow-inhibiting=false { spawn "flowwm" "focus-alert"; }'
+    match = re.search(r'(?m)^binds\s*\{', text)
+    if match:
+        return text[:match.end()] + '\n' + binding + text[match.end():]
+    return text + '\nbinds {\n' + binding + '\n}\n'
 
 
 def migrate(config, state, defaults, launcher, atomic_text):

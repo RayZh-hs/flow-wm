@@ -37,7 +37,7 @@ impl Color {
     }
 }
 
-/// Material surface roles mirror DMS. All graph accents use the primary role.
+/// Material surface roles mirror DMS; alert outlines use the configured alert color.
 #[derive(Clone)]
 pub struct Theme {
     pub primary: Color,
@@ -52,6 +52,7 @@ pub struct Theme {
     pub muted: Color,
     pub outline: Color,
     pub error: Color,
+    pub alert: Color,
     pub radius: f64,
     pub window_radius: f64,
     pub popup_opacity: f64,
@@ -86,6 +87,11 @@ impl Default for Theme {
             muted: Color::parse("#cac4d0").unwrap(),
             outline: Color::parse("#49454f").unwrap(),
             error: Color::parse("#f2b8b5").unwrap(),
+            alert: flow
+                .alert_color
+                .as_deref()
+                .and_then(Color::parse)
+                .unwrap_or(Color(1., 158. / 255., 100. / 255.)),
             radius: 12.0,
             window_radius: 16.0,
             popup_opacity: flow.popup_opacity.unwrap_or(1.0),

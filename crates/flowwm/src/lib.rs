@@ -1,4 +1,5 @@
 pub mod agent;
+mod alerts;
 pub mod annotations;
 pub mod catalog;
 pub mod client;

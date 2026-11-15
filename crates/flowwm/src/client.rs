@@ -29,6 +29,7 @@ pub enum UiCommand {
     Toggle,
     Nodes,
     Windows,
+    FocusAlert,
     ZoomIn,
     ZoomOut,
     RunSelected,

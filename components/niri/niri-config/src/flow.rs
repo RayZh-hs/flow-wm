@@ -40,6 +40,8 @@ pub struct Flow {
     #[knuffel(child, unwrap(argument))]
     pub running_color: Option<String>,
     #[knuffel(child, unwrap(argument))]
+    pub alert_color: Option<String>,
+    #[knuffel(child, unwrap(argument))]
     pub running_opacity: Option<f64>,
     /// Legacy sideline setting; zero still disables the running tint.
     #[knuffel(child, unwrap(argument))]
@@ -85,6 +87,7 @@ impl crate::utils::MergeWith<Flow> for Flow {
             code_auto_complete,
             pin_usage_highlight,
             running_color,
+            alert_color,
             running_opacity,
             running_width
         );
@@ -135,10 +138,15 @@ impl Flow {
         {
             return Err("flow running-width must be between 0 and 12".into());
         }
-        if self.running_color.as_ref().is_some_and(|v| {
-            v.len() != 7 || !v.starts_with('#') || u32::from_str_radix(&v[1..], 16).is_err()
-        }) {
-            return Err("flow running-color must be a #RRGGBB color".into());
+        for (name, color) in [
+            ("running-color", &self.running_color),
+            ("alert-color", &self.alert_color),
+        ] {
+            if color.as_ref().is_some_and(|v| {
+                v.len() != 7 || !v.starts_with('#') || u32::from_str_radix(&v[1..], 16).is_err()
+            }) {
+                return Err(format!("flow {name} must be a #RRGGBB color"));
+            }
         }
         if self
             .terminal
@@ -222,6 +230,27 @@ impl Flow {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn alert_color_can_be_overridden_and_rejects_invalid_colors() {
+        use crate::utils::MergeWith;
+        let mut flow = crate::Config::parse_mem(r##"flow { alert-color "#ff9e64"; }"##)
+            .unwrap()
+            .flow;
+        flow.merge_with(
+            &crate::Config::parse_mem(r##"flow { alert-color "#ee8800"; }"##)
+                .unwrap()
+                .flow,
+        );
+        assert_eq!(flow.alert_color.as_deref(), Some("#ee8800"));
+        for text in [
+            r#"flow { alert-color "orange"; }"#,
+            r##"flow { alert-color "#ffff"; }"##,
+            r##"flow { alert-color "#ffGG00"; }"##,
+        ] {
+            assert!(crate::Config::parse_mem(text).is_err(), "{text}");
+        }
+    }
+
     #[test]
     fn session_environment_can_be_replaced_or_disabled() {
         use crate::utils::MergeWith;

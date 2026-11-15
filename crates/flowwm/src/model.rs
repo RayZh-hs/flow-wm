@@ -214,6 +214,10 @@ pub struct Node {
     pub attention_generation: u64,
 }
 impl Node {
+    pub fn alerted(&self) -> bool {
+        self.flow.properties.contains_key("_alert")
+    }
+
     pub fn application_title(&self) -> &str {
         if self.kind == NodeKind::Window {
             &self.title

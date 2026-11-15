@@ -190,6 +190,18 @@ pub(super) fn border_opacity(node: &Node, view: &View) -> f64 {
         .unwrap_or_else(|| border_target(node, view))
 }
 
+pub(super) fn border_style(node: &Node, view: &View, selection: f64) -> (super::theme::Color, f64) {
+    if node.alerted()
+        || node
+            .window_id
+            .is_some_and(|id| view.urgent_windows.contains(&id))
+    {
+        (view.theme.alert, 1.)
+    } else {
+        (view.theme.primary, selection)
+    }
+}
+
 pub(super) fn border_target(node: &Node, view: &View) -> f64 {
     let window =
         node.window_id.is_some() && (view.window_borders || node.column_mode == ColumnMode::Window);
@@ -340,6 +352,7 @@ fn theme_key(view: &View) -> u64 {
         view.theme.outline,
         view.theme.running,
         view.theme.error,
+        view.theme.alert,
     ] {
         (c.0.to_bits(), c.1.to_bits(), c.2.to_bits()).hash(&mut h);
     }
@@ -729,9 +742,10 @@ fn render_inner(
         let index = indices[node.id.as_str()];
         snapshot.append_node(metadata(cache, state, node, index, view, view.zoom));
         snapshot.restore();
-        if selected > 0. {
-            let mut ink = color(view.theme.primary);
-            ink.set_alpha(selected as f32);
+        let (ink, opacity) = border_style(node, view, selected);
+        if opacity > 0. {
+            let mut ink = color(ink);
+            ink.set_alpha(opacity as f32);
             snapshot.append_border(
                 &gsk::RoundedRect::from_rect(bounds(rect), (view.theme.radius * view.zoom) as f32),
                 &[2. * view.zoom as f32; 4],
@@ -878,8 +892,9 @@ fn render_inner(
         let mut inactive = color(view.theme.outline);
         inactive.set_alpha((0.5 * t) as f32);
         snapshot.append_border(&outline, &[view.zoom as f32; 4], &[inactive; 4]);
-        let mut accent = color(view.theme.primary);
-        accent.set_alpha(border_alpha as f32);
+        let (ink, opacity) = border_style(node, view, border_alpha);
+        let mut accent = color(ink);
+        accent.set_alpha(opacity as f32);
         snapshot.append_border(&outline, &[line; 4], &[accent; 4]);
         snapshot.pop();
     }
@@ -894,6 +909,34 @@ fn render_inner(
 mod tests {
     use super::*;
 
+    #[test]
+    fn alerts_override_faded_selection_and_native_urgency_without_changing_selection() {
+        let mut node = Node::new("row", NodeKind::Shell, "/tmp".into(), Position::default());
+        let mut view = View::default();
+        node.flow
+            .properties
+            .insert("_alert".into(), serde_json::json!({"message":"Ready"}));
+        for selection in [0., 0.5, 1.] {
+            let (color, opacity) = border_style(&node, &view, selection);
+            assert_eq!(color.rgb(), view.theme.alert.rgb());
+            assert_eq!(opacity, 1.);
+        }
+        node.flow.properties.remove("_alert");
+        node.window_id = Some(7);
+        view.urgent_windows.insert(7);
+        assert_eq!(
+            border_style(&node, &view, 0.).0.rgb(),
+            view.theme.alert.rgb()
+        );
+        view.urgent_windows.clear();
+        assert_eq!(
+            border_style(&node, &view, 0.3).0.rgb(),
+            view.theme.primary.rgb()
+        );
+        assert_eq!(border_style(&node, &view, 0.3).1, 0.3);
+        assert!(view.selected.is_none() && view.selection.is_empty());
+    }
+
     fn pixels(node: &gsk::RenderNode, width: i32, height: i32) -> Vec<u8> {
         let mut image =
             gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, width, height).unwrap();
@@ -901,6 +944,62 @@ mod tests {
         node.draw(&context);
         drop(context);
         image.data().unwrap().to_vec()
+    }
+
+    #[test]
+    #[ignore = "requires a GTK display; run explicitly inside Niri or Xvfb"]
+    #[allow(clippy::field_reassign_with_default)]
+    fn alert_outlines_refresh_cached_cards_and_native_urgency_without_selection() {
+        gtk::init().unwrap();
+        let mut state = State::empty("/tmp".into());
+        let mut view = View::default();
+        view.zoom = 1.;
+        view.pan_x = 0.;
+        view.pan_y = 0.;
+        view.theme.alert = super::super::theme::Color(1., 0.5, 0.);
+        view.theme.primary = super::super::theme::Color(0., 0., 1.);
+        let frame = |state: &State, view: &View, revision, cache: &mut Cache| {
+            let snapshot = gtk::Snapshot::new();
+            render(&snapshot, 500, 450, state, revision, view, cache);
+            let image = pixels(&snapshot.to_node().unwrap(), 500, 450);
+            // Middle of the top edge, away from text and rounded corners.
+            let offset = (100 * 500 + 100) * 4;
+            u32::from_ne_bytes(image[offset..offset + 4].try_into().unwrap()) & 0x00ffffff
+        };
+        for (kind, live) in [
+            (NodeKind::Shell, false),
+            (NodeKind::Window, false),
+            (NodeKind::Window, true),
+        ] {
+            let mut node = Node::new(
+                &state.selected_workspace,
+                kind,
+                "/tmp".into(),
+                Position { x: 80., y: 100. },
+            );
+            node.desktop_window = kind == NodeKind::Window;
+            node.window_id = live.then_some(7);
+            state.nodes = vec![node];
+            let mut cache = Cache::default();
+            let idle = frame(&state, &view, 1, &mut cache);
+            state.nodes[0]
+                .flow
+                .properties
+                .insert("_alert".into(), serde_json::json!({"message":"Ready"}));
+            let alerted = frame(&state, &view, 2, &mut cache);
+            assert!(
+                alerted & 0xff0000 > 0xaa0000 && alerted & 0x0000ff < 0x28,
+                "{kind:?}, live {live}: {alerted:x}"
+            );
+            state.nodes[0].flow.properties.remove("_alert");
+            assert_eq!(frame(&state, &view, 3, &mut cache), idle);
+            if live {
+                view.urgent_windows.insert(7);
+                assert_eq!(frame(&state, &view, 3, &mut cache), alerted);
+                view.urgent_windows.clear();
+                assert_eq!(frame(&state, &view, 3, &mut cache), idle);
+            }
+        }
     }
 
     #[test]

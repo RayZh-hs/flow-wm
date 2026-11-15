@@ -28,6 +28,40 @@ def current_bundle(bundle, metadata=None):
 
 
 class ProfileIsolation(unittest.TestCase):
+    def test_alert_focus_upgrade_preserves_custom_bindings_and_remapping(self):
+        from configuration import alert_focus_binding
+        for original in ('binds {\n}\n', '// Mod+A is available\nbinds {}\n', ''):
+            upgraded = alert_focus_binding(original)
+            self.assertIn('spawn "flowwm" "focus-alert"', upgraded)
+            self.assertEqual(alert_focus_binding(upgraded), upgraded)
+        for binding in ('Mod+A { spawn "custom"; }', 'Super+a repeat=false { spawn "custom"; }',
+                        'Mod+F9 { spawn "flowwm" "focus-alert"; }'):
+            original = f'binds {{\n    {binding}\n}}\n'
+            self.assertEqual(alert_focus_binding(original), original)
+
+    def test_existing_profile_adds_alert_focus_at_login_once_with_backup(self):
+        from configuration import activate_launcher_bindings
+        with tempfile.TemporaryDirectory() as temporary:
+            args = self.profile(Path(temporary))
+            main = args[0] / 'config.kdl'
+            original = '\n'.join(line for line in main.read_text().splitlines() if '"focus-alert"' not in line) + '\n'
+            main.write_text(original)
+            main.chmod(0o600)
+            installer.prepare_profile(*args)
+            self.assertEqual(main.read_text(), original)
+            with patch('configuration.subprocess.run'):
+                self.assertTrue(activate_launcher_bindings(args[0], args[1], args[-1], Path(temporary) / 'niri'))
+            upgraded = main.read_text()
+            self.assertIn('Mod+A hotkey-overlay-title="Focus next alerted window or node"', upgraded)
+            self.assertEqual(main.stat().st_mode & 0o777, 0o600)
+            backup = args[1] / 'config-backups/before-launcher-input/config.kdl'
+            self.assertEqual(backup.read_text(), original)
+            installer.prepare_profile(*args)
+            with patch('configuration.subprocess.run'):
+                self.assertFalse(activate_launcher_bindings(args[0], args[1], args[-1], Path(temporary) / 'niri'))
+            self.assertEqual(main.read_text(), upgraded)
+            self.assertEqual(backup.read_text(), original)
+
     def test_lock_controls_upgrade_old_bindings_and_preserve_explicit_policies(self):
         from configuration import lock_screen_bindings
         defaults = (installer.ROOT / 'config/compositor.kdl').read_text()

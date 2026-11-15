@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use niri_ipc::{Action, Request, Response, WorkspaceReferenceArg, socket::Socket};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd},
     sync::{
         Arc, Mutex,
@@ -28,6 +29,14 @@ pub struct Desktop {
     pub error: Option<String>,
 }
 impl Desktop {
+    pub fn urgent_windows(&self) -> HashSet<u64> {
+        self.windows
+            .iter()
+            .filter(|window| window.is_urgent)
+            .map(|window| window.id)
+            .collect()
+    }
+
     pub fn activate_row(&mut self, id: u64, focused: bool) {
         let Some(row) = self.workspaces.iter().find(|w| w.id == id).cloned() else {
             return;

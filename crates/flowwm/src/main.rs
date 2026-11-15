@@ -76,6 +76,8 @@ enum Cmd {
     Toggle,
     Nodes,
     Windows,
+    /// Focus the next alerted window or node, switching workspace and view as needed.
+    FocusAlert,
     /// Open app search in Windows view, or create a node in Nodes view.
     New,
     /// Find nodes in DMS Spotlight, or choose a node type to create.
@@ -241,6 +243,9 @@ fn main() -> Result<()> {
         },
         Cmd::Windows => Action::Ui {
             command: UiCommand::Windows,
+        },
+        Cmd::FocusAlert => Action::Ui {
+            command: UiCommand::FocusAlert,
         },
         Cmd::Search { mode } => Action::Ui {
             command: UiCommand::Search { mode },

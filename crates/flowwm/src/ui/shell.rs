@@ -46,7 +46,18 @@ pub fn run(
                 settings.set_property_from_value("gtk-interface-color-scheme", &value);
             } else { settings.set_gtk_application_prefer_dark_theme(true); }
         }
-        let stop = Arc::new(AtomicBool::new(false)); let desktop = niri::listen(stop.clone());
+        let stop = Arc::new(AtomicBool::new(false));
+        let previous_urgency = Mutex::new(HashSet::new());
+        let attention_engine = engine.clone();
+        let desktop = niri::listen_observed(stop.clone(), Arc::new(move |desktop| {
+            let urgent = desktop.urgent_windows();
+            let mut previous = previous_urgency.lock().unwrap();
+            if *previous != urgent {
+                *previous = urgent;
+                // Native urgency changes no runtime or binding data, but its outline needs a frame.
+                attention_engine.wake_ui();
+            }
+        }));
         let shell = Shell::build(app, engine.clone(), macros.clone(), options, desktop);
         shell.view.borrow_mut().native_nodes = shell.native_nodes;
         gtk::prelude::WidgetExt::realize(&shell.window());
@@ -347,6 +358,7 @@ impl Shell {
                         .map(|w| w.id)
                         .collect(),
                 );
+                saved.urgent_windows = desktop.urgent_windows();
                 saved.chrome = 1.0;
                 saved.morphing = false;
                 saved.presentations.clear();
@@ -1046,6 +1058,7 @@ impl Shell {
             .iter()
             .find(|w| w.is_focused)
             .and_then(|w| w.active_window_id);
+        view.urgent_windows = desktop.urgent_windows();
         view.desktop_rects = super::collapse::rectangles(
             &desktop,
             &self.engine.snapshot().state,
@@ -2100,26 +2113,66 @@ impl Shell {
             }
         });
     }
+    fn select_node_workspace(&self, node: &Node) -> Result<()> {
+        let state = self.engine.snapshot().state;
+        if state.selected_workspace != node.workspace {
+            if self.integrated {
+                self.activate_group(&node.workspace)?;
+            }
+            self.engine.request(Action::SelectWorkspace {
+                id: node.workspace.clone(),
+            })?;
+            self.refresh();
+        }
+        Ok(())
+    }
+    fn focus_alert(&self) {
+        self.synchronize_row();
+        self.refresh();
+        let state = self.engine.snapshot().state;
+        let desktop = self.desktop.lock().unwrap().clone();
+        let current = if self.graph_visible.get() && !self.peeking() {
+            self.view.borrow().selected.clone()
+        } else {
+            desktop
+                .windows
+                .iter()
+                .find(|w| w.is_focused)
+                .and_then(|w| state.nodes.iter().find(|n| n.window_id == Some(w.id)))
+                .map(|n| n.id.clone())
+        };
+        let Some(node) = crate::alerts::next(&state, &desktop, current.as_deref()) else {
+            return;
+        };
+        if let Err(error) = self.select_node_workspace(node) {
+            self.show_error(&error.to_string());
+            return;
+        }
+        self.view.borrow_mut().selection.clear();
+        let window = node
+            .window_id
+            .filter(|id| desktop.windows.iter().any(|w| w.id == *id));
+        if let Some(window) = window {
+            self.select(Some(node.id.clone()));
+            // Windows view also works when the target row currently shows Nodes.
+            if let Err(error) = niri::focus(window) {
+                self.show_error(&error.to_string());
+                return;
+            }
+            self.show_windows();
+        } else {
+            self.focus_node(&node.id, false);
+        }
+    }
     fn focus_node(&self, id: &str, expand: bool) {
         let state = self.engine.snapshot().state;
         let Some(node) = state.node(id) else {
             self.show_error("This node no longer exists.");
             return;
         };
-        if state.selected_workspace != node.workspace {
-            if self.integrated
-                && let Err(error) = self.activate_group(&node.workspace)
-            {
-                self.show_error(&error.to_string());
-                return;
-            }
-            if let Err(error) = self.engine.request(Action::SelectWorkspace {
-                id: node.workspace.clone(),
-            }) {
-                self.show_error(&error.to_string());
-                return;
-            }
-            self.refresh();
+        if let Err(error) = self.select_node_workspace(node) {
+            self.show_error(&error.to_string());
+            return;
         }
         self.engine.set_presentation(Presentation {
             graph_visible: !expand,
@@ -2274,6 +2327,7 @@ impl Shell {
             }
             UiCommand::Nodes => self.show_nodes(),
             UiCommand::Windows => self.show_windows(),
+            UiCommand::FocusAlert => self.focus_alert(),
             UiCommand::ZoomIn | UiCommand::ZoomOut => {
                 if self.graph_visible.get() {
                     self.prepare_camera();
