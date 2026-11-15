@@ -1249,6 +1249,8 @@ fn make_scoped(
             if g.current_event_state()
                 .contains(gdk::ModifierType::SHIFT_MASK)
             {
+                // Denying the gesture emits drag-end synchronously, which borrows the view.
+                drop(view);
                 g.set_state(gtk::EventSequenceState::Denied);
                 return;
             }

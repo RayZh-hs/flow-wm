@@ -241,6 +241,31 @@ def run():
                 input_command("mouseup", "1")
                 wait(lambda: node(preview)["position"] == {"x": 540., "y": 120.}, compositor)
                 capture("window-dragged.png")
+                # Shift-click declines dragging; GTK emits drag-end during that
+                # decision. The shell must survive and retain both selected nodes.
+                ui("select", id=constant)
+                initial_positions = {identifier: node(identifier)["position"] for identifier in [constant, preview]}
+                input_command("keydown", "Shift_L")
+                click(*point(580, 150))
+                input_command("keyup", "Shift_L")
+                time.sleep(0.15)
+                assert catalog()["presentation"]["graph_visible"], "Shift-click must keep Nodes visible"
+                assert first["row"]["id"] in request(niri_socket, "NodeRows")["NodeRows"]
+                input_command("key", "shift+d")
+                wait(lambda: all(node(identifier)["position"] == {"x": position["x"] + 20, "y": position["y"]} for identifier, position in initial_positions.items()), compositor)
+                input_command("key", "ctrl+z")
+                wait(lambda: all(node(identifier)["position"] == position for identifier, position in initial_positions.items()), compositor)
+                # Adding an already selected card must keep the full selection.
+                time.sleep(0.5)
+                input_command("keydown", "Shift_L")
+                click(*point(580, 150))
+                input_command("keyup", "Shift_L")
+                input_command("key", "shift+d")
+                wait(lambda: all(node(identifier)["position"] == {"x": position["x"] + 20, "y": position["y"]} for identifier, position in initial_positions.items()), compositor)
+                input_command("key", "ctrl+z")
+                wait(lambda: all(node(identifier)["position"] == position for identifier, position in initial_positions.items()), compositor)
+                # Let the click sequence end before starting another gesture on this card.
+                time.sleep(0.5)
                 # Ctrl-drag aligns the existing selection as one reversible edit.
                 input_command("key", "ctrl+a")
                 initial_positions = {identifier: node(identifier)["position"] for identifier in [constant, preview]}
