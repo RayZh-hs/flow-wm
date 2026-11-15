@@ -7,6 +7,7 @@ mod context_menu;
 mod empty;
 mod environment;
 mod extension_settings;
+mod field_history;
 mod gpu;
 mod keybindings;
 mod layout;

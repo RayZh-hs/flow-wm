@@ -19,8 +19,21 @@ pub struct MapEditor {
     pub widget: gtk::Box,
     rows: Rows,
 }
+struct Options {
+    key_hint: String,
+    value_hint: String,
+    mode: Mode,
+    namespace: String,
+    history: super::field_history::Form,
+}
 impl MapEditor {
-    pub fn new(values: &Env, key_hint: &str, value_hint: &str, mappings: bool) -> Self {
+    pub fn new(
+        values: &Env,
+        key_hint: &str,
+        value_hint: &str,
+        mappings: bool,
+        history: &super::field_history::Form,
+    ) -> Self {
         Self::build(
             values,
             key_hint,
@@ -30,21 +43,49 @@ impl MapEditor {
             } else {
                 Mode::Values
             },
+            "environment",
+            history,
         )
     }
-    pub fn names(values: &[String]) -> Self {
+    pub fn row_settings(values: &Env, history: &super::field_history::Form) -> Self {
+        Self::build(
+            values,
+            "Setting name",
+            "Value",
+            Mode::Values,
+            "row-setting",
+            history,
+        )
+    }
+    pub fn names(values: &[String], history: &super::field_history::Form) -> Self {
         Self::build(
             &values.iter().map(|v| (v.clone(), String::new())).collect(),
             "Variable",
             "",
             Mode::Names,
+            "environment",
+            history,
         )
     }
-    fn build(values: &Env, key_hint: &str, value_hint: &str, mode: Mode) -> Self {
+    fn build(
+        values: &Env,
+        key_hint: &str,
+        value_hint: &str,
+        mode: Mode,
+        namespace: &str,
+        history: &super::field_history::Form,
+    ) -> Self {
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 8);
         let rows = Rc::new(RefCell::new(Vec::new()));
+        let options = Options {
+            key_hint: key_hint.into(),
+            value_hint: value_hint.into(),
+            mode,
+            namespace: namespace.into(),
+            history: history.clone(),
+        };
         for (name, value) in values {
-            Self::append(&widget, &rows, name, value, key_hint, value_hint, mode);
+            Self::append(&widget, &rows, name, value, &options);
         }
         let add = gtk::Button::with_label(if mode == Mode::Arguments {
             "+ Map argument"
@@ -56,11 +97,9 @@ impl MapEditor {
         widget.append(&add);
         let root = widget.downgrade();
         let rs = rows.clone();
-        let key_hint = key_hint.to_owned();
-        let value_hint = value_hint.to_owned();
         add.connect_clicked(move |_| {
             if let Some(root) = root.upgrade() {
-                Self::append(&root, &rs, "", "", &key_hint, &value_hint, mode).grab_focus();
+                Self::append(&root, &rs, "", "", &options).grab_focus();
             }
         });
         Self { widget, rows }
@@ -70,10 +109,16 @@ impl MapEditor {
         rows: &Rows,
         name: &str,
         value: &str,
-        key_hint: &str,
-        value_hint: &str,
-        mode: Mode,
+        options: &Options,
     ) -> gtk::Entry {
+        let Options {
+            key_hint,
+            value_hint,
+            mode,
+            namespace,
+            history,
+        } = options;
+        let mode = *mode;
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         line.add_css_class("env-row");
         let key = gtk::Entry::new();
@@ -83,6 +128,7 @@ impl MapEditor {
         key.set_max_width_chars(14);
         key.set_hexpand(true);
         key.add_css_class("env-key");
+        history.attach(&key, &format!("{namespace}/name"));
         line.append(&key);
         if mode == Mode::Arguments {
             let arrow = gtk::Label::new(Some("→"));
@@ -96,6 +142,16 @@ impl MapEditor {
         entry.set_width_chars(1);
         entry.set_max_width_chars(18);
         if mode != Mode::Names {
+            if mode == Mode::Arguments {
+                history.attach(&entry, "environment/name");
+            } else {
+                let key = key.downgrade();
+                let namespace = namespace.to_owned();
+                history.attach_dynamic(&entry, move || {
+                    let name = key.upgrade().map(|key| key.text()).unwrap_or_default();
+                    format!("{namespace}/value/{name}")
+                });
+            }
             line.append(&entry);
         }
         if mode == Mode::Arguments {

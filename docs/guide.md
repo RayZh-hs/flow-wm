@@ -275,6 +275,23 @@ Adding row variables grows the form to fit. Long forms scroll within the screen
 while the title and Save/Cancel buttons remain visible; a new variable receives
 keyboard focus automatically.
 
+Working directory, row variable names and values, node parameters (including list
+and record values), and ordinary extension text fields have a saved-value dropdown.
+Click the arrow or press **Alt+Down** in a field to open it. Values are ordered by
+their most recent successful Save; typing while the dropdown is open filters them.
+Use Up/Down and Enter or click a value to fill the field, then Save to apply it.
+Escape dismisses the dropdown; Tab moves to the next control. Cancelled edits and
+failed saves do not enter history. Directory history is shared by row and node
+settings; variable values are kept separately for each variable name. Secret and
+transient extension fields do not have history.
+
+`flow { field-history-limit 20; }` in `config.kdl` controls the number of saved
+values per field; zero disables recording and dropdowns. Rebind `field_history`
+inside `flow { binds { ... } }` to change Alt+Down. History persists across shell
+restarts in `$XDG_STATE_HOME/flow-wm/field-history.json` (normally
+`~/.local/state/flow-wm/field-history.json`), honoring `FLOWWM_STATE_DIR` when set.
+The file is private to your user; deleting it clears saved field values.
+
 Row settings fades and scales in over 180 ms and out over 140 ms. Closing with
 Escape, Cancel, Save, or the close button keeps the surface mapped until the exit
 finishes. Win+L during closing reverses the transition and preserves the editor.

@@ -298,6 +298,83 @@ def main():
             bottom = (screen_height + large.height) / 2
             close_with_fade("many-variables-save-exit", lambda: input("mousemove", round(right - 44), round(bottom - 31), "click", "--delay", 0, 1))
             assert command("row_settings", workflow=current)["settings"] == many
+            # Saved field values survive shell restarts and fill the editor without saving it.
+            history_file = runtime / "state/field-history.json"
+            history = lambda: json.loads(history_file.read_text())["fields"]
+            assert history()["directory"] == [temporary]
+            assert history()["row-setting/value/EXTRA"] == ["space to grow"]
+            history_directory = str(runtime / "directory with spaces")
+            Path(history_directory).mkdir()
+            command("set_row_settings", workflow=current, settings={"pwd": temporary, "EXTRA": "space to grow"})
+
+            def history_form(name):
+                ui("row_settings")
+                capture(name + ".png")
+                panel = capture_widget(name + "-widget.png")
+                input("key", "Tab", "Tab", "Tab")
+                return (screen_width + panel.width) / 2, (screen_height + panel.height) / 2
+
+            def save_history_form(right, bottom):
+                input("mousemove", round(right - 44), round(bottom - 31), "click", "--delay", 0, 1)
+                wait(lambda: not any(layer["namespace"] == "flowwm-dialog" for layer in layers()), compositor)
+
+            right, bottom = history_form("history-new")
+            input("key", "ctrl+a")
+            input("type", history_directory)
+            save_history_form(right, bottom)
+            assert history()["directory"] == [history_directory, temporary]
+            flowwm.terminate()
+            flowwm.wait(timeout=5)
+            flowwm = start_shell()
+            wait(lambda: catalog().get("owning_workspace") == "local:desktop", flowwm)
+            right, bottom = history_form("history-restart")
+            input("key", "alt+Down")
+            capture("history-dropdown.png")
+            input("key", "Down", "Return")
+            assert any(layer["namespace"] == "flowwm-dialog" for layer in layers()), "Selecting history submitted the form"
+            assert command("row_settings", workflow=current)["settings"]["pwd"] == history_directory
+            save_history_form(right, bottom)
+            assert command("row_settings", workflow=current)["settings"]["pwd"] == temporary
+            assert history()["directory"] == [temporary, history_directory]
+            # Typing filters the dropdown; a variable's values stay tied to its name.
+            right, bottom = history_form("history-filter")
+            input("key", "ctrl+a", "alt+Down")
+            input("type", "directory with spaces")
+            capture("history-filtered.png")
+            input("key", "Return")
+            input("key", "Tab", "Tab", "Tab")
+            input("key", "ctrl+a", "BackSpace", "alt+Down", "Return")
+            save_history_form(right, bottom)
+            settings = command("row_settings", workflow=current)["settings"]
+            assert settings == {"pwd": history_directory, "EXTRA": "space to grow"}, settings
+            assert history()["directory"] == [history_directory, temporary]
+            right, bottom = history_form("history-mouse")
+            top = screen_height - bottom
+            input("mousemove", round(right - 100), round(top + 206), "click", "--delay", 0, 1)
+            capture("history-mouse-dropdown.png")
+            input("mousemove", round(right - 200), round(top + 292), "click", "--delay", 0, 1)
+            save_history_form(right, bottom)
+            assert command("row_settings", workflow=current)["settings"]["pwd"] == temporary
+            # Escape only dismisses the dropdown; cancelling and validation failures don't record drafts.
+            right, bottom = history_form("history-cancel")
+            input("key", "ctrl+a")
+            input("type", "/cancelled history draft")
+            input("key", "alt+Down", "Escape")
+            assert any(layer["namespace"] == "flowwm-dialog" for layer in layers())
+            input("mousemove", round(right - 110), round(bottom - 31), "click", "--delay", 0, 1)
+            wait(lambda: not any(layer["namespace"] == "flowwm-dialog" for layer in layers()), compositor)
+            assert "/cancelled history draft" not in history()["directory"]
+            right, bottom = history_form("history-invalid")
+            input("key", "ctrl+a")
+            input("type", "/invalid history draft")
+            input("key", "Tab", "Tab", "ctrl+a")
+            input("type", "bad name")
+            input("mousemove", round(right - 44), round(bottom - 31), "click", "--delay", 0, 1)
+            capture("history-validation-error.png")
+            assert any(layer["namespace"] == "flowwm-dialog" for layer in layers())
+            assert "/invalid history draft" not in history()["directory"]
+            input("key", "Escape", "Escape")
+            wait(lambda: not any(layer["namespace"] == "flowwm-dialog" for layer in layers()), compositor)
             command("set_row_settings", workflow=current, settings={"pwd":temporary,"project":"smoke"})
             ui("row_settings")
             wait(lambda: any(layer["namespace"] == "flowwm-dialog" for layer in layers()), compositor)
@@ -341,7 +418,7 @@ def main():
             inherited = json.loads(recorded.read_text())
             assert inherited["MODE"] == "development" and inherited["FLOWWM_ROWSET_PROJECT"] == "smoke"
             assert "FLOWWM_ARG_COUNT" not in inherited
-            print("PASS: backdrop/outside dismissal, Escape clears focus, growing and screen-bounded variables, default enter/exit animations, restart, clipboard stacking/focus, top-bar click, Env launches and editors")
+            print("PASS: saved field history, filtering, keyboard selection, persistence, cancelled/invalid drafts, backdrop/outside dismissal, Escape clears focus, growing and screen-bounded variables, default enter/exit animations, restart, clipboard stacking/focus, top-bar click, Env launches and editors")
             print("Screenshots:", artifacts)
         finally:
             for child in reversed(children):

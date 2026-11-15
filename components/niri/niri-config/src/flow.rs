@@ -33,6 +33,9 @@ pub struct Flow {
     pub arrange_drag: Option<bool>,
     #[knuffel(child, unwrap(argument))]
     pub undo_limit: Option<u32>,
+    /// Recent saved values retained per form field; zero disables field history.
+    #[knuffel(child, unwrap(argument))]
+    pub field_history_limit: Option<u32>,
     #[knuffel(child, unwrap(argument))]
     pub code_auto_complete: Option<bool>,
     #[knuffel(child, unwrap(argument))]
@@ -84,6 +87,7 @@ impl crate::utils::MergeWith<Flow> for Flow {
             arrange_gap,
             arrange_drag,
             undo_limit,
+            field_history_limit,
             code_auto_complete,
             pin_usage_highlight,
             running_color,
@@ -180,6 +184,7 @@ impl Flow {
                     | "ungroup"
                     | "text"
                     | "complete_code"
+                    | "field_history"
                     | "save_code"
                     | "zoom_in"
                     | "zoom_out"
@@ -230,6 +235,25 @@ impl Flow {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn field_history_can_be_limited_disabled_and_rebound() {
+        use crate::utils::MergeWith;
+        let mut flow = crate::Config::parse_mem(
+            r#"flow { field-history-limit 12; binds { Alt+Down action="field_history"; }; }"#,
+        )
+        .unwrap()
+        .flow;
+        assert_eq!(flow.field_history_limit, Some(12));
+        flow.merge_with(
+            &crate::Config::parse_mem("flow { field-history-limit 0; }")
+                .unwrap()
+                .flow,
+        );
+        assert_eq!(flow.field_history_limit, Some(0));
+        assert_eq!(flow.binds.unwrap().bindings[0].action, "field_history");
+        assert!(crate::Config::parse_mem("flow { field-history-limit -1; }").is_err());
+    }
+
     #[test]
     fn alert_color_can_be_overridden_and_rejects_invalid_colors() {
         use crate::utils::MergeWith;

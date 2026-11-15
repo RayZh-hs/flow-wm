@@ -36,6 +36,7 @@ struct Editor {
     properties: RefCell<serde_json::Map<String, Value>>,
     busy: Cell<bool>,
     cancelled: Arc<AtomicBool>,
+    history: super::field_history::Form,
 }
 pub fn open(dialog: gtk::Window, engine: DesktopClient, node: Node, command: Vec<String>) {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 14);
@@ -81,6 +82,7 @@ pub fn open(dialog: gtk::Window, engine: DesktopClient, node: Node, command: Vec
         properties: RefCell::new(properties),
         busy: Cell::new(false),
         cancelled: Arc::new(AtomicBool::new(false)),
+        history: Default::default(),
     });
     let e = Rc::downgrade(&editor);
     cancel.connect_clicked(move |_| {
@@ -106,6 +108,7 @@ pub fn open(dialog: gtk::Window, engine: DesktopClient, node: Node, command: Vec
             e.engine.request(Action::Update {
                 node: Box::new(node),
             })?;
+            e.history.remember();
             e.dialog.close();
             Ok(())
         })();
@@ -183,6 +186,7 @@ impl Editor {
         self.dialog.set_title(Some(&form.title));
         self.status.set_text(&form.description);
         self.values.borrow_mut().clear();
+        self.history.clear();
         self.properties.borrow_mut().extend(form.properties);
         for field in form.fields {
             let label = gtk::Label::new(Some(&field.label));
@@ -233,6 +237,15 @@ impl Editor {
                     let entry = gtk::Entry::new();
                     entry.set_visibility(field.kind != "secret");
                     entry.set_text(field.value.as_str().unwrap_or_default());
+                    if field.kind == "text" && !field.transient {
+                        self.history.attach(
+                            &entry,
+                            &super::field_history::property_scope(
+                                &self.node.spec().type_id,
+                                &field.key,
+                            ),
+                        );
+                    }
                     self.body.append(&entry);
                     Box::new(move || Ok(json!(entry.text().as_str())))
                 }

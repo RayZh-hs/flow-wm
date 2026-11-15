@@ -3137,7 +3137,17 @@ impl Shell {
             .get("value")
             .cloned()
             .unwrap_or_else(|| super::parameters::default_value(&ty));
-        let (widget, read) = super::parameters::value_editor(&state, &ty, &value);
+        let history = super::field_history::Form::default();
+        let (widget, read) = super::parameters::value_editor(
+            &state,
+            &ty,
+            &value,
+            &history,
+            super::field_history::scope(super::field_history::property_scope(
+                &node.spec().type_id,
+                "value",
+            )),
+        );
         body.append(&widget);
         let save = gtk::Button::with_label("Save value");
         body.append(&save);
@@ -3154,7 +3164,10 @@ impl Shell {
                     let mut n = node.clone();
                     n.flow.properties.insert("value".into(), value);
                     match shell.engine.request(Action::Update { node: Box::new(n) }) {
-                        Ok(_) => p.popdown(),
+                        Ok(_) => {
+                            history.remember();
+                            p.popdown();
+                        }
                         Err(e) => shell.show_error(&e.to_string()),
                     }
                 }
@@ -3809,6 +3822,8 @@ impl Shell {
             "dialog-title",
         ));
         let directory = entry(&node.cwd.to_string_lossy());
+        let history = super::field_history::Form::default();
+        history.attach(&directory, "directory");
         let inherit =
             gtk::CheckButton::with_label("Inherit working directory from row settings (pwd)");
         inherit.set_active(node.cwd.as_os_str().is_empty());
@@ -3848,7 +3863,7 @@ impl Shell {
                 field(&root, "Working directory", &directory);
             }
         }
-        let fields = super::parameters::Fields::new(&state, &node);
+        let fields = super::parameters::Fields::new(&state, &node, &history);
         root.append(&fields.widget);
         let source_body = if node.kind == NodeKind::Vox {
             column(10)
@@ -3982,6 +3997,10 @@ impl Shell {
         let interval = gtk::SpinButton::with_range(1.0, 86400.0, 1.0);
         interval.set_value(node.metric.interval_secs as f64);
         let unit = entry(&node.metric.unit);
+        history.attach(
+            &unit,
+            &super::field_history::property_scope(&node.spec().type_id, "unit"),
+        );
         if node.kind == NodeKind::Metric {
             field(&root, "Sample every (seconds)", &interval);
             field(&root, "Unit", &unit);
@@ -4106,6 +4125,7 @@ impl Shell {
                 node: Box::new(node),
             }) {
                 Ok(_) => {
+                    history.remember();
                     d.close();
                     s.rebuild_panel();
                 }
@@ -4278,6 +4298,8 @@ impl Shell {
         field(&section, "Owning workspace", &workspace);
         sections.append(&section);
         let pwd = entry(overrides.get("pwd").map(String::as_str).unwrap_or(""));
+        let history = super::field_history::Form::default();
+        history.attach(&pwd, "directory");
         pwd.set_placeholder_text(value["definitions"]["pwd"]["default"].as_str());
         pwd.set_hexpand(true);
         pwd.set_width_chars(1);
@@ -4298,7 +4320,7 @@ impl Shell {
             .filter(|(k, _)| k.as_str() != "pwd")
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        let variables = super::environment::MapEditor::new(&custom, "Setting name", "Value", false);
+        let variables = super::environment::MapEditor::row_settings(&custom, &history);
         let section = column(8);
         section.add_css_class("row-settings-section");
         section.add_css_class("last");
@@ -4366,6 +4388,7 @@ impl Shell {
                         Some(current.0.clone()),
                     )?;
                 }
+                history.remember();
                 Ok(())
             })();
             match result {
@@ -4749,6 +4772,9 @@ impl Shell {
         let d = dialog.clone();
         key.connect_key_pressed(move |_, key, _, _| {
             if key == gdk::Key::Escape {
+                if super::field_history::dismiss(&d) {
+                    return glib::Propagation::Stop;
+                }
                 if super::code::dismiss_completion(&d) {
                     return glib::Propagation::Stop;
                 }

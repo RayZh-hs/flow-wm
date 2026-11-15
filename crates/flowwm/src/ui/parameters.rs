@@ -1,4 +1,5 @@
 //! Typed controls shared by node settings and the graph value popover.
+use super::field_history::{self, Form, Scope};
 use crate::{
     graph::{self, Pin, Type},
     model::{Node, NodeKind, State},
@@ -18,7 +19,7 @@ impl Fields {
     pub fn apply(&self, node: &mut Node) -> Result<()> {
         (self.apply)(node)
     }
-    pub fn new(state: &State, node: &Node) -> Self {
+    pub fn new(state: &State, node: &Node, history: &Form) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
         let mut setters: Vec<Apply> = vec![];
         if node.kind == NodeKind::Constant {
@@ -40,13 +41,16 @@ impl Fields {
                 .get("value")
                 .cloned()
                 .unwrap_or_else(|| default_value(&ty));
-            let (widget, read) = value_editor(state, &ty, &value);
+            let scope =
+                field_history::scope(field_history::property_scope(&node.spec().type_id, "value"));
+            let (widget, read) = value_editor(state, &ty, &value, history, scope.clone());
             holder.append(&widget);
             let current = Rc::new(RefCell::new(read));
             let st = state.clone();
             let ts = types.clone();
             let h = holder.clone();
             let r = current.clone();
+            let history = history.clone();
             choice.connect_selected_notify(move |choice| {
                 let ty = &ts[choice.selected() as usize];
                 let value = (r.borrow())()
@@ -56,7 +60,7 @@ impl Fields {
                 while let Some(child) = h.first_child() {
                     h.remove(&child);
                 }
-                let (widget, read) = value_editor(&st, ty, &value);
+                let (widget, read) = value_editor(&st, ty, &value, &history, scope.clone());
                 h.append(&widget);
                 *r.borrow_mut() = read;
             });
@@ -256,6 +260,7 @@ impl Fields {
                         "Argument",
                         "Environment variable",
                         true,
+                        history,
                     );
                     field(&root, "Argument → Variable", &editor.widget);
                     setters.push(Rc::new(move |node| {
@@ -269,7 +274,7 @@ impl Fields {
                 if node.flow.node_type == "local.unset_env" && name == "names" {
                     let names =
                         serde_json::from_value::<Vec<String>>(value.clone()).unwrap_or_default();
-                    let editor = super::environment::MapEditor::names(&names);
+                    let editor = super::environment::MapEditor::names(&names, history);
                     field(&root, "Remove variables", &editor.widget);
                     setters.push(Rc::new(move |node| {
                         node.flow.properties.insert(
@@ -280,7 +285,16 @@ impl Fields {
                     }));
                     continue;
                 }
-                let (widget, read) = value_editor(state, &ty, value);
+                let (widget, read) = value_editor(
+                    state,
+                    &ty,
+                    value,
+                    history,
+                    field_history::scope(field_history::property_scope(
+                        &node.spec().type_id,
+                        &name,
+                    )),
+                );
                 field(
                     &root,
                     if name == "variables" {
@@ -375,10 +389,17 @@ fn type_choice(types: &[Type], ty: &Type) -> gtk::DropDown {
     );
     choice
 }
-pub fn value_editor(state: &State, ty: &Type, value: &Value) -> (gtk::Widget, ReadValue) {
+pub fn value_editor(
+    state: &State,
+    ty: &Type,
+    value: &Value,
+    history: &Form,
+    scope: Scope,
+) -> (gtk::Widget, ReadValue) {
     if *ty == Type::Env {
         let values = serde_json::from_value(value.clone()).unwrap_or_default();
-        let editor = super::environment::MapEditor::new(&values, "Variable", "Value", false);
+        let editor =
+            super::environment::MapEditor::new(&values, "Variable", "Value", false, history);
         return (
             editor.widget.clone().upcast(),
             Rc::new(move || Ok(json!(editor.read()?))),
@@ -387,7 +408,7 @@ pub fn value_editor(state: &State, ty: &Type, value: &Value) -> (gtk::Widget, Re
     if let Type::Named { name } = ty
         && let Some(def) = state.types.iter().find(|t| t.name == *name)
     {
-        return value_editor(state, &def.representation, value);
+        return value_editor(state, &def.representation, value, history, scope);
     }
     if *ty == Type::Bool {
         let check = gtk::CheckButton::with_label("True");
@@ -415,6 +436,8 @@ pub fn value_editor(state: &State, ty: &Type, value: &Value) -> (gtk::Widget, Re
                     .cloned()
                     .unwrap_or_else(|| graph::infer_type(v)),
                 v,
+                history,
+                scope.clone(),
             );
         }
         if *open {
@@ -423,9 +446,19 @@ pub fn value_editor(state: &State, ty: &Type, value: &Value) -> (gtk::Widget, Re
             let st = state.clone();
             let r = root.downgrade();
             let rs = rows.clone();
+            let history = history.clone();
             add.connect_clicked(move |_| {
                 if let Some(root) = r.upgrade() {
-                    record_row(&root, &rs, &st, "", Type::String, &json!(""));
+                    record_row(
+                        &root,
+                        &rs,
+                        &st,
+                        "",
+                        Type::String,
+                        &json!(""),
+                        &history,
+                        scope.clone(),
+                    );
                 }
             });
         }
@@ -450,8 +483,9 @@ pub fn value_editor(state: &State, ty: &Type, value: &Value) -> (gtk::Widget, Re
     if let Type::List { item } = ty {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
         let reads = Rc::new(RefCell::new(Vec::<ReadValue>::new()));
+        let scope: Scope = Rc::new(move || format!("{}/item", scope()));
         for v in value.as_array().into_iter().flatten() {
-            let (w, r) = value_editor(state, item, v);
+            let (w, r) = value_editor(state, item, v, history, scope.clone());
             root.append(&w);
             reads.borrow_mut().push(r);
         }
@@ -461,8 +495,9 @@ pub fn value_editor(state: &State, ty: &Type, value: &Value) -> (gtk::Widget, Re
         let ty = *item.clone();
         let rs = reads.clone();
         let rt = root.downgrade();
+        let history = history.clone();
         add.connect_clicked(move |_| {
-            let (w, r) = value_editor(&st, &ty, &default_value(&ty));
+            let (w, r) = value_editor(&st, &ty, &default_value(&ty), &history, scope.clone());
             if let Some(root) = rt.upgrade() {
                 root.append(&w);
             }
@@ -487,6 +522,7 @@ pub fn value_editor(state: &State, ty: &Type, value: &Value) -> (gtk::Widget, Re
     } else {
         value.to_string()
     });
+    history.attach_scope(&entry, scope);
     let e = entry.clone();
     let ty = ty.clone();
     let st = state.clone();
@@ -512,13 +548,20 @@ fn record_row(
     name: &str,
     ty: Type,
     value: &Value,
+    history: &Form,
+    scope: Scope,
 ) {
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let key = gtk::Entry::new();
     key.set_text(name);
     key.set_placeholder_text(Some("Field name"));
     line.append(&key);
-    let (w, read) = value_editor(state, &ty, value);
+    let key_ref = key.downgrade();
+    let scope: Scope = Rc::new(move || {
+        let name = key_ref.upgrade().map(|key| key.text()).unwrap_or_default();
+        format!("{}/{name}", scope())
+    });
+    let (w, read) = value_editor(state, &ty, value, history, scope);
     w.set_hexpand(true);
     line.append(&w);
     let removed = Rc::new(std::cell::Cell::new(false));

@@ -216,6 +216,7 @@ flow {
     arrange-gap 48.0
     arrange-drag true
     undo-limit 100
+    field-history-limit 20
     code-auto-complete true
     pin-usage-highlight true
     running-color "#71c68c"
@@ -240,6 +241,7 @@ flow {
         Ctrl+Shift+g action="ungroup" title="Ungroup selected frame"
         Ctrl+t action="text" title="Add a resizable text field"
         Ctrl+space action="complete_code" title="Complete Vox code"
+        Alt+Down action="field_history" title="Show saved values for a text field"
         Ctrl+Return action="save_code" title="Apply code and IO changes"
         Return action="open" title="Peek at the selected window / open output"
         KP_Enter action="open" title="Peek at the selected window / open output"
