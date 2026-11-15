@@ -6,7 +6,9 @@ payload = json.loads(sys.argv[1]) if len(sys.argv) > 1 else json.load(sys.stdin)
 agent = os.environ["FLOWWM_AGENT_KIND"]
 accepted = agent != "codex" or payload.get("type") == "agent-turn-complete"
 try:
-    if accepted:
+    if payload.get("hook_event_name") == "UserPromptSubmit":
+        publish_idle(os.environ["FLOWWM_AGENT_NODE"], False)
+    elif accepted:
         node = os.environ["FLOWWM_AGENT_NODE"]
         session = payload.get("thread-id", payload.get("session_id", ""))
         failed = payload.get("hook_event_name") == "StopFailure" or bool(payload.get("error"))
@@ -17,6 +19,7 @@ try:
         temporary.write_text(json.dumps({"harness": os.environ["FLOWWM_AGENT_HARNESS"], "session": session}))
         temporary.chmod(0o600)
         temporary.replace(path)
+        publish_idle(node, True)
         Client().emit(node, "on_session_finish", args, retry_seconds=5)
         Path(os.environ["FLOWWM_AGENT_FINISHED"]).touch()
 finally:

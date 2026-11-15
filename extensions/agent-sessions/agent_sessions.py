@@ -21,6 +21,10 @@ TERMINALS = ("alacritty", "kitty", "foot", "wezterm", "konsole", "gnome-terminal
 
 sys.path.insert(0, str(HERE.parents[1] / "sdk/python"))
 from flow_sdk import Client, exchange
+from flow_agent_activity import AgentActivity, monitor_activity, publish_idle
+
+ACTIVITY = {}
+LAST_IDLE = {}
 
 
 def desktop_bindings():
@@ -77,7 +81,9 @@ def expose(node):
     Client().expose_output(node, "on_session_finish", SIGNAL_TYPE, [{"name":"Error","representation":{"kind":"record","fields":{"code":{"kind":"int"},"kind":{"kind":"string"},"message":{"kind":"string"}},"open":False}}])
 
 
-def finish(node, agent, code=0, kind="", message="", session=""):
+def finish(node, agent, code=0, kind="", message="", session="", idle=True):
+    if idle:
+        publish_idle(node, True)
     error = {"code": code, "kind": kind or ("none" if code == 0 else "process_exit"), "message": message}
     Client().emit(node, "on_session_finish", {"ERROR": error, "AGENT": agent, "SESSION": session}, retry_seconds=5)
 
@@ -125,7 +131,7 @@ def claude_settings(arguments, hook_command):
             args.append(arg)
         index += 1
     hooks = settings.setdefault("hooks", {})
-    for event in ("Stop", "StopFailure"):
+    for event in ("UserPromptSubmit", "Stop", "StopFailure"):
         hooks.setdefault(event, []).append({"hooks": [{"type": "command", "command": hook_command, "timeout": 5}]})
     return ["--settings", json.dumps(settings), *args]
 
@@ -161,6 +167,8 @@ def run(agent, arguments):
                 print(f"FlowWM: cannot merge Claude CLI settings: {error}", file=sys.stderr)
                 os.execv(real, [real, *arguments])
         child = subprocess.Popen([real, *arguments], env=env)
+        publish_idle(node, False)
+        observer = monitor_activity(child.pid, node) if agent == "codex" else None
         old = {signal.SIGINT: signal.signal(signal.SIGINT, signal.SIG_IGN)}
         def forward(signum, _):
             if child.poll() is None:
@@ -178,6 +186,9 @@ def run(agent, arguments):
                     print(f"FlowWM completion: {error}", file=sys.stderr)
             return code if code >= 0 else 128 - code
         finally:
+            if observer:
+                observer.set()
+            publish_idle(node, True)
             for sig, handler in old.items():
                 signal.signal(sig, handler)
 
@@ -189,6 +200,9 @@ def notify(agent, payload=None):
     try:
         node = os.environ.get("FLOWWM_AGENT_NODE")
         if node:
+            if payload.get("hook_event_name") == "UserPromptSubmit":
+                publish_idle(node, False)
+                return
             failed = payload.get("hook_event_name") == "StopFailure" or bool(payload.get("error"))
             finish(node, agent, 1 if failed else 0, str(payload.get("error", "")), str(payload.get("error_details", "")), str(payload.get("session_id", payload.get("thread-id", ""))))
             marker = os.environ.get("FLOWWM_AGENT_MARKER")
@@ -240,11 +254,21 @@ def scan(native, state, tracked):
                     found[key] = (node, agent)
                     if key not in tracked:
                         expose(node)
+                    observer = ACTIVITY.setdefault(key, AgentActivity(pid))
+                    observer.sample()
             except (OSError, ValueError, RuntimeError):
                 continue
     for key, (node, agent) in tracked.items():
         if key not in found and node in nodes.values():
-            finish(node, agent, -1, "unknown_exit", "The unwrapped process ended; its exit status is unavailable. Start it through the FlowWM adapter for precise completion events.")
+            finish(node, agent, -1, "unknown_exit", "The unwrapped process ended; its exit status is unavailable. Start it through the FlowWM adapter for precise completion events.", idle=False)
+        if key not in found:
+            ACTIVITY.pop(key, None)
+    for node in {node for node, _ in found.values()} | {node for node, _ in tracked.values() if node in nodes.values()}:
+        idle = all(ACTIVITY[key].idle for key, (owner, _) in found.items() if owner == node)
+        if LAST_IDLE.get(node) != idle and publish_idle(node, idle):
+            LAST_IDLE[node] = idle
+    for node in set(LAST_IDLE) - {node for node, _ in found.values()}:
+        LAST_IDLE.pop(node, None)
     return found
 
 

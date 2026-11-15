@@ -824,6 +824,64 @@ impl Orchestrator {
             && self
                 .registry
                 .definition(&spec.type_id)
+                .is_ok_and(|d| d.behavior == Behavior::Barrier)
+        {
+            let graph = &self.state.workflows[&workflow].graph;
+            let required: BTreeSet<_> = crate::graph::pins(graph, spec, false)
+                .into_iter()
+                .filter(|p| p.ty.is_signal())
+                .map(|p| p.name)
+                .collect();
+            ensure!(
+                !required.is_empty() && required.contains(&activation.pin),
+                "Deliver barrier signals to a named input"
+            );
+            // Configuration is part of the key so removed/replaced inputs cannot
+            // satisfy a new barrier. Independent correlations share this round.
+            let prefix = format!("{}:{}:barrier:", workflow, activation.id);
+            let mut connections: Vec<_> = graph
+                .connections
+                .iter()
+                .filter(|edge| edge.target.node == activation.id)
+                .collect();
+            connections.sort_by(|a, b| {
+                (&a.target.pin, &a.source.node, &a.source.pin).cmp(&(
+                    &b.target.pin,
+                    &b.source.node,
+                    &b.source.pin,
+                ))
+            });
+            let key = format!(
+                "{prefix}{}",
+                serde_json::to_string(&(&required, connections))?
+            );
+            self.state
+                .queue
+                .joins
+                .retain(|previous, _| !previous.starts_with(&prefix) || previous == &key);
+            self.state
+                .queue
+                .joins
+                .entry(key.clone())
+                .or_default()
+                .insert(activation.pin.clone());
+            self.state.revision += 1;
+            if !required.is_subset(&self.state.queue.joins[&key]) {
+                return Ok(
+                    json!({"waiting_for": required.difference(&self.state.queue.joins[&key]).collect::<Vec<_>>()}),
+                );
+            }
+            self.state.queue.joins.remove(&key);
+            activation.args = json!({});
+        }
+        if let Some(spec) = self
+            .state
+            .workflows
+            .get(&workflow)
+            .and_then(|w| w.graph.node(&activation.id))
+            && self
+                .registry
+                .definition(&spec.type_id)
                 .is_ok_and(|d| d.behavior == Behavior::Join)
         {
             let key = format!("{}:{}:{}", workflow, activation.id, correlation);
@@ -910,6 +968,11 @@ impl Orchestrator {
             .find(|n| n.id == node)
             .context("Node not found")?;
         let definition = self.registry.definition(&spec.type_id)?;
+        let launching_idle_output = definition.behavior == Behavior::Application
+            && !self.state.applications.contains_key(&node)
+            && crate::graph::pins(&w.graph, spec, true)
+                .iter()
+                .any(|p| p.name == "is_idle");
         ensure!(
             !matches!(definition.behavior, Behavior::Source),
             "This provider does not support manual invocation"
@@ -998,6 +1061,14 @@ impl Orchestrator {
             },
         );
         self.state.executions.insert(invocation.clone(), execution);
+        if launching_idle_output {
+            self.state
+                .queue
+                .published
+                .entry(self.state.executions[&invocation].node.clone())
+                .or_default()
+                .insert("is_idle".into(), json!(false));
+        }
         self.state.revision += 1;
         Ok(serde_json::to_value(&self.state.executions[&invocation])?)
     }

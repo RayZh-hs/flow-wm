@@ -125,7 +125,10 @@ impl Sources {
                         .unwrap();
                     continue;
                 }
-                if source.type_id == "local.timer" {
+                if source.type_id == "local.on_all_true" {
+                    // The host resolves current graph inputs in a bounded worker.
+                    pin = "__poll";
+                } else if source.type_id == "local.timer" {
                     args = json!({"tick":sequence});
                 } else {
                     let invocation = Invocation {

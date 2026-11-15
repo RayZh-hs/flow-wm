@@ -22,6 +22,58 @@ impl Fields {
     pub fn new(state: &State, node: &Node, history: &Form) -> Self {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
         let mut setters: Vec<Apply> = vec![];
+        if node.flow.node_type.starts_with("local.list_")
+            && node.flow.node_type != "local.list_create"
+        {
+            let mut types = type_choices(state)
+                .into_iter()
+                .filter(|ty| !ty.is_signal())
+                .collect::<Vec<_>>();
+            let ty = node
+                .flow
+                .properties
+                .get("item_type")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or(Type::Any);
+            if !types.contains(&ty) {
+                types.push(ty.clone());
+            }
+            let choice = type_choice(&types, &ty);
+            field(&root, "Item type (Any infers from connections)", &choice);
+            setters.push(Rc::new(move |node| {
+                node.flow
+                    .properties
+                    .insert("item_type".into(), json!(types[choice.selected() as usize]));
+                Ok(())
+            }));
+        }
+        if flow_core::graph::variadic::group(&node.spec().type_id).is_some() {
+            let editor = variadic_editor(state, node, history);
+            root.append(&editor.widget);
+            setters.push(editor.apply);
+        }
+        if flow_builtins::agent::is_session(&node.spec().type_id)
+            || node.kind == NodeKind::Agent
+            || graph::pins(state, node, true)
+                .iter()
+                .any(|p| p.name == "on_session_finish")
+        {
+            let expose = gtk::CheckButton::with_label("Expose is_idle Boolean output");
+            expose.set_active(
+                node.flow
+                    .properties
+                    .get("expose_is_idle")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            );
+            root.append(&expose);
+            setters.push(Rc::new(move |node| {
+                node.flow
+                    .properties
+                    .insert("expose_is_idle".into(), json!(expose.is_active()));
+                Ok(())
+            }));
+        }
         if node.kind == NodeKind::Constant {
             let ty = graph::constant_type(node);
             let mut types: Vec<_> = type_choices(state)
@@ -229,6 +281,16 @@ impl Fields {
                 root.append(&hint);
             }
             for (name, (ty, default)) in properties {
+                if name == "input_count"
+                    && flow_core::graph::variadic::group(&node.spec().type_id).is_some()
+                {
+                    continue;
+                }
+                let ty = graph::pins(state, node, false)
+                    .iter()
+                    .find(|pin| pin.property.as_ref() == Some(&name))
+                    .map(|pin| pin.ty.clone())
+                    .unwrap_or(ty);
                 let value = node.flow.properties.get(&name).unwrap_or(&default);
                 if node.flow.node_type == "local.bake_args_into_env" && name == "mappings" {
                     let mut values: flow_core::environment::Env =
@@ -337,6 +399,124 @@ impl Fields {
                 Ok(())
             }),
         }
+    }
+}
+fn variadic_editor(state: &State, node: &Node, history: &Form) -> Fields {
+    let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let (prefix, ty) = flow_core::graph::variadic::group(&node.spec().type_id).unwrap();
+    let item_choice = if prefix == "item" {
+        let mut types = type_choices(state)
+            .into_iter()
+            .filter(|ty| !ty.is_signal())
+            .collect::<Vec<_>>();
+        let selected = node
+            .flow
+            .properties
+            .get("item_type")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or(Type::Any);
+        if !types.contains(&selected) {
+            types.push(selected.clone());
+        }
+        let choice = type_choice(&types, &selected);
+        field(&root, "Item type (Any infers from connections)", &choice);
+        Some((choice, types))
+    } else {
+        None
+    };
+    let count = gtk::SpinButton::with_range(if prefix == "item" { 0. } else { 1. }, 256., 1.);
+    count.set_value(flow_core::graph::variadic::count(&node.spec()) as f64);
+    field(&root, "Number of inputs", &count);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    root.append(&body);
+    let readers = Rc::new(RefCell::new(Vec::<(String, ReadValue)>::new()));
+    let values = Rc::new(RefCell::new(node.flow.properties.clone()));
+    let st = state.clone();
+    let template = node.clone();
+    let reads = readers.clone();
+    let history = history.clone();
+    let type_choice = item_choice.clone();
+    let update = move |count: &gtk::SpinButton| {
+        for (name, read) in reads.borrow().iter() {
+            if let Ok(value) = read() {
+                values.borrow_mut().insert(name.clone(), value);
+            }
+        }
+        reads.borrow_mut().clear();
+        while let Some(child) = body.first_child() {
+            body.remove(&child);
+        }
+        for i in 1..=count.value_as_int() {
+            let name = format!("{prefix}_{i}");
+            if ty.is_signal() {
+                let label = gtk::Label::new(Some(&format!("Signal {i}")));
+                label.set_xalign(0.);
+                body.append(&label);
+                continue;
+            }
+            let connected = st
+                .connections
+                .iter()
+                .any(|edge| edge.target.node == template.id && edge.target.pin == name);
+            if connected {
+                let label = gtk::Label::new(Some(&format!("{name} · connected")));
+                label.set_xalign(0.);
+                body.append(&label);
+            } else {
+                let input_ty = type_choice
+                    .as_ref()
+                    .map(|(choice, types)| types[choice.selected() as usize].clone())
+                    .filter(|ty| *ty != Type::Any)
+                    .unwrap_or_else(|| {
+                        graph::pins(&st, &template, false)
+                            .iter()
+                            .find(|pin| pin.name == name)
+                            .map(|p| p.ty.clone())
+                            .unwrap_or_else(|| ty.clone())
+                    });
+                let value = values
+                    .borrow()
+                    .get(&name)
+                    .cloned()
+                    .filter(|value| graph::check_value(&st, value, &input_ty).is_ok())
+                    .unwrap_or_else(|| default_value(&input_ty));
+                let (widget, read) = value_editor(
+                    &st,
+                    &input_ty,
+                    &value,
+                    &history,
+                    field_history::scope(field_history::property_scope(
+                        &template.spec().type_id,
+                        &name,
+                    )),
+                );
+                field(&body, &name, &widget);
+                reads.borrow_mut().push((name, read));
+            }
+        }
+    };
+    update(&count);
+    count.connect_value_changed(update);
+    if let Some((choice, _)) = &item_choice {
+        let count = count.clone();
+        choice.connect_selected_notify(move |_| count.emit_by_name::<()>("value-changed", &[]));
+    }
+    Fields {
+        widget: root,
+        apply: Rc::new(move |node| {
+            if let Some((choice, types)) = &item_choice {
+                node.flow
+                    .properties
+                    .insert("item_type".into(), json!(types[choice.selected() as usize]));
+            }
+            node.flow
+                .properties
+                .insert("input_count".into(), json!(count.value_as_int()));
+            for (name, read) in readers.borrow().iter() {
+                node.flow.properties.insert(name.clone(), read()?);
+            }
+            Ok(())
+        }),
     }
 }
 pub fn default_value(ty: &Type) -> Value {
@@ -692,5 +872,98 @@ impl PinEditor {
             }
         }
         Ok((inputs, outputs))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn descendants(root: &impl IsA<gtk::Widget>) -> Vec<gtk::Widget> {
+        let mut widgets = vec![];
+        let mut child = root.first_child();
+        while let Some(widget) = child {
+            widgets.extend(descendants(&widget));
+            widgets.push(widget.clone());
+            child = widget.next_sibling();
+        }
+        widgets
+    }
+
+    #[test]
+    #[ignore = "requires an isolated GTK display"]
+    fn variable_inputs_rebuild_controls_preserve_values_and_apply_selected_types() {
+        gtk::init().unwrap();
+        let mut state = State::empty("/tmp".into());
+        let mut node = Node::new(
+            &state.selected_workspace,
+            NodeKind::Extension,
+            "/tmp".into(),
+            Default::default(),
+        );
+        node.flow.node_type = "local.list_create".into();
+        node.flow
+            .properties
+            .insert("item_type".into(), json!(Type::String));
+        node.flow.properties.insert("item_1".into(), json!("first"));
+        state.nodes.push(node.clone());
+        let editor = variadic_editor(&state, &node, &Form::default());
+        let window = gtk::Window::builder().child(&editor.widget).build();
+        window.present();
+        while gtk::glib::MainContext::default().pending() {
+            gtk::glib::MainContext::default().iteration(false);
+        }
+        let count = descendants(&editor.widget)
+            .into_iter()
+            .find_map(|w| w.downcast::<gtk::SpinButton>().ok())
+            .unwrap();
+        count.set_value(12.);
+        while gtk::glib::MainContext::default().pending() {
+            gtk::glib::MainContext::default().iteration(false);
+        }
+        let entries = descendants(&editor.widget)
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk::Entry>().ok())
+            .collect::<Vec<_>>();
+        assert_eq!(entries.len(), 12);
+        assert_eq!(entries[0].text(), "first");
+        entries[11].set_text("twelfth");
+        editor.apply(&mut node).unwrap();
+        assert_eq!(node.flow.properties["input_count"], 12);
+        assert_eq!(node.flow.properties["item_12"], "twelfth");
+
+        let choice = descendants(&editor.widget)
+            .into_iter()
+            .find_map(|w| w.downcast::<gtk::DropDown>().ok())
+            .unwrap();
+        let types = type_choices(&state)
+            .into_iter()
+            .filter(|ty| !ty.is_signal())
+            .collect::<Vec<_>>();
+        choice.set_selected(types.iter().position(|ty| *ty == Type::Bool).unwrap() as u32);
+        while gtk::glib::MainContext::default().pending() {
+            gtk::glib::MainContext::default().iteration(false);
+        }
+        let checks = descendants(&editor.widget)
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk::CheckButton>().ok())
+            .collect::<Vec<_>>();
+        assert_eq!(checks.len(), 12);
+        checks[11].set_active(true);
+        editor.apply(&mut node).unwrap();
+        assert_eq!(node.flow.properties["item_type"], json!(Type::Bool));
+        assert_eq!(node.flow.properties["item_12"], true);
+        window.close();
+
+        node.flow.node_type = "local.on_all_fired".into();
+        let signals = variadic_editor(&state, &node, &Form::default());
+        signals.apply(&mut node).unwrap();
+        assert_eq!(node.flow.properties["input_count"], 12);
+        assert!(
+            flow_core::graph::pins_for(&node.spec(), None, false)
+                .iter()
+                .filter(|p| p.name.starts_with("signal_"))
+                .all(|p| p.ty.is_signal())
+        );
     }
 }

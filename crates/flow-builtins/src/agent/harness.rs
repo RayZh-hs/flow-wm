@@ -20,6 +20,8 @@ pub struct Harness {
 #[derive(knuffel::Decode)]
 struct Document {
     #[knuffel(child, unwrap(argument))]
+    idle_poll_interval_ms: Option<u64>,
+    #[knuffel(child, unwrap(argument))]
     default_harness: Option<String>,
     #[knuffel(child, unwrap(arguments))]
     terminal: Option<Vec<String>>,
@@ -27,6 +29,7 @@ struct Document {
     harnesses: Vec<Harness>,
 }
 pub struct Harnesses {
+    pub idle_poll_interval_ms: u64,
     pub default_harness: String,
     pub terminal: Vec<String>,
     pub harnesses: BTreeMap<String, Harness>,
@@ -34,6 +37,7 @@ pub struct Harnesses {
 impl Harnesses {
     pub fn load(directory: Option<&Path>) -> Result<Self> {
         let mut result = Self {
+            idle_poll_interval_ms: 1000,
             default_harness: "codex".into(),
             terminal: vec![
                 "alacritty",
@@ -76,6 +80,10 @@ impl Harnesses {
                         .map_err(|e| anyhow::anyhow!("{e:?}"))?;
                 if let Some(default) = document.default_harness {
                     result.default_harness = default;
+                }
+                if let Some(interval) = document.idle_poll_interval_ms {
+                    ensure!(interval > 0, "Idle polling interval must be positive");
+                    result.idle_poll_interval_ms = interval;
                 }
                 if let Some(terminal) = document.terminal {
                     result.terminal = terminal;

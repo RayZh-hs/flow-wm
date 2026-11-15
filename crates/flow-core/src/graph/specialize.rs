@@ -96,8 +96,81 @@ fn resolve(
     } else {
         None
     };
+    // List templates bind one item type throughout the operation. Prefer the
+    // declared type, then a connected list, then connected individual items.
+    let list_item = if node_kind.starts_with("list_") {
+        let inputs = declared(id, false);
+        let mut candidates = Vec::new();
+        if node_kind == "list_create" {
+            for pin in declared(id, true) {
+                if let Type::List { item } = pin.ty
+                    && *item != Type::Any
+                {
+                    candidates.push(*item);
+                }
+            }
+        }
+        for pin in &inputs {
+            let item = match (&pin.ty, pin.name.as_str()) {
+                (Type::List { item }, "list" | "other") => Some((**item).clone()),
+                (ty, name) if name == "item" || name.starts_with("item_") => Some(ty.clone()),
+                _ => None,
+            };
+            if let Some(ty) = item.filter(|ty| *ty != Type::Any) {
+                candidates.push(ty);
+            }
+        }
+        if candidates.is_empty() {
+            for pin in &inputs {
+                if let Some(ty) = incoming(&pin.name) {
+                    match (ty, pin.name.as_str()) {
+                        (Type::List { item }, "list" | "other") if *item != Type::Any => {
+                            candidates.push(*item)
+                        }
+                        (ty, name)
+                            if (name == "item" || name.starts_with("item_")) && ty != Type::Any =>
+                        {
+                            candidates.push(ty)
+                        }
+                        _ => (),
+                    }
+                }
+            }
+        }
+        // Numeric widening is independent of connection order.
+        if candidates
+            .iter()
+            .all(|ty| matches!(ty, Type::Int | Type::UInt | Type::UInt8 | Type::Float))
+            && candidates.contains(&Type::Float)
+        {
+            Some(Type::Float)
+        } else {
+            candidates.into_iter().next()
+        }
+    } else {
+        None
+    };
     for pin in &mut pins {
         let inferred = match (node_kind, output, pin.name.as_str()) {
+            (kind, false, "list" | "other") if kind.starts_with("list_") => {
+                list_item.clone().map(|item| Type::List {
+                    item: Box::new(item),
+                })
+            }
+            (kind, false, name)
+                if kind.starts_with("list_") && (name == "item" || name.starts_with("item_")) =>
+            {
+                list_item.clone()
+            }
+            ("list_get", true, "value") => list_item.clone(),
+            (kind, true, "value")
+                if kind.starts_with("list_")
+                    && !matches!(kind, "list_length" | "list_contains") =>
+            {
+                list_item.clone().map(|item| Type::List {
+                    item: Box::new(item),
+                })
+            }
             ("display", _, "value") => value.clone(),
             ("break_signal", false, "in") => signal.clone(),
             ("break_signal", true, "args") => signal.as_ref().and_then(|ty| match ty {

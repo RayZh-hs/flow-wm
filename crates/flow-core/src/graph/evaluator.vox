@@ -45,6 +45,8 @@ evil fun evaluate(node: String, args: String, active: Bool): String {
         result = host.call("put", "{}", "value", host.call("constant", node, inputs, ""));
     } else if (kind == "display") {
         result = host.call("put", "{}", "value", host.call("get", inputs, "value", ""));
+    } else if (kind == "on_all_true") {
+        result = host.call("all_true", node, inputs, "");
     } else if (kind == "alert") {
         result = host.call("alert", node, inputs, "");
     } else if (kind == "break_signal") {

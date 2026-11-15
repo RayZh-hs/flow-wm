@@ -1,4 +1,6 @@
 // Agent sessions are a builtin extension. Commands are argv lists, never shell code.
+// Poll explicit session activity events for the optional is_idle output.
+idle-poll-interval-ms 1000
 default-harness "codex"
 
 // Any terminal can be used; the class/app ID associates its live preview with the node.

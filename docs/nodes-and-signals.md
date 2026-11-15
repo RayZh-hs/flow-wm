@@ -188,6 +188,10 @@ remain valid. Unconnected legacy outputs are omitted.
 
 ## Primitive nodes
 
+The [workflow utilities guide](workflow-utilities.md) covers session actions
+(power off, logout, locking and sleep), typed list templates, On all true,
+On all fired, and optional agent-session `is_idle` outputs.
+
 | Kind | Input | Output and behavior |
 | --- | --- | --- |
 | `constant` | Local `value` property | `value` data; can be given a concrete pin type |

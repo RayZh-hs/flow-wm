@@ -17,6 +17,8 @@ pub enum Behavior {
     Lazy,
     Invoked,
     Join,
+    /// Wait for every named input across independent deliveries, then rearm.
+    Barrier,
     Application,
     Source,
 }

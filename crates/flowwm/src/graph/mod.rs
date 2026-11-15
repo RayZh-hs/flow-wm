@@ -150,6 +150,7 @@ pub fn can_cast(state: &State, from: &Type, to: &Type) -> bool {
 }
 pub fn pin_label(node: &Node, pin: &Pin, output: bool) -> String {
     match (pin.name.as_str(), output) {
+        ("is_idle", true) => "Is idle".into(),
         ("env", _) => "Env".into(),
         ("in", false) => "Run".into(),
         ("out", true) if !node.kind.primitive() => "Completed".into(),

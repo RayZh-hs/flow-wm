@@ -16,11 +16,15 @@ class NativeTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.path = Path(self.directory.name)
         self.scope = {"__name__": "test_native"}
-        exec(compile(SDK.read_text() + "\n" + (SOURCE / "native.py").read_text(), "native.py", "exec"), self.scope)
+        activity = SDK.with_name("flow_agent_activity.py").read_text()
+        exec(compile(SDK.read_text() + "\n" + activity + "\n" + (SOURCE / "native.py").read_text(), "native.py", "exec"), self.scope)
         self.events = []
+        self.idle = []
         class Client:
             def emit(_, *args, **kwargs):
                 self.events.append(args)
+            def publish_node(_, node, values):
+                self.idle.append(values["is_idle"])
         self.scope["Client"] = Client
         self.environment = patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(self.path), "FLOWWM_STATE_DIR": str(self.path / "state"), "CODEX_HOME": str(self.path / "codex")})
         self.environment.start()
@@ -53,6 +57,7 @@ class NativeTests(unittest.TestCase):
         self.assertEqual(result["env"]["FLOWWM_AGENT_WRAPPED"], "1")
         self.assertEqual(self.events[0][1], "on_session_finish")
         self.assertEqual(self.events[0][2]["ERROR"]["code"], 0)
+        self.assertEqual(self.idle, [False, True])
 
     def test_reopen_resumes_the_exact_harness_without_resending_initial_prompt(self):
         saved = self.path / "state/agent-sessions/test-node.json"
@@ -70,6 +75,7 @@ class NativeTests(unittest.TestCase):
         self.assertTrue(settings["hooks"]["Stop"][0]["existing"])
         self.assertEqual(len(settings["hooks"]["Stop"]), 2)
         self.assertIn("StopFailure", settings["hooks"])
+        self.assertIn("UserPromptSubmit", settings["hooks"])
 
     def test_custom_interactive_argv_is_configurable(self):
         result = self.run_native("text", ["custom-cli"], ["--prompt", "{prompt}", "--write={writable}"])

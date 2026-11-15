@@ -185,6 +185,70 @@ fn native_graph_executes_through_worker_and_survives_client_reconnection() {
     }
     assert!(!cwd.join("data/presentation.json").exists());
 }
+
+#[test]
+fn utility_sources_and_barriers_run_through_workers_and_keep_one_shot_state() {
+    let mut f = Fixture::new();
+    let cwd = f.dir.path().to_owned();
+    let mut watch = node("watch", "on_all_true", "", &cwd);
+    watch.flow.properties.extend([
+        ("input_count".into(), json!(2)),
+        ("interval_secs".into(), json!(1)),
+        ("condition_1".into(), json!(true)),
+        ("condition_2".into(), json!(true)),
+    ]);
+    let workflow = f.graph(
+        vec![
+            watch,
+            node("manual", "shell", "true", &cwd),
+            node("barrier", "on_all_fired", "", &cwd),
+            node("sink", "shell", "printf x >> utility-effects", &cwd),
+        ],
+        vec![
+            wire("watch", "out", "barrier", "signal_1"),
+            wire("manual", "out", "barrier", "signal_2"),
+            wire("barrier", "out", "sink", "in"),
+        ],
+    );
+    wait(|| {
+        f.client
+            .snapshot()
+            .unwrap()
+            .sources
+            .get(&"watch".into())
+            .is_some_and(|s| s.state["fired"] == true)
+    });
+    assert!(!cwd.join("utility-effects").exists());
+    f.run(&workflow, "manual", "independent-arrival");
+    wait(|| cwd.join("utility-effects").exists());
+    wait(|| {
+        f.client
+            .snapshot()
+            .unwrap()
+            .executions
+            .values()
+            .any(|e| e.node.0 == "sink" && e.status == ExecutionStatus::Complete)
+    });
+    f.restart();
+    f.run(&workflow, "manual", "next-round");
+    f.until_terminal("next-round");
+    let sequence = f.client.snapshot().unwrap().sources[&NodeId::from("watch")].sequence;
+    wait(|| f.client.snapshot().unwrap().sources[&NodeId::from("watch")].sequence > sequence + 1);
+    assert_eq!(
+        std::fs::read_to_string(cwd.join("utility-effects")).unwrap(),
+        "x"
+    );
+    assert_eq!(
+        f.client
+            .snapshot()
+            .unwrap()
+            .executions
+            .values()
+            .filter(|e| e.node.0 == "barrier")
+            .count(),
+        1
+    );
+}
 #[test]
 fn failures_follow_explicit_failure_pins_and_decisions_wait_for_resolution() {
     let f = Fixture::new();

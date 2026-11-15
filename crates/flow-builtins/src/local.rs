@@ -105,7 +105,15 @@ impl Local {
                 ("local.shell".into(), shell as Factory),
                 ("local.metric_sample".into(), metric as Factory),
                 ("local.agent".into(), crate::agent::process as Factory),
-            ]),
+            ])
+            .into_iter()
+            .chain(crate::session_actions::ACTIONS.iter().map(|(id, _, _)| {
+                (
+                    format!("local.{id}"),
+                    crate::session_actions::process as Factory,
+                )
+            }))
+            .collect(),
         }
     }
 }
@@ -119,7 +127,11 @@ impl ExecutionProvider for Local {
         crate::environment::validate_properties(type_id, properties)?;
         if matches!(
             type_id,
-            "local.metric" | "local.timer" | "local.watcher" | "local.receive"
+            "local.metric"
+                | "local.timer"
+                | "local.watcher"
+                | "local.receive"
+                | "local.on_all_true"
         ) {
             ensure!(
                 properties
@@ -201,6 +213,12 @@ impl ExecutionProvider for Local {
     }
 
     fn read(&self, invocation: Invocation) -> Result<Value> {
+        if crate::lists::NODES
+            .iter()
+            .any(|(id, _, _)| invocation.type_id == format!("local.{id}"))
+        {
+            return crate::lists::read(&invocation);
+        }
         if matches!(
             invocation.type_id.as_str(),
             "local.set_env" | "local.unset_env" | "local.empty_env" | "local.bake_args_into_env"
@@ -285,7 +303,10 @@ impl ExecutionProvider for Local {
             });
             return Ok(handle);
         }
-        if matches!(invocation.type_id.as_str(), "local.alert" | "local.join") {
+        if matches!(
+            invocation.type_id.as_str(),
+            "local.alert" | "local.join" | "local.on_all_fired"
+        ) {
             let result = if invocation.type_id == "local.alert" {
                 json!({"attention":{"message":invocation.properties.get("message"),"critical":invocation.properties.get("critical")},"out":invocation.args})
             } else if invocation.input == "failed" {
@@ -441,6 +462,8 @@ pub fn registry_with_environment(limits: Limits, environment: Environment) -> Re
         ("receive", Behavior::Source, vec![]),
         ("alert", Behavior::Invoked, vec![]),
         ("join", Behavior::Join, vec![]),
+        ("on_all_fired", Behavior::Barrier, vec![]),
+        ("on_all_true", Behavior::Source, vec![]),
         ("agent", Behavior::Invoked, vec!["shell"]),
         ("window", Behavior::Application, vec!["application"]),
         ("human", Behavior::Invoked, vec![]),
@@ -485,6 +508,13 @@ pub fn registry_with_environment(limits: Limits, environment: Environment) -> Re
                 ),
                 Pin::new("args", Type::record()),
             ];
+        }
+        if matches!(name, "on_all_true" | "on_all_fired") {
+            inputs.clear();
+            outputs = vec![Pin::new("out", Type::trigger())];
+            if name == "on_all_true" {
+                outputs.push(Pin::new("value", Type::Bool));
+            }
         }
         if matches!(name, "human" | "gate") {
             outputs = vec![
@@ -537,12 +567,21 @@ pub fn registry_with_environment(limits: Limits, environment: Environment) -> Re
                         },
                     );
                 };
-                if matches!(name, "timer" | "metric" | "watcher" | "receive") {
+                if matches!(
+                    name,
+                    "timer" | "metric" | "watcher" | "receive" | "on_all_true"
+                ) {
                     property(
                         "interval_secs",
                         Type::UInt,
                         json!(limits.source_interval_secs),
                     );
+                }
+                if matches!(name, "on_all_true" | "on_all_fired") {
+                    property("input_count", Type::UInt, json!(2));
+                }
+                if name == "on_all_true" {
+                    property("repeatable", Type::Bool, json!(false));
                 }
                 if matches!(name, "receive" | "broadcast") {
                     property("channel", Type::String, json!("events"));
@@ -565,6 +604,8 @@ pub fn registry_with_environment(limits: Limits, environment: Environment) -> Re
     })
     .collect();
     definitions.extend(crate::environment::definitions());
+    definitions.extend(crate::lists::definitions());
+    definitions.extend(crate::session_actions::definitions(&environment)?);
     crate::agent::install(&mut registry, limits.clone(), environment.clone())?;
     crate::external::install(&mut registry, limits.clone(), environment.clone())?;
     registry.mount(

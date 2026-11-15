@@ -70,6 +70,11 @@ class Client:
     def publish(self, workflow, node, values):
         return self.request({"command": "publish", "workflow": workflow, "node": node, "values": values})
 
+    def publish_node(self, node, values):
+        snapshot = self.snapshot()
+        workflow = next(w for w in snapshot["workflows"].values() if any(n["id"] == node for n in w["graph"]["nodes"]))
+        return self.publish(workflow["id"], node, values)
+
     def emit(self, node, pin, args, delivery_id=None, retry_seconds=0):
         """Optionally wait for a newly opened application's registration.
 

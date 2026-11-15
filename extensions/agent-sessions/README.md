@@ -20,7 +20,7 @@ Connect `terminal.on_session_finish` to **Handle session error**, then wire its 
 
 The Codex adapter supplies a per-invocation `notify` command. Its hook handles `agent-turn-complete`, then runs the user's existing notification command. Codex's notification hook reports completed turns; the wrapper additionally reports nonzero CLI exits. See the [official Codex notification documentation](https://learn.chatgpt.com/docs/config-file/config-advanced#notifications).
 
-The Claude adapter adds Stop and StopFailure command hooks through invocation-local `--settings`. Existing CLI settings and hooks are merged. User configuration files remain intact. StopFailure carries an error category such as `rate_limit`; the adapter preserves that category and its details. See the [Claude hooks reference](https://code.claude.com/docs/en/hooks#stopfailure).
+The Claude adapter adds UserPromptSubmit, Stop and StopFailure command hooks through invocation-local `--settings`. Existing CLI settings and hooks are merged. User configuration files remain intact. StopFailure carries an error category such as `rate_limit`; the adapter preserves that category and its details. See the [Claude hooks reference](https://code.claude.com/docs/en/hooks#stopfailure).
 
 A successful process exit is emitted when no completion hook was received, and a failing process exit is always reported. The event describes a completed turn or CLI exit, not the correctness of the model's work. Older CLI versions without the documented hooks still have process-exit reporting.
 
@@ -34,7 +34,7 @@ FlowWM-owned workflow processes bypass the terminal adapter because the runtime 
 
 ## Observer and limits
 
-The observer discovers local Codex/Claude processes under terminal windows. It blocks on compositor events when no terminal exists and scans at most every two seconds while a terminal is open. It does not read transcripts, prompts, or authentication files. It tracks PID start time to avoid confusing reused process IDs and skips wrapped processes to avoid duplicate events.
+The observer discovers local Codex/Claude processes under terminal windows. It blocks on compositor events when no terminal exists and scans at most every two seconds while a terminal is open. It tracks PID start time to avoid confusing reused process IDs and skips wrapped processes to avoid duplicate events. To support the optional **is_idle** output, it incrementally reads explicit activity events from session transcripts held open by the process tree. It publishes only the Boolean state and does not store transcript contents or read authentication files. See [workflow utilities](../../docs/workflow-utilities.md#optional-agent-idle-output) for the setting and unsupported-adapter behavior.
 
 Linux does not expose a non-child process's exit status through `/proc`. Unwrapped exits therefore report `unknown_exit`; they never imply success. A remote CLI, or an existing detached multiplexer process with no discoverable local window ancestry, cannot be assigned reliably. Use the adapter and an explicit binding for those cases. Sessions that run and exit entirely between observer scans require the adapter to be detected.
 

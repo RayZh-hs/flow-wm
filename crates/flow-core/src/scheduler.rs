@@ -216,7 +216,33 @@ impl crate::orchestrator::Orchestrator {
                     input: None,
                     environment: self.registry.row_environment(&workflow.row_settings).ok()?,
                     workflow: workflow.id.clone(),
-                    published: self.state.queue.published.clone(),
+                    published: {
+                        let mut published = self.state.queue.published.clone();
+                        for node in &workflow.graph.nodes {
+                            if node
+                                .flow
+                                .properties
+                                .get("expose_is_idle")
+                                .and_then(Value::as_bool)
+                                == Some(true)
+                                && self
+                                    .registry
+                                    .definition(&node.type_id)
+                                    .is_ok_and(|d| d.behavior == Behavior::Invoked)
+                            {
+                                let idle = !self
+                                    .state
+                                    .executions
+                                    .values()
+                                    .any(|e| e.node == node.id && e.active());
+                                published
+                                    .entry(node.id.clone())
+                                    .or_default()
+                                    .insert("is_idle".into(), json!(idle));
+                            }
+                        }
+                        published
+                    },
                 },
             ))
         })
@@ -236,6 +262,9 @@ impl crate::orchestrator::Orchestrator {
         }
         let before = self.state.clone();
         let accepted = (|| -> Result<()> {
+            if frame.data && frame.pin == "__poll" {
+                self.accept_condition_poll(&frame, &result)?;
+            }
             for (node, values) in result.values {
                 self.state
                     .queue
@@ -830,6 +859,7 @@ impl crate::orchestrator::Orchestrator {
         }
         let workflow = source.workflow.clone();
         let node = source.node.clone();
+        let condition_poll = source.type_id == "local.on_all_true";
         let previous = self.state.clone();
         let result = (|| -> Result<()> {
             self.state
@@ -838,7 +868,32 @@ impl crate::orchestrator::Orchestrator {
                 .entry(node.clone())
                 .or_default()
                 .extend(event.values);
-            if !event.pin.is_empty()
+            if condition_poll {
+                // Coalesce ticks while an earlier sample is still queued.
+                if !self
+                    .state
+                    .queue
+                    .frames
+                    .iter()
+                    .any(|f| f.root == node && f.pin == "__poll")
+                {
+                    self.enqueue_frame(
+                        Frame {
+                            data: true,
+                            id: format!("poll:{}:{}:{}", node, event.generation, event.sequence),
+                            workflow: workflow.clone(),
+                            root: node.clone(),
+                            pin: "__poll".into(),
+                            args: json!({"generation":event.generation}),
+                            correlation: format!(
+                                "poll:{}:{}:{}",
+                                node, event.generation, event.sequence
+                            ),
+                        },
+                        Some(&workflow),
+                    )?;
+                }
+            } else if !event.pin.is_empty()
                 && self.state.workflows.get(&workflow).is_some_and(|w| {
                     w.graph
                         .connections
@@ -870,7 +925,9 @@ impl crate::orchestrator::Orchestrator {
             }
             let source = self.state.sources.get_mut(&node).unwrap();
             source.sequence = event.sequence;
-            source.state = event.state;
+            if !condition_poll {
+                source.state = event.state;
+            }
             self.state.revision += 1;
             self.checkpoint()
         })();
@@ -878,6 +935,56 @@ impl crate::orchestrator::Orchestrator {
             self.state = previous;
         }
         result.map(|_| true)
+    }
+    fn accept_condition_poll(&mut self, frame: &Frame, result: &Evaluation) -> Result<()> {
+        let Some(source) = self.state.sources.get(&frame.root) else {
+            return Ok(());
+        };
+        if source.type_id != "local.on_all_true"
+            || frame.args["generation"].as_u64() != Some(source.generation)
+        {
+            return Ok(());
+        }
+        // Errors never count as a false sample and never rearm a watcher.
+        if !result.errors.is_empty() {
+            return Ok(());
+        }
+        let Some(value) = result.answer["value"].as_bool() else {
+            return Ok(());
+        };
+        let same = source.state["configuration"] == json!(source.properties);
+        let fired = same && source.state["fired"].as_bool().unwrap_or(false);
+        let previous = same && source.state["previous"].as_bool().unwrap_or(false);
+        let repeatable = source
+            .properties
+            .get("repeatable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let emit = value && !previous && (!fired || repeatable);
+        let state =
+            json!({"configuration":source.properties, "fired":fired || emit, "previous":value});
+        if emit {
+            self.enqueue_frame(
+                Frame {
+                    data: false,
+                    id: format!("{}:out", frame.id),
+                    workflow: frame.workflow.clone(),
+                    root: frame.root.clone(),
+                    pin: "out".into(),
+                    args: json!({}),
+                    correlation: frame.correlation.clone(),
+                },
+                Some(&frame.workflow),
+            )?;
+        }
+        self.state.sources.get_mut(&frame.root).unwrap().state = state;
+        self.state
+            .queue
+            .published
+            .entry(frame.root.clone())
+            .or_default()
+            .insert("value".into(), json!(value));
+        Ok(())
     }
     pub fn unmount_provider(&mut self, owner: &ProviderId) -> Result<Vec<Definition>> {
         anyhow::ensure!(

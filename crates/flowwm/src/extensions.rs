@@ -80,6 +80,45 @@ pub fn builtins() -> Vec<Macro> {
             command: String::new(),
         },
     ];
+    for (id, name, description) in flow_builtins::lists::NODES.iter().copied().chain([
+        (
+            "on_all_true",
+            "On all true",
+            "Poll Boolean inputs at an interval; signal when all are true",
+        ),
+        (
+            "on_all_fired",
+            "On all fired",
+            "Wait for each signal input, emit on the last arrival, then rearm",
+        ),
+    ]) {
+        macros.push(Macro {
+            id: format!("local.{id}"),
+            name: name.into(),
+            description: description.into(),
+            kind: NodeKind::Extension,
+            command: String::new(),
+            settings: None,
+            flow: crate::graph::Flow {
+                node_type: format!("local.{id}"),
+                ..Default::default()
+            },
+        });
+    }
+    for (id, name, _) in flow_builtins::session_actions::ACTIONS {
+        macros.push(Macro {
+            id: format!("local.{id}"),
+            name: (*name).into(),
+            description: format!("{name} when Run receives a signal"),
+            kind: NodeKind::Extension,
+            command: String::new(),
+            settings: None,
+            flow: crate::graph::Flow {
+                node_type: format!("local.{id}"),
+                ..Default::default()
+            },
+        });
+    }
     for (id, kind, description) in [
         (
             "constant",

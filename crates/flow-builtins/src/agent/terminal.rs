@@ -10,6 +10,7 @@ const VIEWER: &str = include_str!("viewer.py");
 const SDK: &str = include_str!("../../../../sdk/python/flow_sdk.py");
 const NATIVE: &str = include_str!("native.py");
 const HOOK: &str = include_str!("hook.py");
+const ACTIVITY: &str = include_str!("../../../../sdk/python/flow_agent_activity.py");
 
 pub fn open_native(
     config: Option<&Path>,
@@ -51,14 +52,14 @@ pub fn open_native(
         .collect::<Vec<_>>();
     let request = serde_json::json!({"node":node,"harness":harness.id,"adapter":harness.adapter,"command":harness.command,"interactive":harness.interactive,
         "prompt":spec.flow.properties.get("command").and_then(serde_json::Value::as_str).unwrap_or_default(),
-        "writable":spec.flow.properties.get("writable").and_then(serde_json::Value::as_bool).unwrap_or(false),"hook":format!("{SDK}\n{HOOK}")});
+        "writable":spec.flow.properties.get("writable").and_then(serde_json::Value::as_bool).unwrap_or(false),"idle_poll_interval_ms": settings.idle_poll_interval_ms,"hook":format!("{SDK}\n{ACTIVITY}\n{HOOK}")});
     let mut command = Command::new(&args[0]);
     command
         .args(&args[1..])
         .args([
             "python3",
             "-c",
-            &format!("{SDK}\n{NATIVE}"),
+            &format!("{SDK}\n{ACTIVITY}\n{NATIVE}"),
             &request.to_string(),
         ])
         .current_dir(cwd)

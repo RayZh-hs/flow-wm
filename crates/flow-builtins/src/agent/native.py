@@ -82,13 +82,27 @@ def native(request):
             else:
                 settings.update(json.loads(value if value.lstrip().startswith("{") else Path(value).read_text()))
             i += 1
-        for event in ("Stop", "StopFailure"):
+        for event in ("UserPromptSubmit", "Stop", "StopFailure"):
             settings.setdefault("hooks", {}).setdefault(event, []).append({"hooks": [{"type": "command", "command": shlex.join(hook), "timeout": 10}]})
         command = [*args, "--settings", json.dumps(settings)]
     child = subprocess.Popen(command, env=env)
-    # The CLI shares this terminal's foreground process group and receives Ctrl-C.
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-    code = child.wait()
+    publish_idle(node, request["adapter"] in ("codex", "claude") and not bool(request["prompt"]))
+    observer = monitor_activity(child.pid, node, request.get("idle_poll_interval_ms", 1000) / 1000) if request["adapter"] == "codex" and hasattr(child, "pid") else None
+    # Keep the supervisor alive long enough to publish idle on terminal closure.
+    old = {signal.SIGINT: signal.signal(signal.SIGINT, signal.SIG_IGN)}
+    def forward(signum, _):
+        if child.poll() is None:
+            child.send_signal(signum)
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        old[sig] = signal.signal(sig, forward)
+    try:
+        code = child.wait()
+    finally:
+        if observer:
+            observer.set()
+        publish_idle(node, True)
+        for sig, handler in old.items():
+            signal.signal(sig, handler)
     if code != 0 or not marker.exists():
         error = {"code": code, "kind": "none" if code == 0 else "process_exit", "message": "" if code == 0 else f"{request['harness']} exited with status {code}"}
         try:

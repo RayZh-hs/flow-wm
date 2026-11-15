@@ -3,6 +3,7 @@ mod bindings;
 mod runtime;
 mod specialize;
 mod types;
+pub mod variadic;
 mod vox;
 mod vox_symbols;
 
@@ -278,6 +279,47 @@ pub fn pins_for(node: &Node, definition: Option<&NodeDefinition>, output: bool) 
     {
         value.ty = constant_type(node);
     }
+    if !output {
+        variadic::pins(node, &mut pins);
+    }
+    if type_id(node).starts_with("list_")
+        && let Some(item) = node
+            .flow
+            .properties
+            .get("item_type")
+            .and_then(|v| serde_json::from_value::<Type>(v.clone()).ok())
+    {
+        for pin in &mut pins {
+            if matches!(pin.name.as_str(), "list" | "other")
+                || output
+                    && pin.name == "value"
+                    && !matches!(type_id(node), "list_get" | "list_length" | "list_contains")
+            {
+                pin.ty = Type::List {
+                    item: Box::new(item.clone()),
+                };
+            } else if pin.name == "item"
+                || output && type_id(node) == "list_get" && pin.name == "value"
+            {
+                pin.ty = item.clone();
+            }
+        }
+    }
+    if output
+        && node
+            .flow
+            .properties
+            .get("expose_is_idle")
+            .and_then(Value::as_bool)
+            == Some(true)
+        && (node.type_id.starts_with("agent_sessions.")
+            || matches!(type_id(node), "agent" | "window"))
+    {
+        pins.push(Pin {
+            property: Some("is_idle".into()),
+            ..Pin::new("is_idle", Type::Bool)
+        });
+    }
     for pin in if output {
         &node.flow.outputs
     } else {
@@ -332,6 +374,7 @@ pub fn property(state: &FlowNet, node: &Node, name: &str) -> Option<Value> {
 pub fn validate(state: &FlowNet) -> Result<()> {
     validate_registry(state)?;
     for node in &state.nodes {
+        variadic::validate(node)?;
         if type_id(node) == "constant"
             && let Some(value) = node.flow.properties.get("value")
         {

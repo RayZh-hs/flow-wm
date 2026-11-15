@@ -72,6 +72,18 @@ impl EvaluationContext {
             .collect();
         for node in &mut graph.nodes {
             node.flow.values = self.published.get(&node.id).cloned().unwrap_or_default();
+            if node
+                .flow
+                .properties
+                .get("expose_is_idle")
+                .and_then(Value::as_bool)
+                == Some(true)
+            {
+                node.flow
+                    .values
+                    .entry("is_idle".into())
+                    .or_insert(json!(node.type_id == "agent_sessions.terminal"));
+            }
             for pin in &defaults[&node.id] {
                 if let Some(existing) = node.flow.inputs.iter_mut().find(|p| p.name == pin.name) {
                     if existing.default.is_none() {
@@ -464,6 +476,9 @@ impl ContextData {
             }
             "kind" => {
                 let node = self.node(a)?;
+                if type_id(node) == "on_all_true" {
+                    return Ok("on_all_true".into());
+                }
                 Ok(match self.scripts.behavior(node).or_else(|| {
                     self.state
                         .node_types
@@ -560,6 +575,15 @@ impl ContextData {
                     .or_else(|| property(&self.state, self.node(a).ok()?, "value"))
                     .unwrap_or(Value::Null)
                     .to_string())
+            }
+            "all_true" => {
+                let inputs = parse(b)?;
+                let values = inputs.as_object().context("Expected condition inputs")?;
+                ensure!(!values.is_empty(), "At least one condition is required");
+                Ok(
+                    json!({"value": values.values().all(|v| v.as_bool() == Some(true))})
+                        .to_string(),
+                )
             }
             "merge_inputs" => {
                 let inputs = parse(b)?;
