@@ -557,8 +557,8 @@ fn egl_node_rows_replace_windows_and_follow_swipes_overview_and_lifecycle() {
             .iter()
             .filter(|(_, alpha)| *alpha == 1.)
             .count(),
-        3,
-        "both canvases and the live client stay visible in overview"
+        5,
+        "both canvases, the live client and both row labels stay visible in overview"
     );
     let overview = render(&mut f);
     assert!(
@@ -663,6 +663,43 @@ fn node_rows_respect_panels_even_with_a_fullscreen_window_and_reject_duplicate_r
     );
     let win = f.client(client).window(&surface);
     assert_eq!(win.configures_received.last().unwrap().1.size, (1920, 1030));
+}
+
+#[test]
+fn egl_row_names_render_in_overview_and_keep_empty_rows_until_cleared() {
+    let mut f = Fixture::new();
+    f.add_output(1, (1920, 1080));
+    f.niri_state().backend.headless().add_renderer().unwrap();
+    let workspace = f.niri().layout.active_workspace().unwrap().id().get();
+    let names = [(workspace, "Research <notes> 研究".into())].into();
+    assert!(f.niri().layout.set_node_row_metadata(&[], &names));
+    assert_eq!(f.niri().layout.workspaces().count(), 2);
+    assert!(render(&mut f).is_empty(), "row labels belong to overview");
+    f.niri().layout.open_overview();
+    f.niri_complete_animations();
+    let labels = render(&mut f);
+    assert_eq!(labels.len(), 1);
+    assert!(labels[0].size.w > 100 && labels[0].size.w < 1920);
+    assert!(labels[0].size.h > 16 && labels[0].size.h < 80);
+    let names = [(workspace, "Renamed".into())].into();
+    assert!(f.niri().layout.set_node_row_metadata(&[], &names));
+    assert!(render(&mut f)[0].size.w < labels[0].size.w);
+    f.niri().layout.close_overview();
+    f.niri().layout.switch_workspace_down();
+    f.niri_complete_animations();
+    assert!(f
+        .niri()
+        .layout
+        .workspaces()
+        .any(|(_, _, ws)| ws.id().get() == workspace));
+    f.niri()
+        .layout
+        .set_node_row_metadata(&[], &Default::default());
+    assert!(!f
+        .niri()
+        .layout
+        .workspaces()
+        .any(|(_, _, ws)| ws.id().get() == workspace));
 }
 
 #[test]

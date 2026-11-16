@@ -11,6 +11,7 @@ PluginComponent {
     readonly property bool graphVisible: catalog.presentation?.graph_visible ?? false
     readonly property bool online: bridge?.online ?? false
     readonly property string owningWorkspace: String(catalog.owning_workspace ?? "")
+    readonly property string rowName: catalog.workspaces?.find(w => w.id === catalog.selected_workspace)?.name ?? ""
     readonly property string geometryKey: JSON.stringify([parentScreen?.name, barConfig?.position ?? 0, barThickness, barSpacing, barConfig?.bottomGap ?? 0])
     function reportGeometry() {
         const insets = [0, 0, 0, 0];
@@ -84,7 +85,7 @@ PluginComponent {
                     implicitHeight: root.iconSize
                     anchors.verticalCenter: parent.verticalCenter
                     Accessible.role: Accessible.Button
-                    Accessible.name: I18n.tr("Row settings") + " · " + root.owningWorkspace
+                    Accessible.name: I18n.tr("Row settings") + " · " + root.rowName + " · " + root.owningWorkspace
                     Rectangle {
                         anchors.fill: parent
                         radius: Theme.cornerRadius
@@ -95,7 +96,7 @@ PluginComponent {
                         anchors.centerIn: parent
                         width: parent.width - Theme.spacingM
                         elide: Text.ElideRight
-                        text: root.owningWorkspace || I18n.tr("Unassigned")
+                        text: [root.rowName, root.owningWorkspace].filter(Boolean).join(" · ") || I18n.tr("Unassigned")
                         font.pixelSize: Theme.fontSizeSmall
                         color: workspaceMouse.containsMouse ? Theme.primary : Theme.surfaceVariantText
                     }

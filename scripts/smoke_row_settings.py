@@ -235,7 +235,7 @@ def main():
             # Reverse a closing popup without creating a duplicate or losing its editor.
             ui("row_settings")
             capture("before-reversal.png")
-            input("key", "Tab", "Tab", "Tab")
+            input("key", "Tab", "Tab", "Tab", "Tab")
             input("type", temporary)
             input("key", "Escape")
             assert any(layer["namespace"] == "flowwm-dialog" for layer in layers()), "Escape closed an active field instead of clearing focus"
@@ -282,7 +282,7 @@ def main():
             close_with_fade("outside-exit", lambda: input("mousemove", 20, screen_height // 2, "click", "--delay", 0, 1))
             ui("row_settings")
             capture("workspace-picker-before.png")
-            input("key", "Tab", "Tab", "space")
+            input("key", "Tab", "Tab", "Tab", "space")
             capture("workspace-picker-active.png")
             input("key", "Escape")
             assert any(layer["namespace"] == "flowwm-dialog" for layer in layers()), "Escape closed the panel with its workspace picker active"
@@ -311,7 +311,7 @@ def main():
                 ui("row_settings")
                 capture(name + ".png")
                 panel = capture_widget(name + "-widget.png")
-                input("key", "Tab", "Tab", "Tab")
+                input("key", "Tab", "Tab", "Tab", "Tab")
                 return (screen_width + panel.width) / 2, (screen_height + panel.height) / 2
 
             def save_history_form(right, bottom):
@@ -350,9 +350,9 @@ def main():
             assert history()["directory"] == [history_directory, temporary]
             right, bottom = history_form("history-mouse")
             top = screen_height - bottom
-            input("mousemove", round(right - 100), round(top + 206), "click", "--delay", 0, 1)
+            input("mousemove", round(right - 100), round(top + 282), "click", "--delay", 0, 1)
             capture("history-mouse-dropdown.png")
-            input("mousemove", round(right - 200), round(top + 292), "click", "--delay", 0, 1)
+            input("mousemove", round(right - 200), round(top + 368), "click", "--delay", 0, 1)
             save_history_form(right, bottom)
             assert command("row_settings", workflow=current)["settings"]["pwd"] == temporary
             # Escape only dismisses the dropdown; cancelling and validation failures don't record drafts.

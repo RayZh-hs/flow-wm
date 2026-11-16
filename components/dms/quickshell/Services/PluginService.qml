@@ -1249,6 +1249,15 @@ Singleton {
                 triggers[trigger] = pluginId;
             }
         }
+        for (const pluginId in launchers) {
+            const aliases = SettingsData.getPluginSetting(pluginId, "triggerAliases", launchers[pluginId].triggerAliases || []);
+            if (!Array.isArray(aliases))
+                continue;
+            for (const alias of aliases) {
+                if (typeof alias === "string" && alias.trim() && !triggers[alias])
+                    triggers[alias] = pluginId;
+            }
+        }
         return triggers;
     }
 

@@ -27,8 +27,11 @@ fn desktop_provider_publishes_row_content_when_the_last_node_is_deleted_and_rest
                 .read_line(&mut line)
                 .unwrap();
             match serde_json::from_str::<Request>(&line).unwrap() {
-                Request::SetNodeRowContents { workspace_ids } => {
-                    *received.lock().unwrap() = Some(workspace_ids);
+                Request::SetNodeRowContents {
+                    workspace_ids,
+                    names,
+                } => {
+                    *received.lock().unwrap() = Some((workspace_ids, names));
                     writeln!(stream, "{}", json!({"Ok":"Handled"})).unwrap();
                 }
                 Request::EventStream => {
@@ -60,12 +63,30 @@ fn desktop_provider_publishes_row_content_when_the_last_node_is_deleted_and_rest
     let id = node.id.clone();
     state.nodes.push(node);
     let (desktop, _) = support::fixture_with_niri(state, Some(&socket));
-    support::wait(|| *contents.lock().unwrap() == Some(vec![1]));
+    let expected = |ids| Some((ids, Default::default()));
+    support::wait(|| *contents.lock().unwrap() == expected(vec![1]));
     desktop.request(Action::Delete { id }).unwrap();
-    support::wait(|| *contents.lock().unwrap() == Some(vec![]));
+    support::wait(|| *contents.lock().unwrap() == expected(vec![]));
     desktop.request(Action::Undo).unwrap();
-    support::wait(|| *contents.lock().unwrap() == Some(vec![1]));
+    support::wait(|| *contents.lock().unwrap() == expected(vec![1]));
     desktop.request(Action::Redo).unwrap();
-    support::wait(|| *contents.lock().unwrap() == Some(vec![]));
+    support::wait(|| *contents.lock().unwrap() == expected(vec![]));
+    for name in [Some("Research"), Some("Planning"), None] {
+        desktop
+            .orchestrate(
+                flow_core::protocol::Command::SetRowSettings {
+                    workflow: workflow.clone().into(),
+                    settings: name
+                        .map(|name| ("name".into(), name.into()))
+                        .into_iter()
+                        .collect(),
+                },
+                None,
+            )
+            .unwrap();
+        let names: std::collections::BTreeMap<_, _> =
+            name.map(|name| (1, name.to_owned())).into_iter().collect();
+        support::wait(|| *contents.lock().unwrap() == Some((vec![], names.clone())));
+    }
     desktop.shutdown();
 }

@@ -1211,9 +1211,9 @@ Item {
             if (pluginChanged && !triggerMatch.isBuiltIn)
                 loadPluginCategories(triggerMatch.pluginId);
 
-            var pluginItems = getPluginItems(triggerMatch.pluginId, triggerMatch.query);
+            var pluginItems = getPluginItems(triggerMatch.pluginId, triggerMatch.query, undefined, triggerMatch.trigger);
             const hintPlugin = PluginService.ensureLauncherInstance(triggerMatch.pluginId);
-            pluginSearchHint = typeof hintPlugin?.getSearchHint === "function" ? hintPlugin.getSearchHint() : "";
+            pluginSearchHint = typeof hintPlugin?.getSearchHint === "function" ? hintPlugin.getSearchHint(triggerMatch.trigger) : "";
             for (var k = 0; k < pluginItems.length; k++)
                 allItems.push(pluginItems[k]);
 
@@ -2010,6 +2010,7 @@ Item {
             if (trigger && query.startsWith(trigger)) {
                 return {
                     pluginId: pluginTriggers[trigger],
+                    trigger: trigger,
                     query: query.substring(trigger.length).trim()
                 };
             }
@@ -2145,8 +2146,8 @@ Item {
         return sortPluginIdsByOrder(visible);
     }
 
-    function getPluginItems(pluginId, query, limit) {
-        var items = AppSearchService.getPluginItemsForPlugin(pluginId, query);
+    function getPluginItems(pluginId, query, limit, trigger) {
+        var items = AppSearchService.getPluginItemsForPlugin(pluginId, query, trigger);
         var count = limit > 0 && limit < items.length ? limit : items.length;
         var transformed = [];
 

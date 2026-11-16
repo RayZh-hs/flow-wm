@@ -158,7 +158,14 @@ pub(crate) fn synchronize_with_processes(
         }
         let workspace = &mut state.workspaces[index];
         // Generated row labels follow reordering; user-chosen group names stay intact.
-        if workspace.name.starts_with("Row ") {
+        if workspace.name.starts_with("Row ")
+            && state
+                .orchestration
+                .as_ref()
+                .and_then(|r| r.workflows.get(&workspace.id.clone().into()))
+                .and_then(flow_core::domain::Workflow::row_name)
+                .is_none()
+        {
             changed |= assign(
                 &mut workspace.name,
                 row.name

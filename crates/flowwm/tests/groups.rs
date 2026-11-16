@@ -86,6 +86,36 @@ fn active_niri_row_selects_its_group_and_empty_tail_does_not_create_groups() {
 }
 
 #[test]
+fn row_name_properties_starting_with_row_survive_desktop_reconciliation() {
+    use flow_core::domain::{RuntimeState, Visibility, Workflow};
+
+    let mut state = State::empty("/tmp".into());
+    let mut runtime = RuntimeState::local();
+    let id = state.selected_workspace.clone();
+    runtime.workflows.insert(
+        id.clone().into(),
+        Workflow {
+            id: id.into(),
+            name: "Original".into(),
+            row_settings: [("name".into(), "Row Research".into())].into(),
+            workspace: Some("local:desktop".into()),
+            visibility: Visibility::Public,
+            owner: None,
+            references: Default::default(),
+            graph: Default::default(),
+            authority: runtime.host_id.clone(),
+            transfer: None,
+        },
+    );
+    state.workspaces[0].name = "Row Research".into();
+    state.orchestration = Some(std::sync::Arc::new(runtime));
+    let mut desktop = desktop();
+    desktop.windows.clear();
+    groups::synchronize(&mut state, &desktop);
+    assert_eq!(state.workspace().name, "Row Research");
+}
+
+#[test]
 fn unnamed_node_only_rows_follow_reordering_and_output_changes_while_unfocused() {
     let mut state = State::empty("/tmp".into());
     let mut desktop = desktop();

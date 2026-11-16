@@ -113,6 +113,8 @@ pub struct Workspace<W: LayoutElement> {
 
     /// Optional name of this workspace.
     pub(super) name: Option<String>,
+    pub(crate) row_name: Option<String>,
+    pub(super) row_label: super::row_label::RowLabel,
 
     /// Layout config overrides for this workspace.
     layout_config: Option<niri_config::LayoutPart>,
@@ -270,6 +272,8 @@ impl<W: LayoutElement> Workspace<W> {
             node_tile: None,
             pending_node_scene: None,
             has_nodes: false,
+            row_name: None,
+            row_label: Default::default(),
             scrolling,
             floating,
             floating_is_active: FloatingActive::No,
@@ -335,6 +339,8 @@ impl<W: LayoutElement> Workspace<W> {
             node_tile: None,
             pending_node_scene: None,
             has_nodes: false,
+            row_name: None,
+            row_label: Default::default(),
             scrolling,
             floating,
             floating_is_active: FloatingActive::No,
@@ -372,7 +378,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn has_windows_or_name(&self) -> bool {
-        self.has_windows() || self.name.is_some() || self.has_nodes
+        self.has_windows() || self.name.is_some() || self.has_nodes || self.row_name.is_some()
     }
 
     pub fn scale(&self) -> smithay::output::Scale {

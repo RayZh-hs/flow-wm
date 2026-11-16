@@ -194,6 +194,14 @@ pub struct Workflow {
     #[serde(default)]
     pub transfer: Option<TransferId>,
 }
+impl Workflow {
+    pub fn row_name(&self) -> Option<&str> {
+        self.row_settings
+            .get("name")
+            .map(|name| name.trim())
+            .filter(|name| !name.is_empty())
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionStatus {

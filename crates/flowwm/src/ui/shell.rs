@@ -2164,6 +2164,27 @@ impl Shell {
             self.focus_node(&node.id, false);
         }
     }
+    fn focus_window(&self, id: &str) {
+        self.synchronize_row();
+        self.refresh();
+        let state = self.engine.snapshot().state;
+        let result = (|| -> Result<()> {
+            let node = state.node(id).context("This window no longer exists")?;
+            let window = node.window_id.context("This window is no longer open")?;
+            self.select_node_workspace(node)?;
+            self.view.borrow_mut().selection.clear();
+            self.select(Some(id.into()));
+            niri::focus(window)?;
+            niri::request(niri_ipc::Request::Action(
+                niri_ipc::Action::CloseOverview {},
+            ))?;
+            self.show_windows();
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.show_error(&error.to_string());
+        }
+    }
     fn focus_node(&self, id: &str, expand: bool) {
         let state = self.engine.snapshot().state;
         let Some(node) = state.node(id) else {
@@ -2227,6 +2248,7 @@ impl Shell {
     fn control(&self, command: UiCommand) {
         match command {
             UiCommand::RowSettings => self.row_settings(),
+            UiCommand::FocusWindow { id } => self.focus_window(&id),
             UiCommand::Workflows => self.workspace_dialog(),
             UiCommand::RunSelected | UiCommand::StopSelected => {
                 let run = matches!(command, UiCommand::RunSelected);
@@ -2406,6 +2428,11 @@ impl Shell {
                 match self.engine.request(Action::SelectWorkspace { id }) {
                     Ok(_) => {
                         self.refresh();
+                        if self.integrated {
+                            let _ = niri::request(niri_ipc::Request::Action(
+                                niri_ipc::Action::CloseOverview {},
+                            ));
+                        }
                     }
                     Err(error) => self.show_error(&error.to_string()),
                 }
@@ -4295,6 +4322,9 @@ impl Shell {
         let section = column(8);
         section.add_css_class("row-settings-section");
         section.add_css_class("first");
+        let name = entry(overrides.get("name").map(String::as_str).unwrap_or(""));
+        name.set_placeholder_text(Some(&workflow.name));
+        field(&section, "Name", &name);
         field(&section, "Owning workspace", &workspace);
         sections.append(&section);
         let pwd = entry(overrides.get("pwd").map(String::as_str).unwrap_or(""));
@@ -4317,7 +4347,7 @@ impl Shell {
         sections.append(&section);
         let custom: Env = overrides
             .iter()
-            .filter(|(k, _)| k.as_str() != "pwd")
+            .filter(|(k, _)| !matches!(k.as_str(), "pwd" | "name"))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         let variables = super::environment::MapEditor::row_settings(&custom, &history);
@@ -4359,9 +4389,12 @@ impl Shell {
             let result = (|| -> Result<()> {
                 let mut settings = variables.read()?;
                 anyhow::ensure!(
-                    !settings.contains_key("pwd"),
-                    "Use Working directory to set pwd"
+                    !settings.contains_key("pwd") && !settings.contains_key("name"),
+                    "Use Name and Working directory to set name and pwd"
                 );
+                if !name.text().trim().is_empty() {
+                    settings.insert("name".into(), name.text().trim().to_owned());
+                }
                 if !pwd.text().is_empty() {
                     settings.insert("pwd".into(), pwd.text().to_string());
                 }

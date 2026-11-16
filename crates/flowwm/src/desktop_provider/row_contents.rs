@@ -1,7 +1,24 @@
 //! Keep native rows alive for workflow content, independently of the GTK canvas.
 use super::Bindings;
 use crate::model::State;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+fn row_names(state: &State, bindings: &Bindings) -> BTreeMap<u64, String> {
+    bindings
+        .rows
+        .iter()
+        .filter(|(_, row)| row.session == bindings.session)
+        .filter_map(|(workflow, row)| {
+            let name = state
+                .orchestration
+                .as_ref()?
+                .workflows
+                .get(&workflow.clone().into())?
+                .row_name()?;
+            Some((row.id, name.to_owned()))
+        })
+        .collect()
+}
 
 fn occupied_rows(state: &State, bindings: &Bindings) -> Vec<u64> {
     let workflows: BTreeSet<_> = state.nodes.iter().map(|n| n.workspace.as_str()).collect();
@@ -19,7 +36,7 @@ fn occupied_rows(state: &State, bindings: &Bindings) -> Vec<u64> {
 
 #[derive(Default)]
 pub(super) struct Publisher {
-    last: Option<(String, Vec<u64>)>,
+    last: Option<(String, Vec<u64>, BTreeMap<u64, String>)>,
     unsupported_session: Option<String>,
 }
 
@@ -39,12 +56,17 @@ impl Publisher {
         {
             return;
         }
-        let current = (bindings.session.clone(), occupied_rows(state, bindings));
+        let current = (
+            bindings.session.clone(),
+            occupied_rows(state, bindings),
+            row_names(state, bindings),
+        );
         if self.last.as_ref() == Some(&current) {
             return;
         }
         match request(niri_ipc::Request::SetNodeRowContents {
             workspace_ids: current.1.clone(),
+            names: current.2.clone(),
         }) {
             Ok(_) => self.last = Some(current),
             Err(error) if error.to_string() == "error parsing request" => {

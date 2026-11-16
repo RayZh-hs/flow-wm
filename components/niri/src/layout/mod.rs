@@ -81,6 +81,7 @@ pub mod focus_ring;
 pub mod insert_hint_element;
 pub mod monitor;
 pub mod opening_window;
+mod row_label;
 pub mod scrolling;
 pub mod shadow;
 pub mod tab_indicator;
@@ -1799,13 +1800,29 @@ impl<W: LayoutElement> Layout<W> {
         monitors.iter()
     }
 
+    #[cfg(test)]
     pub(crate) fn set_node_row_contents(&mut self, workspace_ids: &[u64]) -> bool {
+        self.set_node_row_metadata(workspace_ids, &Default::default())
+    }
+
+    pub(crate) fn set_node_row_metadata(
+        &mut self,
+        workspace_ids: &[u64],
+        names: &std::collections::BTreeMap<u64, String>,
+    ) -> bool {
         let ids: std::collections::HashSet<_> = workspace_ids.iter().copied().collect();
         let mut changed = false;
         for ws in self.workspaces_mut() {
             let has_nodes = ids.contains(&ws.id().get());
             changed |= ws.has_nodes != has_nodes;
             ws.has_nodes = has_nodes;
+            let name = names
+                .get(&ws.id().get())
+                .map(|name| name.trim())
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned);
+            changed |= ws.row_name != name;
+            ws.row_name = name;
         }
         if changed {
             self.ensure_node_row_space();

@@ -138,6 +138,13 @@ It requires the debug builds, Quickshell, Xvfb, xdotool, grim, gsettings, and Pi
 Its private settings backend and sockets leave the live session untouched;
 captures and logs go under `artifacts/row-settings`.
 
+`python3 scripts/smoke_row_navigation.py` checks the Name field, live top-bar
+updates, overview labels, and real Dux `#` results and selection. It verifies
+that rows rank before windows, a row jump preserves its view, a window jump
+focuses the existing client in Windows view, and clearing a name restores the
+original label. It uses the same private XDG and Xvfb/niri setup, with captures
+and logs under `artifacts/row-navigation`.
+
 Builds never update the installed desktop or a running Wayland session. Validate
 in the nested runner, then explicitly install a complete snapshot with
 `python3 scripts/install.py --skip-build`. The FlowWM login entry always uses

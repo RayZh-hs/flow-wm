@@ -29,6 +29,42 @@ function relevance(name, comment, query) {
     return matches(name, query) ? 100 : 0;
 }
 
+function navigationItems(catalog, query, labels) {
+    catalog = catalog || {};
+    query = String(query || "").trim();
+    var results = [];
+    var rows = {};
+    function add(id, name, comment, icon, args, group) {
+        name = String(name || "").replace(/\s+/g, " ").trim();
+        comment = String(comment || "").replace(/\s+/g, " ").trim();
+        if (!matches(name + " " + comment, query)) return;
+        results.push({id: id, name: name, comment: comment, icon: "material:" + icon, flowwmArgs: args,
+            _group: group, _preScored: relevance(name, comment, query),
+            primaryAction: {name: labels.open, icon: icon, action: "execute"}});
+    }
+    (catalog.workspaces || []).filter(function (w) { return !!w.row; }).slice().sort(function (a, b) {
+        return Number(b.id === catalog.selected_workspace) - Number(a.id === catalog.selected_workspace)
+            || String(a.row.output || "").localeCompare(String(b.row.output || "")) || a.row.index - b.row.index;
+    }).forEach(function (workspace) {
+        rows[workspace.id] = workspace;
+        add("row:" + workspace.id, workspace.name, labels.row + " " + workspace.row.index + " · " + (workspace.row.output || "") + " · " + (workspace.owning_workspace || ""),
+            "view_agenda", ["workspace", workspace.id], 0);
+    });
+    (catalog.nodes || []).forEach(function (node) {
+        var workspace = rows[node.workspace];
+        if (!workspace || node.window_id === null || node.window_id === undefined) return;
+        add("window:" + node.id, node.title || node.label || node.app_id || labels.window,
+            labels.window + " · " + (node.app_id || "") + " · " + workspace.name,
+            "window", ["send", JSON.stringify({action: "ui", command: {action: "focus_window", id: node.id}})], 1);
+    });
+    results.sort(function (a, b) { return a._group - b._group || b._preScored - a._preScored; });
+    results.forEach(function (item, index) {
+        delete item._group;
+        item._preScored = 1000 + (results.length - index) / (results.length + 1);
+    });
+    return results;
+}
+
 function items(catalog, query, labels) {
     catalog = catalog || {};
     query = String(query || "").trim();

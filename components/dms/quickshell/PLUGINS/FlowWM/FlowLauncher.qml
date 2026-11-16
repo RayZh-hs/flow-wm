@@ -21,14 +21,21 @@ Scope {
         if (lookupNode !== key) { outputName = catalog.lookup?.selected ?? ""; targetKey = ""; lookupNode = key; }
         itemsChanged();
     }
-    function getSearchHint() {
+    function isNavigationTrigger(activeTrigger) {
+        return activeTrigger && activeTrigger !== (pluginService?.getPluginTrigger?.("flowwm") ?? trigger);
+    }
+
+    function getSearchHint(activeTrigger) {
+        if (isNavigationTrigger(activeTrigger)) return I18n.tr("Rows and windows");
         const lookup = catalog.lookup;
         if (!lookup) return "";
         const output = lookup.outputs.find(p => p.name === outputName) ?? (lookup.outputs.length === 1 ? lookup.outputs[0] : null);
         return output ? (lookup.input ? I18n.tr("Compatible outputs") : I18n.tr("Compatible inputs")) + " · " + output.ty + " · " + lookup.title + " · " + (output.label || output.name) : I18n.tr("Choose an output") + " · " + lookup.title;
     }
 
-    function getItems(query) {
+    function getItems(query, activeTrigger) {
+        if (isNavigationTrigger(activeTrigger))
+            return Catalog.navigationItems(catalog, query, {row: I18n.tr("Row"), window: I18n.tr("Window"), open: I18n.tr("Open")});
         if (catalog.lookup) return Catalog.connectionItems(catalog, query, outputName, targetKey);
         return Catalog.items(catalog, query, {
             kind: { agent: I18n.tr("Agent"), shell: I18n.tr("Shell"), metric: I18n.tr("Metric"), gate: I18n.tr("Decision"), human: I18n.tr("You"), window: I18n.tr("Window") },
@@ -73,7 +80,7 @@ Scope {
         const args = item.flowwmArgs.slice();
         Qt.callLater(() => {
             Quickshell.execDetached(["flowwm"].concat(args));
-            if (catalog.lookup && args[0] === "send") bridge?.action("resume_lookup");
+            if (pending?.action === "connect_pins" || pending?.command?.action === "create_connected") bridge?.action("resume_lookup");
         });
     }
 }

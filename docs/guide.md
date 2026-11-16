@@ -257,10 +257,22 @@ Running a node, branch, or workspace is explicit. Independent branches can run c
 
 The top-bar workspace label, such as **local:desktop**, opens the current row's
 settings. **Win+L** opens the same panel from either view; `flowwm row-settings`
-is the CLI equivalent. Choose an owning workspace, set the working directory,
-and add row variables, then save. Running nodes keep their existing environment.
+is the CLI equivalent. Set a row name, choose an owning workspace, set the working
+directory, and add row variables, then save. Running nodes keep their existing environment.
+The Name field is stored as the `name` row property.
+The name appears in overview and in the application top bar beside the owning
+workspace. Clear it to restore the row's original label. Named rows remain
+available even when they contain no windows or nodes.
 The older `flowwm workflows` manager remains available for creating workflows,
 references, and ownership changes.
+
+Type **`#`** in Dux search to find and jump to rows and open windows across
+outputs. Matching rows always appear before matching windows. Select a row to
+switch to it in its saved view, or select a window to focus it in Windows view.
+Names, window titles, application IDs, and row output names are searchable.
+The existing `@ #` recipe search remains available. To change or disable the
+navigation trigger, set `flowwm.triggerAliases` in
+`~/.config/flow-wm/dms/plugin_settings.json` to another list of prefixes or `[]`.
 
 Row settings uses Dux's popup shape, typography, surface colors, and grouped rows.
 Its background is opaque by default so windows and workspace lines stay hidden.

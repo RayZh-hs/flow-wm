@@ -83,6 +83,9 @@ pub enum Request {
     SetNodeRowContents {
         /// Stable workspace IDs with at least one node, including hidden node canvases.
         workspace_ids: Vec<u64>,
+        /// Display names for workflow rows, independent of unique compositor workspace names.
+        #[serde(default)]
+        names: std::collections::BTreeMap<u64, String>,
     },
     /// Stage geometry for the next node canvas commit.
     SetNodeRow {

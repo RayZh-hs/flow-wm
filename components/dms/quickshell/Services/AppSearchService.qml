@@ -876,7 +876,7 @@ Singleton {
         return getPluginItemsForPlugin(pluginId, query);
     }
 
-    function getPluginItemsForPlugin(pluginId, query) {
+    function getPluginItemsForPlugin(pluginId, query, trigger) {
         if (typeof PluginService === "undefined") {
             return [];
         }
@@ -887,7 +887,7 @@ Singleton {
 
         try {
             if (typeof instance.getItems === "function")
-                return instance.getItems(query || "") || [];
+                return instance.getItems(query || "", trigger || "") || [];
         } catch (e) {
             log.warn("Error getting items from plugin", pluginId, ":", e);
         }

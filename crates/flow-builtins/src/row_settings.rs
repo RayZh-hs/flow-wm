@@ -44,6 +44,14 @@ impl Default for Extension {
 }
 impl Extension {
     pub fn install(&self, registry: &mut Registry) {
+        registry.row_settings.insert(
+            "name".into(),
+            RowSettingDefinition {
+                name: "name".into(),
+                label: "Name".into(),
+                default: String::new(),
+            },
+        );
         let default = self
             .pwd
             .clone()

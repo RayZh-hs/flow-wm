@@ -63,6 +63,9 @@ pub enum UiCommand {
         id: String,
         expand: bool,
     },
+    FocusWindow {
+        id: String,
+    },
     CreateApplication {
         id: String,
         name: String,

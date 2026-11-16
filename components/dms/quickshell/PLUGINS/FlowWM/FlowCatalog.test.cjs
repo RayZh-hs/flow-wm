@@ -9,6 +9,27 @@ const labels = { kind: { agent: 'Agent', human: 'You' }, status: { idle: 'Ready'
 const catalog = { selected_workspace: 'a', workspaces: [{ id: 'a', name: 'Compiler', nodes: 2 }, { id: 'b', name: 'Website', nodes: 1 }], nodes: [{ id: 'a1', title: 'Inspect parser', workspace: 'a', kind: 'agent', status: 'idle' }, { id: 'a2', title: 'My notes', workspace: 'a', kind: 'human', status: 'idle' }, { id: 'b1', title: 'Review deployment', workspace: 'b', kind: 'agent', status: 'review' }], macros: [{ id: 'agent', name: 'Agent session', description: 'A coding task' }], recipes: [{ id: 'r1', name: 'Inspect and decide', nodes: 3 }] };
 const items = query => JSON.parse(JSON.stringify(context.items(catalog, query, labels)));
 
+test('navigation ranks rows before stronger window matches and targets live windows only', () => {
+    const input = {...catalog,
+        workspaces: catalog.workspaces.map((w, i) => ({...w, row: {id: i + 10, index: i + 1, output: 'DP-1'}})),
+        nodes: [
+            {id: 'editor', title: 'Compiler', workspace: 'a', kind: 'window', window_id: 42, app_id: 'code'},
+            {id: 'closed', title: 'Compiler', workspace: 'a', kind: 'window', window_id: null},
+            {id: 'unbound', title: 'Compiler', workspace: 'missing', kind: 'window', window_id: 43}
+        ]};
+    input.workspaces[0].name = 'Compiler project';
+    const find = query => JSON.parse(JSON.stringify(context.navigationItems(input, query, {row: 'Row', window: 'Window', open: 'Open'})));
+    const results = find('Compiler');
+    assert.deepEqual(results.map(item => item.id), ['row:a', 'window:editor']);
+    assert.ok(results[0]._preScored > results[1]._preScored);
+    assert.deepEqual(results[0].flowwmArgs, ['workspace', 'a']);
+    assert.deepEqual(JSON.parse(results[1].flowwmArgs[1]), {action: 'ui', command: {action: 'focus_window', id: 'editor'}});
+    assert.deepEqual(find('').map(item => item.id), ['row:a', 'row:b', 'window:editor']);
+    assert.equal(find('code')[0].id, 'window:editor');
+    assert.equal(find('missing').length, 0);
+    assert.deepEqual(find('DP-1').map(item => item.id), ['row:a', 'row:b']);
+});
+
 test('lookup searches other workspaces and prioritizes decisions', () => {
     assert.deepEqual(items('').map(item => item.id), ['flowwm:macros','flowwm:create']);
     assert.equal(items('parser compiler')[0].id, 'node:a1');

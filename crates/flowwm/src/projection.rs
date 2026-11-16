@@ -195,7 +195,7 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
             }
         }
         if let Some(row) = state.workspaces.iter_mut().find(|w| w.id == workflow.id.0) {
-            row.name = workflow.name.clone();
+            row.name = workflow.row_name().unwrap_or(&workflow.name).to_owned();
             if workflow
                 .workspace
                 .as_ref()
@@ -370,6 +370,29 @@ mod tests {
         };
         runtime.workflows.insert(workflow.id.clone(), workflow);
         runtime
+    }
+
+    #[test]
+    fn row_names_override_labels_and_clearing_restores_the_workflow_name() {
+        let mut state = State::empty("/tmp".into());
+        let mut runtime = runtime(&state);
+        let id = state.selected_workspace.clone().into();
+        runtime
+            .workflows
+            .get_mut(&id)
+            .unwrap()
+            .row_settings
+            .insert("name".into(), "  Research  ".into());
+        apply(&mut state, &runtime);
+        assert_eq!(state.workspace().name, "Research");
+        runtime
+            .workflows
+            .get_mut(&id)
+            .unwrap()
+            .row_settings
+            .remove("name");
+        apply(&mut state, &runtime);
+        assert_eq!(state.workspace().name, "Placement");
     }
 
     #[test]

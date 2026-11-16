@@ -191,6 +191,7 @@ niri_render_elements! {
         UncroppedInsertHint = InsertHintRenderElement,
         Shadow = ShadowRenderElement,
         SolidColor = SolidColorRenderElement,
+        RowLabel = smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement<R>,
     }
 }
 
@@ -1705,6 +1706,35 @@ impl<W: LayoutElement> Monitor<W> {
                 Relocate::Relative,
             )
         };
+
+        if let Some(progress) = &self.overview_progress {
+            let alpha = progress.clamped_value() as f32;
+            if alpha > 0. {
+                for (ws, geo) in self.workspaces_with_render_geo_cull(true) {
+                    let Some(name) = ws.row_name.as_ref().or(ws.name()) else {
+                        continue;
+                    };
+                    let location =
+                        (geo.loc + Point::from((12., 12.))).to_physical_precise_round(scale);
+                    if let Some(elem) = ws.row_label.render(
+                        ctx.renderer,
+                        name,
+                        scale,
+                        (geo.size.w - 24.).max(1.),
+                        location,
+                        alpha,
+                    ) {
+                        let elem = MonitorInnerRenderElement::RowLabel(elem);
+                        let elem = RescaleRenderElement::from_element(elem, (0, 0).into(), 1.);
+                        push(RelocateRenderElement::from_element(
+                            elem,
+                            (0, 0),
+                            Relocate::Relative,
+                        ));
+                    }
+                }
+            }
+        }
 
         // Draw in passes for correct Z ordering during window movement between workspaces:
         // - floating windows moving between workspaces
