@@ -1103,7 +1103,10 @@ mod tests {
             assert_eq!(config.binds.0[0].scope, expected);
         }
         assert!(crate::Config::parse_mem(r#"binds { P scope="typo" { spawn; }; }"#).is_err());
-        assert!(crate::Config::parse_mem(r#"binds { Mod+WheelScrollUp scope="nodes" { spawn; }; }"#).is_err());
+        assert!(crate::Config::parse_mem(
+            r#"binds { Mod+WheelScrollUp scope="nodes" { spawn; }; }"#
+        )
+        .is_err());
     }
 
     #[test]

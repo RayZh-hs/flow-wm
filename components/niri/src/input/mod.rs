@@ -586,10 +586,11 @@ impl State {
                     let node_canvas_focused = this.niri.node_canvas_is_focused();
                     let config = this.niri.config.borrow();
                     let bindings =
-                        make_binds_iter(&config, &mut this.niri.window_mru_ui, modifiers)
-                            .filter(|bind| {
+                        make_binds_iter(&config, &mut this.niri.window_mru_ui, modifiers).filter(
+                            |bind| {
                                 bind.scope != niri_config::BindScope::Nodes || node_canvas_focused
-                            });
+                            },
+                        );
 
                     should_intercept_key(
                         &mut this.niri.suppressed_keys,
