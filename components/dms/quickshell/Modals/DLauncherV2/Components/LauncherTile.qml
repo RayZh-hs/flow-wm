@@ -134,7 +134,7 @@ Rectangle {
                     height: LauncherMetrics.tileLabelBlockHeight
                     verticalAlignment: Text.AlignTop
                     text: root.item?._hName ?? root.item?.name ?? ""
-                    textFormat: root.item?._hRich ? Text.RichText : Text.PlainText
+                    textFormat: root.item?._hRich ? Text.StyledText : Text.PlainText
                     font.pixelSize: Theme.fontSizeSmall
                     font.weight: Theme.fontWeightMedium
                     font.family: Theme.fontFamily

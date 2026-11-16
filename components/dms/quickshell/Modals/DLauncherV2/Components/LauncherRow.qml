@@ -4,7 +4,6 @@ import QtQuick
 import qs.Common
 import qs.DCommon.Widgets
 import qs.Modals.DLauncherV2
-import "../../../Common/htmlElide.js" as HtmlElide
 
 DListItem {
     id: root
@@ -105,7 +104,8 @@ DListItem {
             anchors.right: parent.right
             anchors.top: parent.top
             text: root.item?._hName ?? root.item?.name ?? ""
-            textFormat: root.item?._hRich ? Text.RichText : Text.PlainText
+            // StyledText preserves search highlights while honoring line limits and elision.
+            textFormat: root.item?._hRich ? Text.StyledText : Text.PlainText
             font.pixelSize: Theme.fontSizeLarge
             font.weight: (root.item?.type === "dmenu" && root.item?.data?.urgent) ? Theme.fontWeightBold : Theme.fontWeightMedium
             font.family: Theme.fontFamily
@@ -116,29 +116,14 @@ DListItem {
             horizontalAlignment: Text.AlignLeft
         }
 
-        StyledTextMetrics {
-            id: subProbe
-            font.pixelSize: Theme.fontSizeSmall
-            elide: Qt.ElideRight
-            elideWidth: textColumn.width
-            text: root.item?._hRich ? HtmlElide.stripHtmlTags(root.item?._hSub ?? "") : ""
-        }
-
-        readonly property int _richBudget: {
-            if (!subProbe.text)
-                return 0;
-            var e = subProbe.elidedText;
-            return e.endsWith("…") ? e.length - 1 : e.length;
-        }
-
         StyledText {
             id: subText
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: nameText.bottom
             anchors.topMargin: Theme.spacingXXS
-            text: root.item?._hRich ? HtmlElide.elideRichText(root.item._hSub ?? "", textColumn._richBudget) : (root.item?.subtitle ?? "")
-            textFormat: root.item?._hRich ? Text.RichText : Text.PlainText
+            text: root.item?._hSub ?? root.item?.subtitle ?? ""
+            textFormat: root.item?._hRich ? Text.StyledText : Text.PlainText
             font.pixelSize: Theme.fontSizeSmall
             font.family: Theme.fontFamily
             color: root.supportingContentColor
