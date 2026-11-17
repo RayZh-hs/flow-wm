@@ -2870,11 +2870,10 @@ impl Shell {
             dialog.set_child(Some(&root));
             dialog.set_default_widget(Some(&close));
             let weak = self.weak.clone();
-            dialog.connect_close_request(move |_| {
+            dialog.connect_destroy(move |_| {
                 if let Some(shell) = weak.upgrade() {
                     shell.error_dialog.borrow_mut().take();
                 }
-                glib::Propagation::Proceed
             });
             *self.error_dialog.borrow_mut() = Some((dialog.clone(), message));
             dialog.present();
@@ -3130,14 +3129,13 @@ impl Shell {
             }
         });
         let weak = self.weak.clone();
-        popup.connect_close_request(move |_| {
+        popup.connect_destroy(move |_| {
             if let Some(shell) = weak.upgrade() {
                 shell.search_popup.borrow_mut().take();
                 shell.view.borrow_mut().query.clear();
                 shell.canvas().queue_draw();
                 shell.canvas().grab_focus();
             }
-            glib::Propagation::Proceed
         });
         *self.search_popup.borrow_mut() = Some(popup.clone());
         popup.present();
@@ -3344,12 +3342,11 @@ impl Shell {
         });
         popup.add_controller(key);
         let weak = self.weak.clone();
-        popup.connect_close_request(move |_| {
+        popup.connect_destroy(move |_| {
             if let Some(shell) = weak.upgrade() {
                 shell.chat.borrow_mut().take();
                 shell.canvas().grab_focus();
             }
-            glib::Propagation::Proceed
         });
         let weak = self.weak.clone();
         settings.connect_clicked(move |_| {
@@ -4018,12 +4015,11 @@ impl Shell {
             root.append(&split);
             let weak = self.weak.clone();
             let id = node.id.clone();
-            dialog.connect_close_request(move |_| {
+            dialog.connect_destroy(move |_| {
                 if let Some(shell) = weak.upgrade() {
                     shell.code_editors.borrow_mut().remove(&id);
                     shell.hover_pin(None);
                 }
-                glib::Propagation::Proceed
             });
         }
         if matches!(node.kind, NodeKind::Shell | NodeKind::Metric) {
@@ -4452,10 +4448,6 @@ impl Shell {
             }
         });
         dialog.set_default_widget(Some(&save));
-        {
-            let view = self.view.borrow();
-            super::popup::Popup::attach(&dialog, &root, &view.theme);
-        }
         let view = self.view.clone();
         let window = dialog.downgrade();
         super::background::attach(&root, move || {
@@ -4804,7 +4796,10 @@ impl Shell {
             .transient_for(&self.window())
             .modal(true)
             .default_width(width)
-            .default_height(height)
+            // Popup::install uses the requested height as a viewport maximum.
+            // Let the window itself follow the content so short dialogs do not
+            // retain a large empty lower half.
+            .default_height(-1)
             .build();
         dialog.add_css_class("flow-dialog");
         if !self.windowed {
@@ -4819,6 +4814,7 @@ impl Shell {
             dialog.set_exclusive_zone(-1);
             dialog.set_keyboard_mode(KeyboardMode::Exclusive);
         }
+        super::popup::Popup::install(&dialog, &self.view.borrow().theme, width, height);
         let key = gtk::EventControllerKey::new();
         key.set_propagation_phase(gtk::PropagationPhase::Capture);
         let d = dialog.clone();
@@ -4830,9 +4826,7 @@ impl Shell {
                 if super::code::dismiss_completion(&d) {
                     return glib::Propagation::Stop;
                 }
-                if d.has_css_class("row-settings-window")
-                    && let Some(popup) = d.child().and_downcast::<super::popup::Popup>()
-                {
+                if let Some(popup) = d.child().and_downcast::<super::popup::Popup>() {
                     popup.escape(&d);
                 } else {
                     d.close();

@@ -39,8 +39,8 @@ separator { background: @flow_outline; margin: 12px 8px; min-width: 1px; min-hei
 .output-tabs tab label { font-size: 11px; }
 textview, textview text { background: @flow_surface_low; color: @flow_muted; }
 .output-view { padding: 20px; font-family: monospace; font-size: 11px; line-height: 1.7; }
-.flow-dialog { background: @flow_surface; border-radius: 28px; border: 1px solid alpha(@flow_outline, 0.5); }
-.dialog-body { padding: 28px; background: @flow_surface; border-radius: 28px; }
+.flow-dialog { background: transparent; border: none; border-radius: 0; }
+.dialog-body { padding: 28px; background: @flow_surface; border: 1px solid alpha(@flow_outline, 0.5); border-radius: 28px; }
 .dialog-title { font-size: 22px; font-weight: 550; color: @flow_text; margin-bottom: 5px; }
 .field-label { font-size: 11px; color: @flow_muted; }
 .vox-parameters { padding-bottom: 8px; }
@@ -89,7 +89,7 @@ tooltip.flow-blur, .flow-blur .context-menu-body { background: alpha(@flow_surfa
 .port-tooltip .port-tooltip-description { font-size: 13px; color: @flow_text; }
 .port-tooltip .port-tooltip-context { font-family: "JetBrains Mono", monospace; font-size: 11px; color: alpha(@flow_muted, 0.8); padding-top: 0; }
 .flow-chat, .flow-search { border-radius: 22px; }
-.chat-body { padding: 16px 20px; border-radius: 22px; background: @flow_surface_low; }
+.chat-body { padding: 16px 20px; border: 1px solid alpha(@flow_outline, 0.5); border-radius: 22px; background: @flow_surface_low; }
 .chat-entry { border-radius: 18px; padding: 10px 14px; background: @flow_surface; }
 .chat-status { font-size: 12px; color: @flow_muted; }
 .chat-transcript, .chat-transcript text { background: @flow_surface_low; color: @flow_text; }
@@ -111,6 +111,7 @@ window.row-settings-window { background: transparent; border: none; border-radiu
 .row-settings-body { background: @flow_surface; border: 1px solid alpha(@flow_outline, 0.5); border-radius: __WINDOW_RADIUS__; padding: 12px; }
 .flow-blur .row-settings-body { background: alpha(@flow_surface, __POPUP_OPACITY__); }
 .popup-blur { border-radius: __WINDOW_RADIUS__; }
+.popup-viewport { background: transparent; border: none; }
 .row-settings-body * { font-size: __FONT_SCALE__; }
 .row-settings-body .dialog-title { font-size: __FONT_SCALE__; font-weight: 500; margin: 0; }
 .row-settings-body .muted, .row-settings-body .field-label, .row-settings-body .row-settings-hint { font-size: __SMALL_FONT__; }

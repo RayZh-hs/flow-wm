@@ -118,10 +118,9 @@ pub fn open(dialog: gtk::Window, engine: DesktopClient, node: Node, command: Vec
     });
     let cancelled = editor.cancelled.clone();
     let lifetime = RefCell::new(Some(editor.clone()));
-    editor.dialog.connect_close_request(move |_| {
+    editor.dialog.connect_destroy(move |_| {
         cancelled.store(true, Ordering::Release);
         lifetime.borrow_mut().take();
-        glib::Propagation::Proceed
     });
     editor.dialog.present();
     editor.request("describe");

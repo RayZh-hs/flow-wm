@@ -13,8 +13,11 @@ mod imp {
         pub shown: Cell<bool>,
         pub open_ms: Cell<u32>,
         pub close_ms: Cell<u32>,
+        pub body_width: Cell<i32>,
+        pub body_height: Cell<i32>,
         pub tick: RefCell<Option<gtk::TickCallbackId>>,
         pub body: glib::WeakRef<gtk::Widget>,
+        pub viewport: glib::WeakRef<gtk::ScrolledWindow>,
         pub content: glib::WeakRef<gtk::Widget>,
         pub blur: glib::WeakRef<gtk::Widget>,
         pub backdrop: RefCell<Option<gdk::RGBA>>,
@@ -44,8 +47,26 @@ mod imp {
             })
         }
         fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+            let horizontal_margin = 24;
+            let vertical_margin = 24;
+            let body_width = (self.body_width.get() - horizontal_margin)
+                .max(1)
+                .min((width - horizontal_margin).max(1));
             if let Some(body) = self.body.upgrade() {
-                body.set_width_request((width - 24).clamp(1, 520));
+                body.set_width_request(body_width);
+                body.set_margin_start(horizontal_margin / 2);
+                body.set_margin_end(horizontal_margin / 2);
+            }
+            if let Some(viewport) = self.viewport.upgrade() {
+                let available_height = (height - vertical_margin).max(1);
+                let configured_height = self.body_height.get();
+                let max_height = if configured_height > 0 {
+                    configured_height.min(available_height)
+                } else {
+                    available_height
+                };
+                viewport.set_max_content_width((width - horizontal_margin).max(1));
+                viewport.set_max_content_height(max_height);
             }
             if let Some(content) = self.content.upgrade() {
                 content.allocate(width, height, baseline, None);
@@ -110,9 +131,40 @@ glib::wrapper! {
 
 impl Popup {
     pub fn attach(window: &gtk::Window, body: &impl IsA<gtk::Widget>, theme: &Theme) {
+        Self::attach_with_size(window, body, theme, 520, 720);
+    }
+
+    pub fn install(window: &gtk::Window, theme: &Theme, width: i32, height: i32) {
+        let installing = Cell::new(false);
+        let theme = theme.clone();
+        window.connect_notify_local(Some("child"), move |window, _| {
+            if installing.get() {
+                return;
+            }
+            let Some(body) = window.child() else {
+                return;
+            };
+            if body.is::<Self>() {
+                return;
+            }
+            installing.set(true);
+            Self::attach_with_size(window, &body, &theme, width, height);
+            installing.set(false);
+        });
+    }
+
+    fn attach_with_size(
+        window: &gtk::Window,
+        body: &impl IsA<gtk::Widget>,
+        theme: &Theme,
+        width: i32,
+        height: i32,
+    ) {
         let popup: Self = glib::Object::new();
         popup.imp().open_ms.set(theme.popup_open_ms);
         popup.imp().close_ms.set(theme.popup_close_ms);
+        popup.imp().body_width.set(width.max(1));
+        popup.imp().body_height.set(height);
         popup.imp().body.set(Some(body.as_ref()));
         *popup.imp().backdrop.borrow_mut() = Some(gdk::RGBA::new(
             theme.backdrop.0 as f32,
@@ -126,11 +178,33 @@ impl Popup {
         overlay.set_child(Some(&background));
         body.set_halign(gtk::Align::Center);
         body.set_valign(gtk::Align::Center);
-        body.set_width_request(520);
+        body.set_width_request((width - 24).max(1));
         body.set_margin_top(12);
         body.set_margin_bottom(12);
-        overlay.add_overlay(body);
-        overlay.set_measure_overlay(body, true);
+        body.set_margin_start(12);
+        body.set_margin_end(12);
+        // `install` observes the window's child after GTK has parented it. Move
+        // that child into the viewport before installing the popup surface.
+        if body.parent().is_some() {
+            body.unparent();
+        }
+        // A single viewport keeps every dialog inside the available output. Its natural
+        // size is still used for short forms, while taller content becomes scrollable.
+        let viewport = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_width(true)
+            .propagate_natural_height(true)
+            .child(body)
+            .build();
+        viewport.add_css_class("popup-viewport");
+        viewport.set_halign(gtk::Align::Center);
+        viewport.set_valign(gtk::Align::Center);
+        viewport.set_max_content_width(width.max(1));
+        viewport.set_max_content_height(if height > 0 { height } else { 720 });
+        overlay.add_overlay(&viewport);
+        overlay.set_measure_overlay(&viewport, true);
+        popup.imp().viewport.set(Some(&viewport));
         let blur = gtk::Box::new(gtk::Orientation::Vertical, 0);
         blur.add_css_class("popup-blur");
         blur.set_can_target(false);
@@ -148,10 +222,10 @@ impl Popup {
             let Some(window) = popup.root().and_downcast::<gtk::Window>() else {
                 return;
             };
-            let Some(body) = popup.body() else {
+            let Some(viewport) = popup.imp().viewport.upgrade() else {
                 return;
             };
-            let inside = body.compute_bounds(&popup).is_some_and(|bounds| {
+            let inside = viewport.compute_bounds(&popup).is_some_and(|bounds| {
                 bounds.contains_point(&graphene::Point::new(x as f32, y as f32))
             });
             if !inside {
