@@ -11,7 +11,7 @@ use std::{collections::BTreeMap, process::Command, time::Duration};
 pub const ACTIONS: &[(&str, &str, &[&str])] = &[
     ("power_off", "Power off", &["systemctl", "poweroff"]),
     ("reboot", "Restart computer", &["systemctl", "reboot"]),
-    ("suspend", "Suspend", &["systemctl", "suspend"]),
+    ("suspend", "Sleep", &["systemctl", "suspend"]),
     ("hibernate", "Hibernate", &["systemctl", "hibernate"]),
     (
         "log_out",

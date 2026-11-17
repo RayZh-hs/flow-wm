@@ -5,10 +5,17 @@ Session actions accept a Run signal; list operations are passive data producers.
 
 ## Session actions
 
-**Power off**, **Restart computer**, **Suspend**, **Hibernate**, **Log out**, and
+**Power off**, **Restart computer**, **Sleep**, **Hibernate**, **Log out**, and
 **Lock session** execute the corresponding action on the owning desktop host.
 Successful commands emit `out`; command failures emit `failed`. Merely adding a
 node or reading its data never performs a session action.
+
+Use **New node** and search for **Sleep** or **Log out** to create these nodes.
+Sleep suspends the computer and keeps its stable type ID `local.suspend` and
+`action "suspend"` configuration entry. Searching for **suspend** also finds it;
+Log out can also be found with **logout** or **sign out**. All six session actions
+use square tiles with their own icons, including a crescent moon for Sleep and a
+door with an outward arrow for Log out.
 
 Defaults use `systemctl` for machine power management, `niri msg action quit
 --skip-confirmation` for logout, and `loginctl lock-session` for locking. The

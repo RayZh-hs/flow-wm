@@ -109,7 +109,13 @@ pub fn builtins() -> Vec<Macro> {
         macros.push(Macro {
             id: format!("local.{id}"),
             name: (*name).into(),
-            description: format!("{name} when Run receives a signal"),
+            description: match *id {
+                "suspend" => "Suspend the computer when Run receives a signal".into(),
+                "log_out" => {
+                    "End the desktop session (logout / sign out) when Run receives a signal".into()
+                }
+                _ => format!("{name} when Run receives a signal"),
+            },
             kind: NodeKind::Extension,
             command: String::new(),
             settings: None,

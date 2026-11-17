@@ -233,6 +233,9 @@ impl Node {
         if self.kind != NodeKind::Extension || self.flow.node_type.is_empty() {
             return self.kind.label().into();
         }
+        if let Some(name) = flow_builtins::session_actions::name(&self.flow.node_type) {
+            return name.into();
+        }
         let name = self
             .flow
             .node_type

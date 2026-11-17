@@ -986,6 +986,10 @@ mod tests {
             (NodeKind::Gate, "", 314., 510.),
             (NodeKind::Extension, "local.list_create", 650., 510.),
             (NodeKind::Extension, "local.reboot", 900., 510.),
+            (NodeKind::Extension, "local.suspend", 48., 740.),
+            (NodeKind::Extension, "local.log_out", 238., 740.),
+            (NodeKind::Extension, "local.hibernate", 428., 740.),
+            (NodeKind::Extension, "local.lock_session", 618., 740.),
         ] {
             let mut node = Node::new(
                 &state.selected_workspace,
@@ -1030,9 +1034,9 @@ mod tests {
         view.pan_y = 0.;
         let mut cache = Cache::default();
         let snapshot = gtk::Snapshot::new();
-        render(&snapshot, 1100, 720, &state, 1, &view, &mut cache);
+        render(&snapshot, 1100, 930, &state, 1, &view, &mut cache);
         let scene = snapshot.to_node().unwrap();
-        let before = pixels(&scene, 1100, 720);
+        let before = pixels(&scene, 1100, 930);
         let timer = cache.metadata[&state.nodes[1].id].1.clone();
         let power = cache.metadata[&state.nodes[2].id].1.clone();
         if let Some(path) = std::env::var_os("FLOWWM_NODE_APPEARANCE_CAPTURE") {
@@ -1042,7 +1046,7 @@ mod tests {
             } else {
                 gdk::MemoryFormat::A8r8g8b8Premultiplied
             };
-            let texture = gdk::MemoryTexture::new(1100, 720, format, &bytes, 1100 * 4);
+            let texture = gdk::MemoryTexture::new(1100, 930, format, &bytes, 1100 * 4);
             texture.save_to_png(path).unwrap();
         }
         state.nodes[1]
@@ -1054,8 +1058,8 @@ mod tests {
             .properties
             .insert("level".into(), serde_json::json!(0.1));
         let snapshot = gtk::Snapshot::new();
-        render(&snapshot, 1100, 720, &state, 2, &view, &mut cache);
-        let after = pixels(&snapshot.to_node().unwrap(), 1100, 720);
+        render(&snapshot, 1100, 930, &state, 2, &view, &mut cache);
+        let after = pixels(&snapshot.to_node().unwrap(), 1100, 930);
         assert_ne!(
             timer.as_ptr(),
             cache.metadata[&state.nodes[1].id].1.as_ptr()
@@ -1084,6 +1088,24 @@ mod tests {
             node_height(&state.nodes[2]),
             "Power off is square"
         );
+        for node in &state.nodes[12..] {
+            assert_eq!(
+                node_width(node),
+                node_height(node),
+                "{} is square",
+                node.label()
+            );
+            let left = (node.position.x + 40.) as usize;
+            let top = (node.position.y + 25.) as usize;
+            let has_icon = (top..top + 65).any(|y| {
+                (left..left + 65).any(|x| {
+                    let offset = (y * 1100 + x) * 4;
+                    let pixel = u32::from_ne_bytes(before[offset..offset + 4].try_into().unwrap());
+                    pixel & 0xff > 150
+                })
+            });
+            assert!(has_icon, "{} must draw its icon", node.label());
+        }
     }
 
     #[test]
