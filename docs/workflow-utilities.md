@@ -97,8 +97,12 @@ back to false. Process exit sets it to true. No process is started by reading
 this output.
 
 Unwrapped detected sessions use explicit activity records from transcripts held
-open by their process tree. They stay conservatively busy until completion can
-be established. Multiple detected agents in one terminal must all be idle.
+open by their process tree. Daemon-backed Codex sessions can also be matched by a
+unique displayed session name and working directory in the Codex session index.
+They stay conservatively busy until completion can be established. New explicit
+turn-completion records also fire **Session finished** while the CLI stays open;
+historical completions are not replayed when a session is discovered. Multiple
+detected agents in one terminal must all be idle.
 Unsupported/custom interactive adapters report busy until their process exits
 unless they publish their own `is_idle` updates. Transcript content is parsed
 locally for event types; it is never published or stored by this observer.

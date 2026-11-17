@@ -22,6 +22,8 @@ TERMINALS = ("alacritty", "kitty", "foot", "wezterm", "konsole", "gnome-terminal
 sys.path.insert(0, str(HERE.parents[1] / "sdk/python"))
 from flow_sdk import Client, exchange
 from flow_agent_activity import AgentActivity, monitor_activity, publish_idle
+sys.path.insert(0, str(HERE))
+from session_transcripts import codex_transcripts
 
 ACTIVITY = {}
 LAST_IDLE = {}
@@ -81,11 +83,12 @@ def expose(node):
     Client().expose_output(node, "on_session_finish", SIGNAL_TYPE, [{"name":"Error","representation":{"kind":"record","fields":{"code":{"kind":"int"},"kind":{"kind":"string"},"message":{"kind":"string"}},"open":False}}])
 
 
-def finish(node, agent, code=0, kind="", message="", session="", idle=True):
+def finish(node, agent, code=0, kind="", message="", session="", idle=True, delivery_id=None):
     if idle:
         publish_idle(node, True)
     error = {"code": code, "kind": kind or ("none" if code == 0 else "process_exit"), "message": message}
-    Client().emit(node, "on_session_finish", {"ERROR": error, "AGENT": agent, "SESSION": session}, retry_seconds=5)
+    options = {"delivery_id": delivery_id} if delivery_id else {}
+    Client().emit(node, "on_session_finish", {"ERROR": error, "AGENT": agent, "SESSION": session}, retry_seconds=5, **options)
 
 
 def executable(agent):
@@ -233,10 +236,20 @@ def agent_process(pid):
     return None
 
 
+def finish_turns(observer, node, agent):
+    """Acknowledge parsed records only after durable signal delivery."""
+    while observer.completions:
+        completion = observer.completions[0]
+        finish(node, agent, completion["code"], completion["kind"], completion["message"], completion["session"], idle=False, delivery_id=completion["delivery"])
+        observer.completions.pop(0)
+        observer.reported_completion = True
+
+
 def scan(native, state, tracked):
     terminals = {w["pid"]: w["id"] for w in native if w.get("pid") and any(name in (w.get("app_id") or "").lower() for name in TERMINALS)}
     nodes = {binding["window"]: node for node, binding in state["applications"].items()}
     found = {}
+    titles = {w["id"]: w.get("title", "") for w in native}
     if terminals:
         for path in Path("/proc").iterdir():
             if not path.name.isdigit():
@@ -252,15 +265,27 @@ def scan(native, state, tracked):
                 key = (pid, started)
                 if node:
                     found[key] = (node, agent)
+                    observer = ACTIVITY.setdefault(key, AgentActivity(pid, track_completions=True))
                     if key not in tracked:
                         expose(node)
-                    observer = ACTIVITY.setdefault(key, AgentActivity(pid))
-                    observer.sample()
+                    paths = observer.transcripts()
+                    if not paths and agent == "codex":
+                        paths = codex_transcripts(pid, titles.get(native_id, ""))
+                    observer.sample(paths)
+                    finish_turns(observer, node, agent)
             except (OSError, ValueError, RuntimeError):
                 continue
     for key, (node, agent) in tracked.items():
         if key not in found and node in nodes.values():
-            finish(node, agent, -1, "unknown_exit", "The unwrapped process ended; its exit status is unavailable. Start it through the FlowWM adapter for precise completion events.", idle=False)
+            observer = ACTIVITY.get(key)
+            if observer:
+                # A CLI can finish and exit between scans. Drain its already
+                # associated transcript before falling back to unknown_exit.
+                finish_turns(observer, node, agent)
+                observer.sample(observer.paths)
+                finish_turns(observer, node, agent)
+            if not observer or not (observer.reported_completion and observer.idle):
+                finish(node, agent, -1, "unknown_exit", "The unwrapped process ended; its exit status is unavailable. Start it through the FlowWM adapter for precise completion events.", idle=False)
         if key not in found:
             ACTIVITY.pop(key, None)
     for node in {node for node, _ in found.values()} | {node for node, _ in tracked.values() if node in nodes.values()}:
