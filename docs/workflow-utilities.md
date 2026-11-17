@@ -23,9 +23,15 @@ action "lock_session" "swaylock" "--daemonize"
 action "hibernate"
 ```
 
-Restart the runtime after changing this file. An individual node's **argv**
-property overrides its configured default; arguments are never interpreted as
-shell source. Installations without systemd can select their own session tools.
+Restart the runtime after changing this file. Session action nodes are ready to
+connect as soon as they are added; creation does not open a configuration dialog.
+Their cards describe when they run. Open **Parameters** to see the configured
+command, choose **Custom command for this node**, or disable the individual node.
+Custom commands have a **Program** field and separate argument rows with add and
+remove buttons. Arguments are passed literally, including spaces and empty values;
+do not add shell quotes. Selecting **Use configured command** removes the node's
+`argv` override, so later session configuration changes apply after a runtime
+restart. Installations without systemd can select their own session tools.
 
 ## Typed list templates
 

@@ -1977,7 +1977,8 @@ impl Shell {
                     &self.engine.snapshot().state,
                     &id,
                 );
-                if m.kind != NodeKind::Vox {
+                if m.kind != NodeKind::Vox && flow_builtins::session_actions::name(&m.id).is_none()
+                {
                     self.edit(&id);
                 }
             }
@@ -3580,7 +3581,8 @@ impl Shell {
         }) {
             Ok(_) => {
                 self.select(Some(id.clone()));
-                if m.kind != NodeKind::Vox {
+                if m.kind != NodeKind::Vox && flow_builtins::session_actions::name(&m.id).is_none()
+                {
                     self.edit(&id);
                 }
             }
@@ -3819,8 +3821,9 @@ impl Shell {
             super::extension_settings::open(dialog, self.engine.clone(), node, command);
             return;
         }
+        let session_action = flow_builtins::session_actions::name(&node.spec().type_id);
         let dialog = self.dialog(
-            "Node parameters",
+            session_action.unwrap_or("Node parameters"),
             if node.kind == NodeKind::Vox {
                 1100
             } else {
@@ -3839,7 +3842,9 @@ impl Shell {
             "local.set_env" | "local.unset_env" | "local.empty_env" | "local.bake_args_into_env"
         );
         root.append(&label(
-            &if environment_node {
+            &if let Some(name) = session_action {
+                name.into()
+            } else if environment_node {
                 node.label()
             } else if flow_builtins::agent::is_session(&node.spec().type_id) {
                 "Agent session parameters".into()

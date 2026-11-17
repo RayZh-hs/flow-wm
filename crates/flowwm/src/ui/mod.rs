@@ -30,3 +30,4 @@ pub struct Options {
 }
 
 mod regions;
+mod session_actions;

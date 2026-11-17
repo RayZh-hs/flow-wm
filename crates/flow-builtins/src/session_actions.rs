@@ -25,6 +25,14 @@ pub const ACTIONS: &[(&str, &str, &[&str])] = &[
     ),
 ];
 
+pub fn name(type_id: &str) -> Option<&'static str> {
+    let id = type_id.strip_prefix("local.")?;
+    ACTIONS
+        .iter()
+        .find(|(action, _, _)| *action == id)
+        .map(|(_, name, _)| *name)
+}
+
 #[derive(knuffel::Decode)]
 struct Config {
     #[knuffel(children(name = "action"))]

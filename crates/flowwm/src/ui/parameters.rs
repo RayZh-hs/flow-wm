@@ -20,6 +20,26 @@ impl Fields {
         (self.apply)(node)
     }
     pub fn new(state: &State, node: &Node, history: &Form) -> Self {
+        if flow_builtins::session_actions::name(&node.spec().type_id).is_some() {
+            return match super::session_actions::Editor::new(state, node) {
+                Ok(editor) => Self {
+                    widget: editor.widget.clone(),
+                    apply: Rc::new(move |node| editor.apply(node)),
+                },
+                Err(error) => {
+                    let message = format!("{error:#}");
+                    let widget = gtk::Box::new(gtk::Orientation::Vertical, 12);
+                    let label = gtk::Label::new(Some(&message));
+                    label.set_wrap(true);
+                    label.set_xalign(0.);
+                    widget.append(&label);
+                    Self {
+                        widget,
+                        apply: Rc::new(move |_| anyhow::bail!("{message}")),
+                    }
+                }
+            };
+        }
         let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
         let mut setters: Vec<Apply> = vec![];
         if node.flow.node_type.starts_with("local.list_")

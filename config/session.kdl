@@ -1,5 +1,5 @@
 // Literal argv vectors for session action nodes. An empty argv disables an action.
-// Nodes may override argv in Parameters. No shell is involved.
+// Nodes may choose a custom command in Parameters. No shell is involved.
 action "power_off" "systemctl" "poweroff"
 action "reboot" "systemctl" "reboot"
 action "suspend" "systemctl" "suspend"

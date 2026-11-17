@@ -2585,6 +2585,17 @@ fn draw_node_with_border(
                 .get("value")
                 .unwrap_or(&serde_json::Value::Null)
                 .to_string()
+        } else if let Some(name) = flow_builtins::session_actions::name(&n.spec().type_id) {
+            if n.flow
+                .properties
+                .get("argv")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(Vec::is_empty)
+            {
+                "Session action disabled".into()
+            } else {
+                format!("{name} when Run receives a signal")
+            }
         } else {
             n.command.clone()
         };
