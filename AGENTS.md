@@ -4,5 +4,7 @@ When working on the codebase, write clean reusable code. Do not make hacks only 
 
 Operational logic, including key binds, should all be configurable. The config home for FlowWM is `~/.config/flow-wm`. Keep the config folder clean and easy to follow. You are expected to reference niri's config style and build on top.
 
+Never write fallbacks. Fail explicitly and gracefully.
+
 When you finish a feature, commit. Follow conventional commits with category specification.
 
