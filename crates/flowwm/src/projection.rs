@@ -93,6 +93,13 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
             node.id = spec.id.0.clone();
             node.workspace = workflow.id.0.clone();
             node.kind = kind;
+            node.renderer = workflow
+                .graph
+                .node_types
+                .iter()
+                .chain(state.node_types.iter())
+                .find(|d| d.id == spec.type_id)
+                .and_then(|d| d.renderer.clone());
             if workflow.graph.node_types.iter().any(|d| {
                 d.id == spec.type_id && d.behavior == flow_core::providers::Behavior::Source
             }) {
@@ -107,6 +114,23 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
                 .unwrap_or(false);
             let attention = node.flow.properties.get("_alert").cloned();
             node.flow = spec.flow.clone();
+            if node.renderer.is_some()
+                && let Some(definition) = workflow
+                    .graph
+                    .node_types
+                    .iter()
+                    .chain(state.node_types.iter())
+                    .find(|d| d.id == spec.type_id)
+            {
+                for (name, property) in &definition.properties {
+                    if let Some(value) = &property.default {
+                        node.flow
+                            .properties
+                            .entry(name.clone())
+                            .or_insert_with(|| value.clone());
+                    }
+                }
+            }
             if let Some(interval) = spec
                 .flow
                 .properties
@@ -159,7 +183,7 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
                 node.position =
                     crate::placement::Space::new(state, &node.workspace, |n| n.position.clone())
                         .append(
-                            crate::placement::WIDTH,
+                            crate::placement::node_width(&node),
                             crate::placement::node_height(&node),
                         );
             }
@@ -326,6 +350,11 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
     for source in runtime.sources.values() {
         if let Some(node) = state.node_mut(&source.node.0) {
             node.status = Status::Watching;
+            if source.type_id == "local.timer" {
+                node.flow
+                    .values
+                    .insert("value".into(), serde_json::json!(source.sequence));
+            }
             if let Some(interval) = source
                 .properties
                 .get("interval_secs")
@@ -370,6 +399,51 @@ mod tests {
         };
         runtime.workflows.insert(workflow.id.clone(), workflow);
         runtime
+    }
+
+    #[test]
+    fn timer_surface_uses_the_restored_source_counter() {
+        let mut state = State::empty("/tmp".into());
+        let mut runtime = runtime(&state);
+        let spec = flow_core::domain::NodeSpec {
+            id: "clock".into(),
+            type_id: "local.timer".into(),
+            flow: Default::default(),
+        };
+        runtime
+            .workflows
+            .values_mut()
+            .next()
+            .unwrap()
+            .graph
+            .nodes
+            .push(spec);
+        runtime.sources.insert(
+            "clock".into(),
+            flow_core::providers::SourceRegistration {
+                environment: None,
+                subscription: None,
+                workflow: state.selected_workspace.clone().into(),
+                node: "clock".into(),
+                type_id: "local.timer".into(),
+                provider: "local".into(),
+                generation: 1,
+                handle: "clock-source".into(),
+                properties: [("interval_secs".into(), serde_json::json!(5))].into(),
+                sequence: 1234,
+                state: serde_json::json!({}),
+            },
+        );
+        apply(&mut state, &runtime);
+        let timer = state.node("clock").unwrap();
+        assert_eq!(timer.flow.values["value"], serde_json::json!(1234));
+        assert_eq!(timer.metric.interval_secs, 5);
+        assert_eq!(timer.status, Status::Watching);
+        apply(&mut state, &runtime);
+        assert_eq!(
+            state.node("clock").unwrap().flow.values["value"],
+            serde_json::json!(1234)
+        );
     }
 
     #[test]

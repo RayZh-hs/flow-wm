@@ -1,5 +1,5 @@
 use super::{
-    canvas::{self, View, WIDTH, node_height},
+    canvas::{self, View, node_height, node_width},
     collapse::Rect,
 };
 use crate::model::*;
@@ -21,6 +21,7 @@ pub struct Cache {
 struct RemovedCard {
     image: gsk::RenderNode,
     rect: Rect,
+    width: f64,
     started: std::time::Instant,
 }
 
@@ -40,7 +41,7 @@ impl Cache {
                 let c = snapshot.append_cairo(&graphene::Rect::new(
                     -8.,
                     -8.,
-                    WIDTH as f32 + 16.,
+                    node_width(node) as f32 + 16.,
                     node_height(node) as f32 + 16.,
                 ));
                 c.select_font_face(
@@ -54,6 +55,7 @@ impl Cache {
                     self.removed.push(RemovedCard {
                         image,
                         rect: *rect,
+                        width: node_width(node),
                         started: now,
                     });
                 }
@@ -88,8 +90,8 @@ impl Cache {
                 (card.rect.y + card.rect.height * (1. - shrink) / 2. + 14. * t * t) as f32,
             ));
             snapshot.scale(
-                (card.rect.width / WIDTH * shrink) as f32,
-                (card.rect.width / WIDTH * shrink) as f32,
+                (card.rect.width / card.width * shrink) as f32,
+                (card.rect.width / card.width * shrink) as f32,
             );
             snapshot.push_opacity((1. - t).powi(2));
             snapshot.append_node(&card.image);
@@ -250,7 +252,7 @@ fn metadata<'a>(
         let c = meta.append_cairo(&graphene::Rect::new(
             -8.0,
             -16.0,
-            WIDTH as f32 + 16.0,
+            node_width(node) as f32 + 16.0,
             node_height(node) as f32 + 32.0,
         ));
         c.select_font_face(
@@ -259,29 +261,46 @@ fn metadata<'a>(
             gtk::cairo::FontWeight::Normal,
         );
         if !node.closed_window() && (node.window_id.is_some() || node.desktop_window) {
-            c.rectangle(-8.0, -8.0, WIDTH + 16.0, 77.0);
-            c.rectangle(-8.0, node_height(node) - 39.0, WIDTH + 16.0, 48.0);
+            c.rectangle(-8.0, -8.0, node_width(node) + 16.0, 77.0);
+            c.rectangle(
+                -8.0,
+                node_height(node) - 39.0,
+                node_width(node) + 16.0,
+                48.0,
+            );
             c.clip();
         }
-        canvas::draw_node_with_usage(&c, node, &Position::default(), &view.theme, usage.as_ref());
+        canvas::draw_node_with_usage(
+            &c,
+            node,
+            &Position::default(),
+            &view.theme,
+            usage.as_ref(),
+            scale,
+        );
         drop(c);
         if !node.closed_window() {
             let c = meta.append_cairo(&graphene::Rect::new(
                 -8.,
                 -8.,
-                WIDTH as f32 + 16.,
+                node_width(node) as f32 + 16.,
                 node_height(node) as f32 + 16.,
             ));
             canvas::draw_pin_markers(&c, state, node, &Position::default(), &view.theme);
         }
         if view.numbers && index < 10 {
-            let c = meta.append_cairo(&graphene::Rect::new(WIDTH as f32 - 34.0, -14.0, 32.0, 28.0));
-            canvas::rounded(&c, WIDTH - 32.0, -13.0, 28.0, 26.0, 8.0);
+            let c = meta.append_cairo(&graphene::Rect::new(
+                node_width(node) as f32 - 34.0,
+                -14.0,
+                32.0,
+                28.0,
+            ));
+            canvas::rounded(&c, node_width(node) - 32.0, -13.0, 28.0, 26.0, 8.0);
             view.theme.primary.source(&c);
             let _ = c.fill();
             canvas::text(
                 &c,
-                WIDTH - 22.0,
+                node_width(node) - 22.0,
                 5.0,
                 &((index + 1) % 10).to_string(),
                 14.0,
@@ -428,7 +447,7 @@ pub(super) fn window_geometry_at(node: &Node, view: &View, t: f64) -> (Rect, Rec
     let graph = Rect {
         x: view.pan_x + p.x * view.zoom,
         y: view.pan_y + p.y * view.zoom,
-        width: WIDTH * view.zoom,
+        width: node_width(node) * view.zoom,
         height: node_height(node) * view.zoom,
     };
     let mut rect = view
@@ -660,6 +679,7 @@ fn render_inner(
                     n.window_id,
                     n.desktop_window,
                     &n.flow,
+                    &n.renderer,
                     crate::graph::pins(state, n, true),
                     crate::graph::pins(state, n, false),
                 ))
@@ -694,7 +714,7 @@ fn render_inner(
         let rect = Rect {
             x: view.pan_x + p.x * view.zoom,
             y: view.pan_y + p.y * view.zoom,
-            width: WIDTH * view.zoom,
+            width: node_width(node) * view.zoom,
             height: node_height(node) * view.zoom,
         };
         if rect.x > width as f64 + 12.
@@ -872,7 +892,7 @@ fn render_inner(
             snapshot.save();
             snapshot.translate(&graphene::Point::new(rect.x as f32, rect.y as f32));
             snapshot.scale(
-                (rect.width / WIDTH) as f32,
+                (rect.width / node_width(node)) as f32,
                 (rect.height / node_height(node)) as f32,
             );
             snapshot.push_opacity(((t - 0.6) / 0.4).clamp(0.0, 1.0));
@@ -882,7 +902,7 @@ fn render_inner(
                 node,
                 index,
                 view,
-                (rect.width / WIDTH).max(rect.height / node_height(node)),
+                (rect.width / node_width(node)).max(rect.height / node_height(node)),
             ));
             snapshot.pop();
             snapshot.restore();
@@ -908,6 +928,7 @@ fn render_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::placement::WIDTH;
 
     #[test]
     fn alerts_override_faded_selection_and_native_urgency_without_changing_selection() {
@@ -944,6 +965,125 @@ mod tests {
         node.draw(&context);
         drop(context);
         image.data().unwrap().to_vec()
+    }
+
+    #[test]
+    #[ignore = "requires a GTK display; run explicitly inside Niri or Xvfb"]
+    #[allow(clippy::field_reassign_with_default)]
+    fn functional_surfaces_show_live_content_and_custom_shaders() {
+        gtk::init().unwrap();
+        let mut state = State::empty("/tmp".into());
+        for (kind, type_id, x, y) in [
+            (NodeKind::Shell, "", 48., 50.),
+            (NodeKind::Extension, "local.timer", 382., 50.),
+            (NodeKind::Extension, "local.power_off", 648., 50.),
+            (NodeKind::Constant, "", 838., 50.),
+            (NodeKind::Display, "", 48., 280.),
+            (NodeKind::Conditional, "", 350., 280.),
+            (NodeKind::Extension, "local.set_env", 566., 280.),
+            (NodeKind::Extension, "example.gauge", 832., 280.),
+            (NodeKind::Alert, "", 48., 510.),
+            (NodeKind::Gate, "", 314., 510.),
+            (NodeKind::Extension, "local.list_create", 650., 510.),
+            (NodeKind::Extension, "local.reboot", 900., 510.),
+        ] {
+            let mut node = Node::new(
+                &state.selected_workspace,
+                kind,
+                "/tmp".into(),
+                Position { x, y },
+            );
+            node.flow.node_type = type_id.into();
+            state.nodes.push(node);
+        }
+        state.nodes[1]
+            .flow
+            .values
+            .insert("value".into(), serde_json::json!(42));
+        state.nodes[1].metric.interval_secs = 5;
+        state.nodes[1].status = Status::Watching;
+        state.nodes[3]
+            .flow
+            .properties
+            .insert("value".into(), serde_json::json!(1024));
+        state.nodes[4]
+            .flow
+            .values
+            .insert("value".into(), serde_json::json!("Build complete"));
+        state.nodes[8]
+            .flow
+            .properties
+            .insert("message".into(), serde_json::json!("Review needed"));
+        let gauge: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../examples/extension-shader.json"))
+                .unwrap();
+        state.nodes[7].renderer =
+            Some(serde_json::from_value(gauge["nodes"][0]["renderer"].clone()).unwrap());
+        state.nodes[7]
+            .flow
+            .properties
+            .insert("level".into(), serde_json::json!(0.65));
+        let mut view = View::default();
+        view.theme = super::super::theme::Theme::default();
+        view.zoom = 1.;
+        view.pan_x = 0.;
+        view.pan_y = 0.;
+        let mut cache = Cache::default();
+        let snapshot = gtk::Snapshot::new();
+        render(&snapshot, 1100, 720, &state, 1, &view, &mut cache);
+        let scene = snapshot.to_node().unwrap();
+        let before = pixels(&scene, 1100, 720);
+        let timer = cache.metadata[&state.nodes[1].id].1.clone();
+        let power = cache.metadata[&state.nodes[2].id].1.clone();
+        if let Some(path) = std::env::var_os("FLOWWM_NODE_APPEARANCE_CAPTURE") {
+            let bytes = gtk::glib::Bytes::from_owned(before.clone());
+            let format = if cfg!(target_endian = "little") {
+                gdk::MemoryFormat::B8g8r8a8Premultiplied
+            } else {
+                gdk::MemoryFormat::A8r8g8b8Premultiplied
+            };
+            let texture = gdk::MemoryTexture::new(1100, 720, format, &bytes, 1100 * 4);
+            texture.save_to_png(path).unwrap();
+        }
+        state.nodes[1]
+            .flow
+            .values
+            .insert("value".into(), serde_json::json!(43));
+        state.nodes[7]
+            .flow
+            .properties
+            .insert("level".into(), serde_json::json!(0.1));
+        let snapshot = gtk::Snapshot::new();
+        render(&snapshot, 1100, 720, &state, 2, &view, &mut cache);
+        let after = pixels(&snapshot.to_node().unwrap(), 1100, 720);
+        assert_ne!(
+            timer.as_ptr(),
+            cache.metadata[&state.nodes[1].id].1.as_ptr()
+        );
+        assert_eq!(
+            power.as_ptr(),
+            cache.metadata[&state.nodes[2].id].1.as_ptr(),
+            "Unrelated nodes retain their cached surface"
+        );
+        let changed = |left: usize, top: usize, width: usize, height: usize| {
+            (top..top + height).any(|y| {
+                let start = (y * 1100 + left) * 4;
+                before[start..start + width * 4] != after[start..start + width * 4]
+            })
+        };
+        assert!(
+            changed(398, 99, 130, 50),
+            "Timer count must update on the surface"
+        );
+        assert!(
+            changed(840, 288, 176, 144),
+            "Shader properties must invalidate the surface"
+        );
+        assert_eq!(
+            node_width(&state.nodes[2]),
+            node_height(&state.nodes[2]),
+            "Power off is square"
+        );
     }
 
     #[test]

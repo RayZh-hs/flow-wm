@@ -17,6 +17,8 @@ gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
 gtk4-layer-shell = "0.8"
 gio-unix = "0.22"
 libc = "0.2"
+glow = "0.17"
+libloading = "0.8"
 niri-ipc = { path = "../../components/niri/niri-ipc" }
 niri-config = { path = "../../components/niri/niri-config" }
 pangocairo = "0.22"

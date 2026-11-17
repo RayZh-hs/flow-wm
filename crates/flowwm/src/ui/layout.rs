@@ -1,5 +1,5 @@
 //! Keep live windows in a row and fit their compact history beneath it.
-use super::canvas::{HEIGHT, WIDTH};
+use super::canvas::{HEIGHT, WIDTH, node_width};
 use crate::model::{Node, Position, State};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -85,7 +85,7 @@ impl Arrangement {
         let start = nodes
             .iter()
             .filter(|n| !managed(n))
-            .map(|n| n.position.x + WIDTH + SECTION_GAP)
+            .map(|n| n.position.x + node_width(n) + SECTION_GAP)
             .fold(100.0, f64::max);
         let live_width = span(live.len(), LIVE_STEP);
         let live_height = if live.is_empty() { 0.0 } else { HEIGHT + 120.0 };
@@ -173,7 +173,7 @@ pub fn place_new_node(
             .min_by(|a, b| {
                 let distance = |n: &Node| {
                     let p = view.position(n);
-                    (p.x + WIDTH / 2. - center.0)
+                    (p.x + node_width(n) / 2. - center.0)
                         .hypot(p.y + super::canvas::node_height(n) / 2. - center.1)
                 };
                 distance(a).total_cmp(&distance(b))
@@ -188,7 +188,8 @@ pub fn place_new_node(
             }
         } else {
             Position {
-                x: ((center.0 - WIDTH / 2.) / super::canvas::GRID).round() * super::canvas::GRID,
+                x: ((center.0 - node_width(node) / 2.) / super::canvas::GRID).round()
+                    * super::canvas::GRID,
                 y: ((center.1 - super::canvas::node_height(node) / 2.) / super::canvas::GRID)
                     .round()
                     * super::canvas::GRID,
@@ -197,7 +198,7 @@ pub fn place_new_node(
     });
     crate::placement::Space::new(state, &node.workspace, |n| view.position(n)).near(
         preferred,
-        WIDTH,
+        node_width(node),
         super::canvas::node_height(node),
     )
 }
@@ -433,9 +434,11 @@ fn arrange_component(
             .map(|n| super::canvas::node_height(n))
             .fold(0., f64::max)
     };
+    let row_width = |row: &[&Node]| row.iter().map(|n| node_width(n) + gap).sum::<f64>() - gap;
+    let max_width = nodes.values().map(|n| node_width(n)).fold(0., f64::max);
     let max_columns = layers.iter().map(Vec::len).max().unwrap_or(1);
     let min_columns = if wrap_zoom > 0. {
-        ((((width as f64 - 160.).max(1.) / wrap_zoom + gap) / (WIDTH + gap)).floor() as usize)
+        ((((width as f64 - 160.).max(1.) / wrap_zoom + gap) / (max_width + gap)).floor() as usize)
             .max(1)
             .min(max_columns)
     } else {
@@ -444,7 +447,11 @@ fn arrange_component(
     let columns = (min_columns..=max_columns)
         .max_by(|a, b| {
             let scale = |columns: usize| {
-                let w = columns as f64 * (WIDTH + gap) - gap;
+                let w = layers
+                    .iter()
+                    .flat_map(|l| l.chunks(columns))
+                    .map(row_width)
+                    .fold(0., f64::max);
                 let h = layers
                     .iter()
                     .flat_map(|l| l.chunks(columns))
@@ -471,7 +478,12 @@ fn arrange_component(
                     .iter()
                     .filter(move |(_, b)| b == &node.id)
                     .filter_map(move |(a, _)| {
-                        placed.get(a).map(|p| p.x - index as f64 * (WIDTH + gap))
+                        placed.get(a).map(|p| {
+                            p.x - row[..index]
+                                .iter()
+                                .map(|n| node_width(n) + gap)
+                                .sum::<f64>()
+                        })
                     })
             })
             .collect();
@@ -480,18 +492,20 @@ fn arrange_component(
         } else {
             (anchors.iter().sum::<f64>() / anchors.len() as f64).max(0.)
         };
-        for (index, node) in row.iter().enumerate() {
-            let p = Position {
-                x: x + index as f64 * (WIDTH + gap),
-                y,
-            };
+        let mut cursor = x;
+        for node in row {
+            let p = Position { x: cursor, y };
+            cursor += node_width(node) + gap;
             placed.insert(node.id.clone(), p.clone());
             result.push((node.id.clone(), p));
         }
         y += row_height(row) + gap;
     }
     ComponentLayout {
-        width: result.iter().map(|(_, p)| p.x + WIDTH).fold(0., f64::max),
+        width: result
+            .iter()
+            .map(|(id, p)| p.x + node_width(nodes[id]))
+            .fold(0., f64::max),
         height: y - gap,
         positions: result,
         left: nodes
@@ -543,7 +557,7 @@ pub fn align_selection(
                 Position { x, y: cursor }
             };
             cursor += if horizontal {
-                WIDTH
+                node_width(n)
             } else {
                 super::canvas::node_height(n)
             } + gap();
@@ -752,8 +766,8 @@ mod tests {
             for b in &state.nodes[index + 1..] {
                 let q = &positions[&b.id];
                 assert!(
-                    p.x + WIDTH <= q.x
-                        || q.x + WIDTH <= p.x
+                    p.x + node_width(a) <= q.x
+                        || q.x + node_width(b) <= p.x
                         || p.y + super::super::canvas::node_height(a) <= q.y
                         || q.y + super::super::canvas::node_height(b) <= p.y,
                     "{} overlaps {}",
@@ -927,7 +941,7 @@ mod tests {
         );
         assert_eq!(a.y, c.y);
         assert_eq!(a.y, b.y);
-        assert_eq!(c.x - a.x, WIDTH + gap());
+        assert_eq!(c.x - a.x, node_width(&state.nodes[0]) + gap());
         assert!(b.x > c.x);
     }
 
@@ -1086,8 +1100,8 @@ mod tests {
             for b in state.nodes.iter().skip(i + 1) {
                 let q = &positions[&b.id];
                 assert!(
-                    p.x + WIDTH <= q.x
-                        || q.x + WIDTH <= p.x
+                    p.x + node_width(a) <= q.x
+                        || q.x + node_width(b) <= p.x
                         || p.y + super::super::canvas::node_height(a) <= q.y
                         || q.y + super::super::canvas::node_height(b) <= p.y
                 );

@@ -177,6 +177,9 @@ impl Default for Metric {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Node {
+    /// Resolved from the registered schema, for presentation only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renderer: Option<flow_core::domain::RendererContract>,
     #[serde(default)]
     pub flow: crate::graph::Flow,
     pub id: String,
@@ -281,6 +284,7 @@ impl Node {
         };
         Self {
             flow: crate::graph::Flow::default(),
+            renderer: None,
             id: id(),
             workspace: workspace.into(),
             title: String::new(),

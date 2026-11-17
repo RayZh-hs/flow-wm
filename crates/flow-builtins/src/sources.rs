@@ -130,6 +130,7 @@ impl Sources {
                     pin = "__poll";
                 } else if source.type_id == "local.timer" {
                     args = json!({"tick":sequence});
+                    values.insert("value".into(), json!(sequence));
                 } else {
                     let invocation = Invocation {
                         environment: source.environment.clone(),

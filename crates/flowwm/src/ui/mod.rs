@@ -1,8 +1,9 @@
-mod background;
 mod annotations;
+mod appearance;
+mod background;
 mod canvas;
-mod collapse;
 mod code;
+mod collapse;
 mod context_menu;
 mod empty;
 mod environment;
@@ -13,14 +14,15 @@ mod keybindings;
 mod layout;
 mod motion;
 mod native;
+mod node_shader;
 mod parameters;
 mod popup;
 mod port_tooltip;
 mod shell;
 mod surface;
 pub mod theme;
-mod wires;
 mod vox_parameters;
+mod wires;
 pub use shell::run;
 #[derive(Clone, Copy, Default)]
 pub struct Options {

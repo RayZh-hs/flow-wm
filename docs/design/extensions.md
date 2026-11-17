@@ -66,3 +66,55 @@ its non-transient fields and returned properties to the node.
 The Lark example is maintained as the separate sibling project `FlowWM-Lark`,
 not shipped as a builtin. Builtin agent sessions are documented in
 [Agent sessions](../agent-sessions.md).
+
+## Custom node surfaces
+
+Both a provider definition in `providers` and a declarative definition in `nodes`
+can supply a `renderer`. It travels with the registered schema, including host
+discovery and saved workflow graphs. Without a renderer, FlowWM draws the node's
+builtin surface. A renderer replaces the entire interior of a functional node;
+FlowWM still draws its ports, selection, alert outline and keyboard number badge.
+Application window previews retain their native presentation.
+
+```json
+"renderer": {
+  "size": [192, 160],
+  "uniforms": {
+    "u_level": {"source": "property", "name": "level"}
+  },
+  "fragment": "vec4 flow_draw(vec2 uv) { return mix(flow_surface, flow_primary, step(uv.x, u_level)); }"
+}
+```
+
+`size` gives logical width and height, each between 64 and 1024 pixels. These
+bounds also control placement, camera framing, selection and port positions.
+`fragment` contains GLSL ES 3.00 implementing `vec4 flow_draw(vec2 uv)`. The host
+supplies the version, precision, uniform declarations and `main`; omit these
+from the fragment. Coordinates run from `(0,0)` at the top left to `(1,1)` at the
+bottom right. Return straight RGBA; FlowWM premultiplies the pixels for compositing.
+The host clips the surface to the node's rounded frame.
+
+Available uniforms are `flow_size` (logical `vec2` dimensions), `flow_resolution`
+(raster `vec2` dimensions), `flow_surface`, `flow_primary` and `flow_text` (theme
+`vec4` colors), and `flow_status` (a float: Ready 0, Watching 1, Unavailable 2,
+Waiting 3, Running 4, Needs you 5, Complete 6, Failed 7, Stopped 8).
+Custom uniforms must start with `u_` and are declared as floats. Bind them to
+`{"source":"property","name":"…"}`, `{"source":"output","name":"…"}`, or
+`{"source":"constant","value":0.5}`. Numbers must fit finite floats; Booleans
+become 0 or 1. Provide defaults for property bindings in the node schema. Output
+bindings require a published or evaluated value; a missing input is an error.
+Connected data inputs become visible to shaders when their corresponding outputs
+are evaluated or published, rather than executing node logic during drawing.
+
+FlowWM compiles the shader in its own OpenGL ES 3 context and caches its pixels
+until properties, outputs, status, theme or raster resolution change. Moving the
+camera reuses the surface; no frame timer or execution is started by a shader.
+The same pixels work with GTK's GL, Vulkan and Cairo compositors and canvas
+exports. This path requires GLES 3 and GTK's libepoxy dispatch library. A context,
+compilation, linking or input error displays a **Shader error** surface and logs
+the diagnostic with the node ID. There is no substitute drawing after an error.
+Limits are 64 KiB of fragment source and 32 custom uniforms per renderer.
+
+[extension-shader.json](../../examples/extension-shader.json) is a complete
+gauge example. Copy it to `~/.config/flow-wm/extensions/`, restart the host and
+shell to mount it, and create **Shader gauge** from the node library.

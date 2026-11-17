@@ -30,7 +30,7 @@ pub fn open(
         node.workspace == state.selected_workspace
             && wx >= p.x
             && wy >= p.y
-            && wx <= p.x + canvas::WIDTH
+            && wx <= p.x + canvas::node_width(node)
             && wy <= p.y + canvas::node_height(node)
     });
     let annotation = node

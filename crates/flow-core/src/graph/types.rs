@@ -150,6 +150,9 @@ pub fn validate_registry(state: &FlowNet) -> Result<()> {
     }
     let mut ids = HashSet::new();
     for node in &state.node_types {
+        if let Some(renderer) = &node.renderer {
+            renderer.validate()?;
+        }
         if let Some(window) = &node.window {
             window.validate()?;
         }

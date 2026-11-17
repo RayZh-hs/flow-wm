@@ -1,5 +1,5 @@
 //! Versioned domain model. Desktop rows and presentation never define runtime ownership.
-use crate::graph::{CastDefinition, Connection, Flow, NodeDefinition, Pin, Type, TypeDefinition};
+use crate::graph::{CastDefinition, Connection, Flow, NodeDefinition, Type, TypeDefinition};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -790,15 +790,66 @@ impl RuntimeState {
     }
 }
 
-/// WM renderers receive semantic content; native IDs and pixels remain in the WM.
+/// A node surface drawn by the WM. Extensions supply GLSL ES 3.00 fragment code;
+/// the WM owns the context, geometry, ports, selection and input handling.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RendererContract {
-    pub id: String,
-    pub minimum_size: [f64; 2],
-    pub pins: Vec<Pin>,
-    pub anchors: BTreeMap<String, [f64; 2]>,
-    pub hit_regions: Vec<[f64; 4]>,
-    pub fallback_label: String,
+    pub size: [f64; 2],
+    pub fragment: String,
+    #[serde(default)]
+    pub uniforms: BTreeMap<String, ShaderInput>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ShaderInput {
+    Property { name: String },
+    Output { name: String },
+    Constant { value: f64 },
+}
+
+impl RendererContract {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.size
+                .iter()
+                .all(|v| v.is_finite() && (64. ..=1024.).contains(v)),
+            "Renderer dimensions must be finite and between 64 and 1024"
+        );
+        ensure!(
+            !self.fragment.trim().is_empty() && self.fragment.len() <= 65_536,
+            "Renderer fragment must contain 1 to 65536 bytes of GLSL"
+        );
+        ensure!(
+            self.uniforms.len() <= 32,
+            "Renderer supports at most 32 uniforms"
+        );
+        for (name, input) in &self.uniforms {
+            ensure!(
+                name.starts_with("u_")
+                    && name.len() > 2
+                    && name.len() <= 64
+                    && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_'),
+                "Custom shader uniforms must use a u_ identifier: {name}"
+            );
+            match input {
+                ShaderInput::Property { name } | ShaderInput::Output { name } => {
+                    ensure!(
+                        !name.is_empty(),
+                        "Shader input needs a property or output name"
+                    );
+                }
+                ShaderInput::Constant { value } => {
+                    ensure!(
+                        value.is_finite() && (*value as f32).is_finite(),
+                        "Shader constant must fit a finite float"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 fn local_host() -> HostId {

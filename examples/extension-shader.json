@@ -1,0 +1,22 @@
+{
+  "version": 3,
+  "nodes": [{
+    "id": "example.gauge",
+    "name": "Shader gauge",
+    "behavior": "lazy",
+    "inputs": [{"name":"level", "ty":{"kind":"float"}, "property":"level", "default":0.65}],
+    "outputs": [{"name":"value", "ty":{"kind":"float"}}],
+    "properties": {"level":{"ty":{"kind":"float"},"default":0.65}},
+    "source": "{ value = inputs.level, }",
+    "renderer": {
+      "size": [192, 160],
+      "uniforms": {"u_level":{"source":"property","name":"level"}},
+      "fragment": "vec4 flow_draw(vec2 uv) {\n    vec2 p = (uv - 0.5) * flow_size;\n    float ring = 1.0 - smoothstep(5.0, 6.5, abs(length(p) - 45.0));\n    float angle = mod(atan(p.x, -p.y) + 6.2831853, 6.2831853);\n    float filled = step(angle, clamp(u_level, 0.0, 1.0) * 6.2831853);\n    vec4 track = mix(flow_surface, flow_primary, 0.18);\n    return mix(flow_surface, mix(track, flow_primary, filled), ring);\n}"
+    },
+    "window": {
+      "title": "Shader gauge",
+      "fields": [{"label":"Level (0–1)","property":"level","editable":true}],
+      "output": "value"
+    }
+  }]
+}

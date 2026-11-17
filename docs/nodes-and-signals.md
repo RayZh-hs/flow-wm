@@ -5,6 +5,14 @@ properties. A connection identifies both endpoints as `{ "node": "…", "pin": "
 The connection is accepted when the output type can be cast to the input type.
 Signal and data pins are distinct, even when they carry the same record shape.
 
+Functional nodes show their purpose on the canvas: timers display their live
+tick counter and interval, session actions use square icon tiles, constants show
+their typed value, and displays show the received data. Routing, decisions,
+alerts, environment and list nodes have dedicated surfaces. All use the current
+theme's material. Their bounds also determine placement, selection and port
+positions. Extensions can supply a [custom GLSL surface](design/extensions.md#custom-node-surfaces)
+with their own size and bindings to node properties or published outputs.
+
 Signal pins have type `Signal[Args]`, where `Args` is a record. `Signal[{}]` is a
 plain signal, also called a trigger. Sending a signal queues every connected
 recipient. Each delivery invokes its recipient once. Multiple signals arriving at

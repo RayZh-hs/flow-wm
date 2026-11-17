@@ -44,7 +44,7 @@ pub fn rect(item: &Annotation, state: &State, view: &View) -> Option<Rect> {
                 - 52.;
             let right = nodes
                 .iter()
-                .map(|node| view.position(node).x + canvas::WIDTH)
+                .map(|node| view.position(node).x + canvas::node_width(node))
                 .fold(f64::NEG_INFINITY, f64::max)
                 + 24.;
             let bottom = nodes

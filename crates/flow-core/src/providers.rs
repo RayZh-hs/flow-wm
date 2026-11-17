@@ -40,6 +40,7 @@ pub struct Definition {
 impl Definition {
     pub fn node_schema(&self) -> crate::graph::NodeDefinition {
         crate::graph::NodeDefinition {
+            renderer: self.renderer.clone(),
             behavior: self.behavior.clone(),
             id: self.id.clone(),
             name: self.id.clone(),
@@ -255,6 +256,9 @@ impl Registry {
         );
         let mut ids = BTreeSet::new();
         for definition in &definitions {
+            if let Some(renderer) = &definition.renderer {
+                renderer.validate()?;
+            }
             ensure!(
                 definition.owner == owner && definition.id.starts_with(&format!("{}.", owner.0)),
                 "Definition must use its owner's namespace"

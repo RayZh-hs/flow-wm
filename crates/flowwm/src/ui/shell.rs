@@ -841,8 +841,8 @@ impl Shell {
                 state.nodes.iter().any(|existing| {
                     let p = shell.view.borrow().position(existing);
                     existing.workspace == state.selected_workspace
-                        && copy.position.x + offset.x < p.x + canvas::WIDTH + 20.
-                        && copy.position.x + offset.x + canvas::WIDTH + 20. > p.x
+                        && copy.position.x + offset.x < p.x + canvas::node_width(existing) + 20.
+                        && copy.position.x + offset.x + canvas::node_width(copy) + 20. > p.x
                         && copy.position.y + offset.y < p.y + canvas::node_height(existing) + 20.
                         && copy.position.y + offset.y + canvas::node_height(copy) + 20. > p.y
                 })
@@ -1291,7 +1291,7 @@ impl Shell {
             let graph = super::collapse::Rect {
                 x: target_pan_x + p.x * target_zoom,
                 y: target_pan_y + p.y * target_zoom,
-                width: canvas::WIDTH * target_zoom,
+                width: canvas::node_width(node) * target_zoom,
                 height: canvas::node_height(node) * target_zoom,
             };
             let mut rect = view.desktop_rects.get(&node.id).copied().unwrap_or(graph);
@@ -1484,7 +1484,7 @@ impl Shell {
                         view.zoom = 0.9;
                         let position = view.arrangement.position(node);
                         view.pan_x = shell.canvas().width() as f64 / 2.0
-                            - (position.x + canvas::WIDTH / 2.0) * view.zoom;
+                            - (position.x + canvas::node_width(node) / 2.0) * view.zoom;
                         view.pan_y = shell.canvas().height() as f64 / 2.0
                             - (position.y + canvas::node_height(node) / 2.0) * view.zoom;
                     }
@@ -1558,7 +1558,7 @@ impl Shell {
                         super::collapse::Rect {
                             x: view.pan_x + p.x * view.zoom,
                             y: view.pan_y + p.y * view.zoom,
-                            width: canvas::WIDTH * view.zoom,
+                            width: rect.width * view.zoom / target_zoom,
                             height: rect.height * view.zoom / target_zoom,
                         }
                     } else {
@@ -1911,6 +1911,11 @@ impl Shell {
         );
         node.command = m.command.clone();
         node.flow = m.flow.clone();
+        node.renderer = state
+            .node_types
+            .iter()
+            .find(|d| d.id == node.spec().type_id)
+            .and_then(|d| d.renderer.clone());
         if node.kind == NodeKind::Window || flow_builtins::agent::is_session(&node.spec().type_id) {
             node.cwd = PathBuf::new();
         }
@@ -1938,7 +1943,11 @@ impl Shell {
             canvas::node_height(parent) + crate::placement::gap()
         };
         node.position = crate::placement::Space::new(&state, &node.workspace, |n| view.position(n))
-            .near(position, canvas::WIDTH, canvas::node_height(&node));
+            .near(
+                position,
+                canvas::node_width(&node),
+                canvas::node_height(&node),
+            );
         drop(view);
 
         let id = node.id.clone();
@@ -3152,7 +3161,7 @@ impl Shell {
         popover.set_pointing_to(Some(&gdk::Rectangle::new(
             (view.pan_x + p.x * view.zoom) as i32,
             (view.pan_y + (p.y + canvas::body_top(&node)) * view.zoom) as i32,
-            (canvas::WIDTH * view.zoom) as i32,
+            (canvas::node_width(&node) * view.zoom) as i32,
             30,
         )));
         drop(view);
@@ -3557,6 +3566,11 @@ impl Shell {
         );
         node.command = m.command.clone();
         node.flow = m.flow.clone();
+        node.renderer = state
+            .node_types
+            .iter()
+            .find(|d| d.id == node.spec().type_id)
+            .and_then(|d| d.renderer.clone());
         if node.kind == NodeKind::Window || flow_builtins::agent::is_session(&node.spec().type_id) {
             node.cwd = PathBuf::new();
         }
@@ -3651,7 +3665,7 @@ impl Shell {
                 .filter(|node| node.workspace == state.selected_workspace)
                 .any(|node| {
                     let p = view.position(node);
-                    item.position.x < p.x + canvas::WIDTH + 20.
+                    item.position.x < p.x + canvas::node_width(node) + 20.
                         && item.position.x + item.width + 20. > p.x
                         && item.position.y < p.y + canvas::node_height(node) + 20.
                         && item.position.y + item.height + 20. > p.y

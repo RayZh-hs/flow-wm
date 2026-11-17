@@ -138,6 +138,8 @@ pub struct Property {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct NodeDefinition {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renderer: Option<crate::domain::RendererContract>,
     #[serde(default)]
     pub behavior: crate::providers::Behavior,
     #[serde(default, skip_serializing_if = "Option::is_none")]

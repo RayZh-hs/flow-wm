@@ -14,7 +14,7 @@ use std::{
     rc::Rc,
 };
 
-pub use crate::placement::{HEIGHT, WIDTH, node_height};
+pub use crate::placement::{HEIGHT, WIDTH, node_height, node_width};
 const TITLE_HEIGHT: f64 = 28.;
 
 pub(super) fn body_top(node: &Node) -> f64 {
@@ -450,7 +450,7 @@ pub fn focus_node(
     let mut target = view.borrow().clone();
     target.zoom = target.zoom.clamp(0.85, 1.2);
     let position = target.position(node);
-    target.pan_x = area.width() as f64 / 2.0 - (position.x + WIDTH / 2.0) * target.zoom;
+    target.pan_x = area.width() as f64 / 2.0 - (position.x + node_width(node) / 2.0) * target.zoom;
     target.pan_y =
         area.height() as f64 / 2.0 - (position.y + node_height(node) / 2.0) * target.zoom;
     animate_camera(area, view, &target);
@@ -597,7 +597,7 @@ impl View {
             .fold(f64::INFINITY, f64::min);
         let mut max_x = nodes
             .iter()
-            .map(|n| self.arrangement.position(n).x + WIDTH)
+            .map(|n| self.arrangement.position(n).x + node_width(n))
             .fold(f64::NEG_INFINITY, f64::max);
         let mut max_y = nodes
             .iter()
@@ -661,8 +661,8 @@ impl View {
         let position = self.position(target);
         let left = position.x * self.zoom + self.pan_x;
         let top = position.y * self.zoom + self.pan_y;
-        if left < 30.0 || left + WIDTH * self.zoom > width - 30.0 {
-            self.pan_x = width / 2.0 - (position.x + WIDTH / 2.0) * self.zoom;
+        if left < 30.0 || left + node_width(target) * self.zoom > width - 30.0 {
+            self.pan_x = width / 2.0 - (position.x + node_width(target) / 2.0) * self.zoom;
         }
         if top < 30.0 || top + node_height(target) * self.zoom > height - 30.0 {
             self.pan_y = height / 2.0 - (position.y + node_height(target) / 2.0) * self.zoom;
@@ -683,6 +683,7 @@ pub type RowViews = Rc<RefCell<HashMap<String, View>>>;
 
 fn canvas_node(node: &Node) -> Node {
     Node {
+        renderer: node.renderer.clone(),
         flow: node.flow.clone(),
         id: node.id.clone(),
         workspace: node.workspace.clone(),
@@ -1938,7 +1939,7 @@ fn make_scoped(
     area
 }
 fn contains(node: &Node, p: &Position, x: f64, y: f64) -> bool {
-    x >= p.x && x <= p.x + WIDTH && y >= p.y - 8.0 && y <= p.y + node_height(node) + 8.0
+    x >= p.x && x <= p.x + node_width(node) && y >= p.y - 8.0 && y <= p.y + node_height(node) + 8.0
 }
 fn workspace_empty(state: &State) -> bool {
     if !state.workspace().canvas.is_empty() {
@@ -2096,7 +2097,7 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
                     super::collapse::Rect {
                         x: p.x,
                         y: p.y,
-                        width: WIDTH,
+                        width: node_width(node),
                         height: node_height(node),
                     },
                     progress,
@@ -2105,7 +2106,7 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
             .unwrap_or(super::collapse::Rect {
                 x: p.x,
                 y: p.y,
-                width: WIDTH,
+                width: node_width(node),
                 height: node_height(node),
             });
         if visible_rect.x * view.zoom + view.pan_x > width + 12.0
@@ -2143,6 +2144,7 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
                         output: *output,
                     })
                     .as_ref(),
+                c.matrix().xx().hypot(c.matrix().yx()),
             );
         } else if node.window_id.is_some() || node.desktop_window {
             draw_window_node(c, node, &p, visible_rect, progress, selected, view);
@@ -2161,6 +2163,7 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
                         output: *output,
                     })
                     .as_ref(),
+                c.matrix().xx().hypot(c.matrix().yx()),
             );
         }
         if !node.closed_window() {
@@ -2171,7 +2174,7 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
                 c,
                 p.x - 5.0,
                 p.y - 5.0,
-                WIDTH + 10.0,
+                node_width(node) + 10.0,
                 node_height(node) + 10.0,
                 theme.radius + 5.0,
             );
@@ -2185,12 +2188,19 @@ pub fn draw(c: &Context, width: f64, height: f64, state: &State, view: &View) {
                 .position(|n| n.id == node.id)
                 .filter(|i| *i < 10)
         {
-            rounded(c, p.x + WIDTH - 32.0, p.y - 13.0, 28.0, 26.0, 8.0);
+            rounded(
+                c,
+                p.x + node_width(node) - 32.0,
+                p.y - 13.0,
+                28.0,
+                26.0,
+                8.0,
+            );
             theme.primary.source(c);
             let _ = c.fill();
             text(
                 c,
-                p.x + WIDTH - 22.0,
+                p.x + node_width(node) - 22.0,
                 p.y + 5.0,
                 &((index + 1) % 10).to_string(),
                 14.0,
@@ -2409,7 +2419,10 @@ pub fn first_selected<'a>(state: &'a State, view: &View) -> Option<&'a Node> {
     })
 }
 fn intersects((left, top, right, bottom): (f64, f64, f64, f64), node: &Node, p: &Position) -> bool {
-    p.x <= right && p.x + WIDTH >= left && p.y <= bottom && p.y + node_height(node) >= top
+    p.x <= right
+        && p.x + node_width(node) >= left
+        && p.y <= bottom
+        && p.y + node_height(node) >= top
 }
 fn crossing(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)) -> bool {
     fn cross(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
@@ -2430,7 +2443,15 @@ fn crossing(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)) -> bool 
 }
 
 pub(super) fn draw_node(c: &Context, n: &Node, p: &Position, selected: bool, theme: &Theme) {
-    draw_node_with_border(c, n, p, f64::from(selected), theme, None);
+    draw_node_with_border(
+        c,
+        n,
+        p,
+        f64::from(selected),
+        theme,
+        None,
+        c.matrix().xx().hypot(c.matrix().yx()),
+    );
 }
 pub(super) fn draw_node_with_usage(
     c: &Context,
@@ -2438,8 +2459,9 @@ pub(super) fn draw_node_with_usage(
     p: &Position,
     theme: &Theme,
     usage: Option<&super::code::Usage>,
+    shader_scale: f64,
 ) {
-    draw_node_with_border(c, n, p, 0., theme, usage);
+    draw_node_with_border(c, n, p, 0., theme, usage, shader_scale);
 }
 fn draw_node_with_border(
     c: &Context,
@@ -2448,23 +2470,25 @@ fn draw_node_with_border(
     selection: f64,
     theme: &Theme,
     usage: Option<&super::code::Usage>,
+    shader_scale: f64,
 ) {
     let (x, y) = (p.x, p.y);
     let height = node_height(n);
+    let width = node_width(n);
     let accent = if n.kind == NodeKind::Constant {
         type_color(&crate::graph::constant_type(n), theme)
     } else {
         theme.primary.rgb()
     };
     if selection > 0. {
-        rounded(c, x - 4.0, y - 4.0, WIDTH + 8.0, height + 8.0, 13.0);
+        rounded(c, x - 4.0, y - 4.0, width + 8.0, height + 8.0, 13.0);
         c.set_source_rgba(accent.0, accent.1, accent.2, 0.09 * selection);
         let _ = c.fill();
     }
-    rounded(c, x, y + 4.0, WIDTH, height, theme.radius);
+    rounded(c, x, y + 4.0, width, height, theme.radius);
     c.set_source_rgba(0.0, 0.0, 0.0, 0.18);
     let _ = c.fill();
-    rounded(c, x, y, WIDTH, height, theme.radius);
+    rounded(c, x, y, width, height, theme.radius);
     theme.node_background(n.status).source(c);
     let _ = c.fill_preserve();
     theme.outline.alpha(c, 0.5);
@@ -2477,6 +2501,9 @@ fn draw_node_with_border(
     }
     c.set_line_width(2.0);
     let _ = c.stroke();
+    if super::appearance::draw(c, n, p, theme, shader_scale) {
+        return;
+    }
     rounded(c, x + 14.0, y + 16.0, 25.0, 23.0, 5.0);
     c.set_source_rgba(accent.0, accent.1, accent.2, 0.13);
     let _ = c.fill();
@@ -2506,12 +2533,12 @@ fn draw_node_with_border(
         Status::Review => accent,
         _ => theme.muted.rgb(),
     };
-    c.arc(x + WIDTH - 82.0, y + 27.0, 3.0, 0.0, std::f64::consts::TAU);
+    c.arc(x + width - 82.0, y + 27.0, 3.0, 0.0, std::f64::consts::TAU);
     c.set_source_rgb(status_color.0, status_color.1, status_color.2);
     let _ = c.fill();
     text(
         c,
-        x + WIDTH - 72.0,
+        x + width - 72.0,
         y + 31.0,
         if n.closed_window() {
             "Closed"
@@ -2541,11 +2568,11 @@ fn draw_node_with_border(
     let body_y = y + body_top(n);
     if n.kind == NodeKind::Vox {
         let _ = c.save();
-        c.rectangle(x + 16., body_y, WIDTH - 32., height - body_top(n) - 42.);
+        c.rectangle(x + 16., body_y, width - 32., height - body_top(n) - 42.);
         c.clip();
         let layout = text_layout(c, "", 10.5, true);
         layout.set_single_paragraph_mode(false);
-        layout.set_width(((WIDTH - 34.) * pango::SCALE as f64) as i32);
+        layout.set_width(((width - 34.) * pango::SCALE as f64) as i32);
         layout.set_wrap(pango::WrapMode::WordChar);
         layout.set_markup(&super::code::markup_for_usage(&n.command, theme, usage));
         c.move_to(x + 17., body_y);
@@ -2645,7 +2672,7 @@ fn draw_node_with_border(
         }
     }
     c.move_to(x + 1.0, y + height - 36.0);
-    c.line_to(x + WIDTH - 1.0, y + height - 36.0);
+    c.line_to(x + width - 1.0, y + height - 36.0);
     theme.outline.alpha(c, 0.3);
     c.set_line_width(1.0);
     let _ = c.stroke();
@@ -2754,12 +2781,12 @@ fn pin_position(
     let fraction = (index + 1) as f64 / (peers.len() + 1) as f64;
     if signal {
         Some((
-            p.x + WIDTH * fraction,
+            p.x + node_width(node) * fraction,
             p.y + if output { node_height(node) } else { 0.0 },
         ))
     } else {
         Some((
-            p.x + if output { WIDTH } else { 0.0 },
+            p.x + if output { node_width(node) } else { 0.0 },
             p.y + node_height(node) * fraction,
         ))
     }
@@ -3119,6 +3146,71 @@ mod rendering_tests {
         assert_eq!((view.zoom, view.pan_x, view.pan_y), before);
     }
     #[test]
+    fn functional_surface_bounds_drive_ports_selection_and_framing() {
+        use crate::graph::{Pin, Type};
+        for type_id in ["local.timer", "local.power_off", "fixture.shader"] {
+            let mut state = State::empty("/tmp".into());
+            let mut node = Node::new(
+                &state.selected_workspace,
+                NodeKind::Extension,
+                "/tmp".into(),
+                Position { x: 100., y: 200. },
+            );
+            node.flow.node_type = type_id.into();
+            node.flow.inputs = vec![Pin::new("in", Type::trigger())];
+            node.flow.outputs = vec![
+                Pin::new("out", Type::trigger()),
+                Pin::new("value", Type::Float),
+            ];
+            if type_id == "fixture.shader" {
+                node.renderer = Some(serde_json::from_value(serde_json::json!({"size":[640,96],"fragment":"vec4 flow_draw(vec2 uv) { return flow_primary; }"})).unwrap());
+            }
+            state.nodes.push(node);
+            let node = &state.nodes[0];
+            let width = node_width(node);
+            let height = node_height(node);
+            assert!(contains(
+                node,
+                &node.position,
+                100. + width - 1.,
+                200. + height / 2.
+            ));
+            assert!(!contains(
+                node,
+                &node.position,
+                100. + width + 1.,
+                200. + height / 2.
+            ));
+            assert!(!intersects(
+                (100. + width + 1., 200., 100. + width + 10., 200. + height),
+                node,
+                &node.position
+            ));
+            let mut view = View::default();
+            for output in [false, true] {
+                for pin in crate::graph::pins(&state, node, output) {
+                    let (x, y) =
+                        pin_position(&state, node, &node.position, &pin.name, output).unwrap();
+                    if pin.ty.is_signal() {
+                        assert!(x > 100. && x < 100. + width);
+                        assert_eq!(y, 200. + if output { height } else { 0. });
+                    } else {
+                        assert_eq!(x, 100. + if output { width } else { 0. });
+                    }
+                    assert_eq!(hit_pin(&state, &view, x, y, output).unwrap().pin, pin.name);
+                }
+            }
+            view.fit(&state, 1000., 700.);
+            assert!((100. + width) * view.zoom + view.pan_x <= 1000. - FIT_PADDING / 2. + 1.);
+            let position = crate::placement::Space::new(&state, &state.selected_workspace, |n| {
+                n.position.clone()
+            })
+            .append(100., 100.);
+            assert_eq!(position.x, 100. + width + crate::placement::gap());
+        }
+    }
+
+    #[test]
     fn typed_pins_use_their_flow_axis_for_layout_and_hit_testing() {
         use crate::graph::{Pin, Type};
         let mut state = State::empty("/tmp".into());
@@ -3336,7 +3428,11 @@ mod rendering_tests {
         view.fit(&state, 800., 600.);
         assert!(view.fitted);
         assert!(view.zoom >= 0.9);
-        assert!((500. * view.zoom + view.pan_x - (800. - WIDTH * view.zoom) / 2.).abs() < 0.01);
+        assert!(
+            (500. * view.zoom + view.pan_x - (800. - node_width(&state.nodes[0]) * view.zoom) / 2.)
+                .abs()
+                < 0.01
+        );
         let camera = (view.zoom, view.pan_x, view.pan_y);
         view.fit(&state, 0., 0.);
         assert!(view.fitted);

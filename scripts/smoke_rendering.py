@@ -12,6 +12,8 @@ from runtime import start
 
 ROOT = Path(__file__).resolve().parents[1]
 TESTS = (
+    "ui::gpu::tests::functional_surfaces_show_live_content_and_custom_shaders",
+    "ui::node_shader::tests::shaders_render_live_uniforms_alpha_and_errors_without_changing_the_gtk_context",
     "ui::gpu::tests::alert_outlines_refresh_cached_cards_and_native_urgency_without_selection",
     "ui::port_tooltip::tests::gtk_tooltip_binds_prepared_attributes_and_wraps_long_signatures",
     "ui::canvas::rendering_tests::constant_clicks_and_drags_release_input_and_commit_positions",

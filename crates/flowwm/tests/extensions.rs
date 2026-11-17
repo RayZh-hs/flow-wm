@@ -99,10 +99,58 @@ fn manifest(invocation: &Path) -> Value {
             "window": {"title": "Send message", "output": "output"}
         }]
     });
+    manifest["providers"][0]["renderer"] = json!({
+        "size":[180,140], "fragment":"vec4 flow_draw(vec2 uv) { return flow_primary; }"
+    });
     let mut other = manifest["providers"][0].clone();
     other["id"] = json!("fixture.search");
     manifest["providers"].as_array_mut().unwrap().push(other);
     manifest
+}
+
+#[test]
+fn shader_example_resolves_its_schema_and_defaults_before_evaluation() {
+    let directory = tempfile::tempdir().unwrap();
+    let (engine, _) =
+        support::fixture_with_config(State::empty(directory.path().into()), None, |path| {
+            std::fs::create_dir(path.join("extensions")).unwrap();
+            std::fs::write(
+                path.join("extensions/gauge.json"),
+                include_str!("../../../examples/extension-shader.json"),
+            )
+            .unwrap();
+        });
+    let state = engine.snapshot().state;
+    let mut node = Node::new(
+        &state.selected_workspace,
+        NodeKind::Extension,
+        directory.path().into(),
+        Default::default(),
+    );
+    node.flow.node_type = "example.gauge".into();
+    let id = node.id.clone();
+    engine
+        .request(Action::Create {
+            node: Box::new(node),
+        })
+        .unwrap();
+    let state = engine.snapshot().state;
+    let node = state.node(&id).unwrap();
+    assert_eq!(node.renderer.as_ref().unwrap().size, [192., 160.]);
+    assert_eq!(node.flow.properties["level"], json!(0.65));
+    engine.request(Action::Evaluate { id: id.clone() }).unwrap();
+    support::wait(|| {
+        engine
+            .snapshot()
+            .state
+            .node(&id)
+            .unwrap()
+            .flow
+            .values
+            .get("value")
+            == Some(&json!(0.65))
+    });
+    engine.shutdown();
 }
 
 #[test]
@@ -145,6 +193,7 @@ fn subprocess_nodes_work_before_their_first_instance_with_legacy_host_info() {
         .find(|d| d.id == "fixture.send")
         .unwrap();
     assert_eq!(schema.window.as_ref().unwrap().title, "Send message");
+    assert_eq!(schema.renderer.as_ref().unwrap().size, [180., 140.]);
     let catalog = Catalog::new(
         &engine.snapshot(),
         Presentation {
@@ -195,6 +244,7 @@ fn subprocess_nodes_work_before_their_first_instance_with_legacy_host_info() {
     let state = engine.snapshot().state;
     let runtime = state.orchestration.as_ref().unwrap();
     let graph = &runtime.workflows[&node.workspace.clone().into()].graph;
+    assert_eq!(state.node(&node.id).unwrap().renderer, schema.renderer);
     assert!(graph.node_types.iter().any(|d| d.id == "fixture.send"));
     assert!(!graph.node_types.iter().any(|d| d.id == "fixture.search"));
     engine

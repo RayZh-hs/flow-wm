@@ -5,15 +5,91 @@ pub const WIDTH: f64 = 292.;
 pub const HEIGHT: f64 = 154.;
 pub const CLOSED_HEIGHT: f64 = 78.;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Surface {
+    Card,
+    Timer,
+    SessionAction,
+    Routing,
+    Environment,
+    List,
+    Value,
+    Display,
+    Alert,
+    Decision,
+}
+
+pub fn surface(node: &Node) -> Surface {
+    use Surface::*;
+    if node.window_id.is_some() || node.kind == NodeKind::Window || node.desktop_window {
+        return Card;
+    }
+    match node.flow.node_type.as_str() {
+        "local.timer" => return Timer,
+        id if flow_builtins::session_actions::name(id).is_some() => return SessionAction,
+        "local.join" | "local.on_all_true" | "local.on_all_fired" | "local.broadcast"
+        | "local.receive" => return Routing,
+        "local.set_env" | "local.unset_env" | "local.empty_env" | "local.bake_args_into_env" => {
+            return Environment;
+        }
+        id if id.strip_prefix("local.").is_some_and(|id| {
+            flow_builtins::lists::NODES
+                .iter()
+                .any(|(name, _, _)| id == *name)
+        }) =>
+        {
+            return List;
+        }
+        _ => (),
+    }
+    match node.kind {
+        NodeKind::Constant => Value,
+        NodeKind::Display => Display,
+        NodeKind::Alert => Alert,
+        NodeKind::Gate | NodeKind::Human => Decision,
+        NodeKind::Conditional | NodeKind::BreakSignal | NodeKind::MergeSignal => Routing,
+        _ => Card,
+    }
+}
+
+pub fn node_width(node: &Node) -> f64 {
+    if node.kind == NodeKind::Window || node.window_id.is_some() || node.desktop_window {
+        return WIDTH;
+    }
+    if let Some(renderer) = &node.renderer {
+        return renderer.size[0];
+    }
+    match surface(node) {
+        Surface::SessionAction => 148.,
+        Surface::Timer => 224.,
+        Surface::Routing => 172.,
+        Surface::Value | Surface::List => 208.,
+        Surface::Environment | Surface::Alert => 224.,
+        Surface::Display => 260.,
+        _ => WIDTH,
+    }
+}
+
 pub fn node_height(node: &Node) -> f64 {
     if node.closed_window() {
         CLOSED_HEIGHT
     } else if node.kind == NodeKind::Window || node.window_id.is_some() {
         HEIGHT + 120.
+    } else if let Some(renderer) = &node.renderer {
+        renderer.size[1]
     } else if node.kind == NodeKind::Vox {
         252.
     } else {
-        126.
+        match surface(node) {
+            Surface::SessionAction => 148.,
+            Surface::Timer => 168.,
+            Surface::Routing => 140.,
+            Surface::Value => 126.,
+            Surface::Display => 160.,
+            Surface::Alert => 148.,
+            Surface::Decision => 152.,
+            _ => 126.,
+        }
     }
 }
 
@@ -44,7 +120,7 @@ impl Space {
             .filter(|node| node.workspace == workspace)
             .map(|node| Bounds {
                 position: position(node),
-                width: WIDTH,
+                width: node_width(node),
                 height: node_height(node),
             })
             .chain(

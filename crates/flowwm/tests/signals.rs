@@ -412,6 +412,7 @@ fn extensions_register_types_casts_nodes_and_exposed_properties() {
         source: "value.toString()".into(),
     });
     state.node_types.push(NodeDefinition {
+        renderer: None,
         behavior: flow_core::providers::Behavior::Lazy,
         window: None,
         id: "custom".into(),
