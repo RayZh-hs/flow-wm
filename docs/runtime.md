@@ -93,6 +93,12 @@ An orderly writer shutdown flushes pending metadata; an abrupt exit may lose
 metadata updates since the last save. Background write failures are logged, and
 synchronous saves report errors to the caller.
 
+The desktop provider replaces consecutive pending metadata snapshots with the
+latest state, so animated titles cannot build a backlog ahead of window closes
+or delete requests. Window open/close, PID, row and compositor-session transitions
+remain ordered, as do explicit mutations and process-exit events. Runtime
+snapshots are likewise combined only when no other event intervenes.
+
 Reopening an application or changing its native window/PID replaces its attachment
 token. The desktop provider retires the previous host registration using its exact
 token and session before registering the replacement, and releases obsolete process

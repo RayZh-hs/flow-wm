@@ -243,6 +243,80 @@ fn manually_closing_imported_windows_removes_them_from_the_runtime_and_both_view
 }
 
 #[test]
+fn title_bursts_do_not_leave_closed_tray_windows_or_delay_deletion() {
+    let pid = std::process::id() as i32;
+    let compositor = Compositor::new(pid);
+    let state = State::empty("/tmp".into());
+    let workflow = state.selected_workspace.clone();
+    let (desktop, _) = support::fixture_with_niri(state, Some(&compositor.socket));
+    support::wait(|| desktop.bindings().applications.len() == 1);
+    let terminal = desktop
+        .bindings()
+        .applications
+        .keys()
+        .next()
+        .unwrap()
+        .clone();
+    let mut tray_window = window(pid, 2, "Weixin");
+    tray_window["app_id"] = json!("wechat");
+    compositor.publish(json!({"WindowOpenedOrChanged":{"window":tray_window}}));
+    support::wait(|| desktop.bindings().applications.len() == 2);
+    let wechat = desktop
+        .bindings()
+        .applications
+        .iter()
+        .find(|(_, binding)| binding.window == 2)
+        .unwrap()
+        .0
+        .clone();
+    support::wait(|| desktop.snapshot().state.node(&terminal).is_some());
+
+    // Animated terminal titles must not accumulate historical desktop snapshots
+    // ahead of a tray window's unmap or a user's delete command. The common
+    // application process stays alive throughout, as xwayland-satellite does.
+    for i in 0..20_000 {
+        compositor.publish(
+            json!({"WindowOpenedOrChanged":{"window":window(pid, 1, &format!("spinner-{i}"))}}),
+        );
+    }
+    compositor.publish(json!({"WindowClosed":{"id":2}}));
+    desktop
+        .request(Action::Delete {
+            id: terminal.clone(),
+        })
+        .unwrap();
+    support::wait(|| {
+        desktop.bindings().applications.is_empty()
+            && desktop.snapshot().state.node(&wechat).is_none()
+    });
+    assert_eq!(*compositor.close_requests.lock().unwrap(), vec![1]);
+    assert!(!desktop.bindings().selectors.contains_key(&wechat));
+
+    // Showing and hiding the same tray app again must start with a fresh import.
+    tray_window["id"] = json!(3);
+    compositor.publish(json!({"WindowOpenedOrChanged":{"window":tray_window}}));
+    support::wait(|| {
+        desktop
+            .bindings()
+            .applications
+            .values()
+            .any(|binding| binding.window == 3)
+    });
+    compositor.publish(json!({"WindowClosed":{"id":3}}));
+    support::wait(|| desktop.bindings().applications.is_empty());
+    support::wait(|| desktop.snapshot().state.nodes.is_empty());
+    let runtime = desktop.orchestrate(Command::Snapshot, None).unwrap();
+    assert!(
+        runtime["workflows"][&workflow]["graph"]["nodes"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(runtime["applications"].as_object().unwrap().is_empty());
+    desktop.shutdown();
+}
+
+#[test]
 fn reopening_an_application_replaces_its_registration_and_rejects_old_exit_events() {
     let pid = std::process::id() as i32;
     let compositor = Compositor::new(pid);

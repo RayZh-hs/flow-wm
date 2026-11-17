@@ -1,4 +1,5 @@
 //! Native window operations are separate from owned execution interruption.
+mod events;
 mod persistence;
 mod row_contents;
 
@@ -246,7 +247,8 @@ pub fn run() -> Result<()> {
         )),
     )?;
     let shared = Arc::new((Mutex::new((0u64, bindings.clone())), Condvar::new()));
-    let (tx, rx) = mpsc::channel();
+    let tx = Arc::new(events::Queue::default());
+    let rx = tx.clone();
     let mutations = tx.clone();
     let listener: UnixListener = crate::ipc::bind(&socket())?;
     let service = shared.clone();
@@ -282,7 +284,7 @@ pub fn run() -> Result<()> {
                             workflow,
                             row,
                             reply,
-                        })?;
+                        });
                         rx.recv_timeout(std::time::Duration::from_secs(5))?
                             .map_err(anyhow::Error::msg)?;
                         return Ok(serde_json::Value::Null);
@@ -397,7 +399,7 @@ pub fn run() -> Result<()> {
                                         node: node.into(),
                                         close_window: request["command"] == "delete",
                                         reply,
-                                    })?;
+                                    });
                                     rx.recv_timeout(std::time::Duration::from_secs(5))?
                                         .map_err(anyhow::Error::msg)?;
                                 }
@@ -477,7 +479,7 @@ pub fn run() -> Result<()> {
     crate::niri::listen_observed(
         Arc::new(AtomicBool::new(false)),
         Arc::new(move |d| {
-            let _ = niri_tx.send(Event::Desktop(d));
+            niri_tx.send(Event::Desktop(d));
         }),
     );
     let remote = host.clone();
@@ -486,7 +488,7 @@ pub fn run() -> Result<()> {
         loop {
             let _ = remote.subscribe(|reply| {
                 if let Some(value) = reply.result {
-                    runtime_tx.send(Event::Runtime(Box::new(serde_json::from_value(value)?)))?;
+                    runtime_tx.send(Event::Runtime(Box::new(serde_json::from_value(value)?)));
                 }
                 Ok(())
             });
@@ -494,7 +496,7 @@ pub fn run() -> Result<()> {
         }
     });
     let mut monitor = crate::processes::ProcessMonitor::new(move |token, result| {
-        let _ = tx.send(Event::Exit(token, result));
+        tx.send(Event::Exit(token, result));
     })?;
     let mut state = crate::model::State::empty(std::env::current_dir()?);
     crate::projection::apply(&mut state, &host.snapshot()?);
@@ -503,7 +505,8 @@ pub fn run() -> Result<()> {
     let mut watched = BTreeSet::new();
     let mut row_contents = row_contents::Publisher::default();
     let mut token = 0u64;
-    for event in rx {
+    loop {
+        let event = rx.recv();
         match event {
             Event::Bind {
                 workflow,
@@ -862,7 +865,6 @@ pub fn run() -> Result<()> {
             shared.1.notify_all();
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
