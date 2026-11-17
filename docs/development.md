@@ -160,14 +160,17 @@ python3 scripts/install.py --rollback --replace
 
 Installation leaves existing search actions unchanged so the running compositor can still reload its shared config. After checking that no compositor session is active, `session.py login` activates the keyboard-handoff bindings and validates a temporary file beside `config.kdl` with the selected snapshot's compositor. Only a successful validation replaces the original, preserving permissions and a backup. Included files keep their normal relative paths during validation.
 
-`--replace` reloads `flowwm.service`, `flowwm-dms.service`, and the bundled terminal
+`--replace` reloads `flowwm.service`, `flowwm-desktop.service`, `flowwm-dms.service`, and the bundled terminal
 session extension after installing or selecting a snapshot. It updates their
 `FLOWWM_INSTALL_ROOT` in the user service manager, verifies that the services adopt
 the snapshot, and attempts to restore
 the previous services if replacement fails. It requires an active installed FlowWM
 session and checks that the same compositor is still running before reloading.
 The compositor and application windows keep running; compositor updates require
-another login. Installed GTK restarts leave the independent `flowwm-core.service` and its executions running. Restarting the host itself interrupts its owned subprocesses. The independent desktop provider continues observing the compositor while GTK is closed. Existing
+another login. Replacement also reloads the desktop provider so window and row
+reconciliation fixes take effect immediately. Ordinary GTK restarts leave that
+provider observing the compositor. Both operations leave the independent
+`flowwm-core.service` and its executions running. Restarting the host itself interrupts its owned subprocesses. Existing
 application processes retain their inherited environment.
 
 FlowWM uses `flowwm-core.service`, `flowwm-desktop.service`, `flowwm-compositor.service`, `flowwm-session.target`, `flowwm.service`,

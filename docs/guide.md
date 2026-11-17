@@ -119,7 +119,7 @@ python3 scripts/install.py --rollback --replace  # also reload its services now
 flowwm-session describe                          # inspect selected paths and binary checksums
 ```
 
-`--replace` keeps the current compositor and application windows running. Compositor changes take effect at the next login. Reloading GTK/Dux preserves the independent host, desktop provider and workflow subprocesses. Restarting the host itself interrupts its owned jobs. If a service reload fails, the installer attempts to restore the preceding services. Development builds and nested tests never change the installed snapshot.
+`--replace` keeps the current compositor and application windows running. Compositor changes take effect at the next login. Replacement reloads GTK, Dux, and the desktop provider, preserving the independent host and workflow subprocesses. Restarting GTK alone leaves the desktop provider running. Restarting the host itself interrupts its owned jobs. If a service reload fails, the installer attempts to restore the preceding services. Development builds and nested tests never change the installed snapshot.
 
 Bindings that require a newer compositor are activated at the next login, after the previous compositor has stopped. Installing a snapshot keeps existing search bindings compatible with the running desktop. The login launcher validates the upgraded bindings with the selected snapshot's compositor before saving them; a validation failure leaves the configuration unchanged.
 

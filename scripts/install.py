@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from configuration import atomic_text, migrate, cleanup_profile
 
 ROOT = Path(__file__).resolve().parents[1]
-REPLACE_SERVICES = ("flowwm.service", "flowwm-dms.service", "flowwm-agent-sessions.service")
+REPLACE_SERVICES = ("flowwm.service", "flowwm-desktop.service", "flowwm-dms.service", "flowwm-agent-sessions.service")
 
 
 def validate_bundle(bundle):
@@ -311,9 +311,9 @@ def replace_session(bundle, session):
     prepare_runtime_replacement(bundle)
     previous = session[1]
     validate_bundle(previous)
-    print(f"Reloading FlowWM and DMS from {bundle}; application windows stay open.", flush=True)
+    print(f"Reloading FlowWM, its desktop provider, and DMS from {bundle}; application windows stay open.", flush=True)
     try:
-        # Stop both services before the DMS launcher repoints its plugin to the new shell.
+        # Stop the presentation services before repointing their shared snapshot.
         run("systemctl", "--user", "stop", *REPLACE_SERVICES)
         run("systemctl", "--user", "set-environment", "FLOWWM_INSTALL_ROOT=" + str(bundle))
         run("systemctl", "--user", "start", *services_for(bundle))
@@ -322,7 +322,7 @@ def replace_session(bundle, session):
             metadata = json.loads((bundle / "installation.json").read_text())
             cleanup_profile(metadata["config"], metadata["state"])
     except BaseException as error:
-        print("Replacement failed; restoring the previous FlowWM and DMS snapshot.", flush=True)
+        print("Replacement failed; restoring the previous FlowWM, desktop provider, and DMS snapshot.", flush=True)
         try:
             run("systemctl", "--user", "stop", *REPLACE_SERVICES)
             prepare_runtime_replacement(previous)
@@ -331,12 +331,12 @@ def replace_session(bundle, session):
             verify_services(previous, session[0])
         except BaseException as recovery:
             raise RuntimeError(f"Replacement failed ({error}); restoring the previous services also failed ({recovery}). "
-                               "The compositor was not restarted. Inspect flowwm.service and flowwm-dms.service.") from error
+                               "The compositor was not restarted. Inspect flowwm.service, flowwm-desktop.service, and flowwm-dms.service.") from error
         if isinstance(error, (KeyboardInterrupt, SystemExit)):
             raise
         raise RuntimeError(f"Replacement failed ({error}). The previous services were restarted; "
                            "the selected snapshot is still installed for the next login.") from error
-    print("FlowWM and DMS are using the selected snapshot. Compositor updates take effect at the next login.")
+    print("FlowWM, its desktop provider, and DMS are using the selected snapshot. Compositor updates take effect at the next login.")
 
 
 def install_launchers(user_home, current):

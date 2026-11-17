@@ -456,13 +456,14 @@ class ReplaceSession(unittest.TestCase):
             bundle.mkdir()
             current_bundle(bundle, {'config':str(self.root / 'config'), 'state':str(self.root / 'state')})
         self.pin = str(self.old)
-        self.pids = {'flowwm-compositor.service': 100, 'flowwm.service': 101, 'flowwm-dms.service': 102}
+        self.pids = {'flowwm-compositor.service': 100, 'flowwm.service': 101, 'flowwm-dms.service': 102,
+                     'flowwm-desktop.service': 103}
         self.environments = {pid: os.fsencode('FLOWWM_INSTALL_ROOT=' + self.pin) + b'\0'
                              for pid in self.pids.values()}
         self.calls = []
         self.failed_roots = set()
         self.overrides = {}
-        self.next_pid = 103
+        self.next_pid = 104
         mock = patch.object(installer.subprocess, 'check_output', side_effect=self.query)
         mock.start()
         self.addCleanup(mock.stop)
@@ -525,11 +526,34 @@ class ReplaceSession(unittest.TestCase):
         self.assertEqual(self.pids['flowwm-compositor.service'], 100)
         self.assertNotEqual(self.pids['flowwm.service'], 101)
         self.assertNotEqual(self.pids['flowwm-dms.service'], 102)
+        self.assertNotEqual(self.pids['flowwm-desktop.service'], 103)
         self.assertEqual([c[2] for c in self.calls], ['stop', 'set-environment', 'start'])
         for command in self.calls:
             self.assertNotIn('flowwm-compositor.service', command)
             self.assertNotIn('niri.service', command)
             self.assertNotIn('dms.service', command)
+
+    def test_desktop_provider_reloads_and_restores_on_failed_replacement(self):
+        self.pids['flowwm-core.service'] = 199
+        self.failed_roots.add(str(self.new))
+        with self.assertRaisesRegex(RuntimeError, 'previous services were restarted'):
+            installer.replace_session(self.new, installer.running_session())
+        self.assertNotEqual(self.pids['flowwm-desktop.service'], 103)
+        self.assertIn('flowwm-desktop.service', self.calls[0])
+        self.assertIn('flowwm-desktop.service', self.calls[2])
+        self.assertIn('flowwm-desktop.service', self.calls[3])
+        self.assertIn('flowwm-desktop.service', self.calls[5])
+        self.assertEqual(self.pin, str(self.old))
+        self.assertEqual(self.pids['flowwm-core.service'], 199)
+        self.assertEqual(self.pids['flowwm-compositor.service'], 100)
+        installer.verify_services(self.old, 100)
+
+    def test_stale_desktop_provider_is_detected_and_restored(self):
+        self.overrides['flowwm-desktop.service'] = str(self.old)
+        with self.assertRaisesRegex(RuntimeError, 'did not adopt the selected snapshot'):
+            installer.replace_session(self.new, installer.running_session())
+        self.assertEqual(self.pin, str(self.old))
+        installer.verify_services(self.old, 100)
 
     def test_extension_is_required_in_both_current_bundles(self):
         installer.replace_session(self.new, installer.running_session())
