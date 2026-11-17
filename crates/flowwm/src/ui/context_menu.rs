@@ -49,14 +49,20 @@ pub fn open(
     }
     let popup = gtk::Popover::new();
     popup.set_parent(area);
+    popup.add_css_class("context-menu");
     popup.set_has_arrow(false);
     popup.set_autohide(true);
+    popup.set_position(gtk::PositionType::Bottom);
+    popup.set_halign(gtk::Align::Start);
     popup.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
     let menu = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    menu.set_margin_top(6);
-    menu.set_margin_bottom(6);
-    menu.set_margin_start(6);
-    menu.set_margin_end(6);
+    menu.add_css_class("context-menu-body");
+    let theme = view.clone();
+    super::background::attach(&menu, move || super::background::Style {
+        enabled: theme.borrow().theme.blur_enabled,
+        radius: 8.,
+        scale: 1.,
+    });
     let add = |name: &str, run: Box<dyn Fn()>| {
         let button = gtk::Button::with_label(name);
         button.add_css_class("flat");

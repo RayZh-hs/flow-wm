@@ -380,7 +380,7 @@ impl Theme {
         if self.blur_enabled && super::background::gtk_blur() {
             // GDK delegates backdrop filters of at least 20px to the compositor.
             css.push_str(
-                "\n.flow-blur .popup-blur, tooltip.flow-blur { backdrop-filter: blur(24px); }\n",
+                "\n.flow-blur .popup-blur, tooltip.flow-blur, .flow-blur .context-menu-body { backdrop-filter: blur(24px); }\n",
             );
         }
         css
@@ -479,7 +479,7 @@ mod tests {
         assert!(
             theme
                 .css()
-                .contains("tooltip.flow-blur { background: alpha(@flow_surface, 1); }")
+                .contains("tooltip.flow-blur, .flow-blur .context-menu-body { background: alpha(@flow_surface, 1); }")
         );
         assert!(
             theme

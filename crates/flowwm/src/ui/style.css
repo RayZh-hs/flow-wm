@@ -79,8 +79,11 @@ dropdown button { border: 1px solid @flow_outline; background: @flow_surface_hig
 
 .flow-shell { background: transparent; }
 .graph-surface { background: transparent; }
-tooltip { background: @flow_surface_high; color: @flow_text; border: 1px solid alpha(@flow_outline, 0.8); border-radius: 8px; padding: 0; box-shadow: 0 4px 16px alpha(black, 0.2); }
-tooltip.flow-blur { background: alpha(@flow_surface, __TOOLTIP_OPACITY__); }
+popover.context-menu > contents { background: transparent; border: none; border-radius: 8px; padding: 0; }
+tooltip, popover.context-menu > contents { box-shadow: 0 4px 16px alpha(black, 0.2); }
+tooltip, .context-menu-body { background: @flow_surface_high; color: @flow_text; border: 1px solid alpha(@flow_outline, 0.8); border-radius: 8px; padding: 0; }
+tooltip.flow-blur, .flow-blur .context-menu-body { background: alpha(@flow_surface, __TOOLTIP_OPACITY__); }
+.context-menu-body { padding: 6px; }
 .port-tooltip label { padding: 10px 12px; text-shadow: none; }
 .port-tooltip .port-tooltip-signature { font-family: "JetBrains Mono", monospace; font-size: 13px; font-weight: 400; }
 .port-tooltip .port-tooltip-description { font-size: 13px; color: @flow_text; }
