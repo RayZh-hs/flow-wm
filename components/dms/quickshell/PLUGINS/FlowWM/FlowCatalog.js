@@ -34,21 +34,24 @@ function navigationItems(catalog, query, labels) {
     query = String(query || "").trim();
     var results = [];
     var rows = {};
-    function add(id, name, comment, icon, args, group) {
+    function add(id, name, comment, icon, args, group, primary) {
         name = String(name || "").replace(/\s+/g, " ").trim();
         comment = String(comment || "").replace(/\s+/g, " ").trim();
         if (!matches(name + " " + comment, query)) return;
         results.push({id: id, name: name, comment: comment, icon: "material:" + icon, flowwmArgs: args,
             _group: group, _preScored: relevance(name, comment, query),
-            primaryAction: {name: labels.open, icon: icon, action: "execute"}});
+            primaryAction: {name: primary || labels.open, icon: icon, action: "execute"}});
     }
     (catalog.workspaces || []).filter(function (w) { return !!w.row; }).slice().sort(function (a, b) {
         return Number(b.id === catalog.selected_workspace) - Number(a.id === catalog.selected_workspace)
             || String(a.row.output || "").localeCompare(String(b.row.output || "")) || a.row.index - b.row.index;
     }).forEach(function (workspace) {
         rows[workspace.id] = workspace;
-        add("row:" + workspace.id, workspace.name, labels.row + " " + workspace.row.index + " · " + (workspace.row.output || "") + " · " + (workspace.owning_workspace || ""),
-            "view_agenda", ["workspace", workspace.id], 0);
+        var comment = labels.row + " " + workspace.row.index + " · " + (workspace.row.output || "") + " · " + (workspace.owning_workspace || "");
+        if (workspace.collapsed) comment += " · " + (labels.expand || labels.open);
+        add("row:" + workspace.id, workspace.name, comment,
+            "view_agenda", ["workspace", workspace.id], 0,
+            workspace.collapsed ? (labels.expand || labels.open) : labels.open);
     });
     (catalog.nodes || []).forEach(function (node) {
         var workspace = rows[node.workspace];

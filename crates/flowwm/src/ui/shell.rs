@@ -2429,6 +2429,22 @@ impl Shell {
                 }
             }
             UiCommand::Workspace { id } => {
+                if self
+                    .engine
+                    .snapshot()
+                    .state
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == id)
+                    .is_some_and(|workspace| workspace.collapsed)
+                    && let Err(error) = self.engine.request(Action::SetWorkspaceCollapsed {
+                        workspace: id.clone(),
+                        collapsed: false,
+                    })
+                {
+                    self.show_error(&error.to_string());
+                    return;
+                }
                 if self.integrated
                     && let Err(error) = self.activate_group(&id)
                 {
@@ -2438,6 +2454,11 @@ impl Shell {
                 match self.engine.request(Action::SelectWorkspace { id }) {
                     Ok(_) => {
                         self.refresh();
+                        if !self.graph_visible.get()
+                            && self.engine.snapshot().state.workspace().view == RowView::Nodes
+                        {
+                            self.show_nodes();
+                        }
                         if self.integrated {
                             let _ = niri::request(niri_ipc::Request::Action(
                                 niri_ipc::Action::CloseOverview {},
@@ -2446,6 +2467,34 @@ impl Shell {
                     }
                     Err(error) => self.show_error(&error.to_string()),
                 }
+            }
+            UiCommand::ToggleWorkspaceCollapse => {
+                let state = self.engine.snapshot().state;
+                let workspace = state.workspace();
+                let collapsing = !workspace.collapsed;
+                let workspace_id = workspace.id.clone();
+                if let Err(error) = self.engine.request(Action::SetWorkspaceCollapsed {
+                    workspace: workspace_id,
+                    collapsed: collapsing,
+                }) {
+                    self.show_error(&error.to_string());
+                    return;
+                }
+                if collapsing && self.graph_visible.get() {
+                    self.hide_graph(true);
+                    return;
+                }
+                self.refresh();
+            }
+            UiCommand::ExpandWorkspace { id } => {
+                if let Err(error) = self.engine.request(Action::SetWorkspaceCollapsed {
+                    workspace: id,
+                    collapsed: false,
+                }) {
+                    self.show_error(&error.to_string());
+                    return;
+                }
+                self.refresh();
             }
             UiCommand::Recipe { id } => match self.engine.request(Action::Instantiate { id }) {
                 Ok(_) => {

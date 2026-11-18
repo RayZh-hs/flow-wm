@@ -87,6 +87,7 @@ binds {
     Mod+Ctrl+Right hotkey-overlay-title="Move selection / window right" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"action\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"right\"}}"; }
     Mod+Ctrl+L hotkey-overlay-title="Move selection / window right" repeat=true allow-inhibiting=false { spawn "flowwm" "send" "{\"action\": \"ui\", \"command\": {\"action\": \"move_selection\", \"direction\": \"right\"}}"; }
     Mod+L hotkey-overlay-title="Row settings and owning workspace" repeat=false allow-inhibiting=false { spawn "flowwm" "row-settings"; }
+    Mod+H hotkey-overlay-title="Collapse or expand workflow row" repeat=false allow-inhibiting=false { spawn "flowwm" "collapse"; }
     Mod+T hotkey-overlay-title="Open terminal" repeat=false { spawn "flowwm" "terminal"; }
     Mod+K hotkey-overlay-title="Open terminal" repeat=false { spawn "flowwm" "terminal"; }
     Alt+F4 hotkey-overlay-title="Close window" repeat=false { close-window; }

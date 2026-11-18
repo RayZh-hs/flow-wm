@@ -1805,12 +1805,24 @@ impl<W: LayoutElement> Layout<W> {
         self.set_node_row_metadata(workspace_ids, &Default::default())
     }
 
+    #[cfg(test)]
     pub(crate) fn set_node_row_metadata(
         &mut self,
         workspace_ids: &[u64],
         names: &std::collections::BTreeMap<u64, String>,
     ) -> bool {
+        self.set_node_row_metadata_with_collapsed(workspace_ids, names, &[])
+    }
+
+    pub(crate) fn set_node_row_metadata_with_collapsed(
+        &mut self,
+        workspace_ids: &[u64],
+        names: &std::collections::BTreeMap<u64, String>,
+        collapsed_workspace_ids: &[u64],
+    ) -> bool {
         let ids: std::collections::HashSet<_> = workspace_ids.iter().copied().collect();
+        let collapsed: std::collections::HashSet<_> =
+            collapsed_workspace_ids.iter().copied().collect();
         let mut changed = false;
         for ws in self.workspaces_mut() {
             let has_nodes = ids.contains(&ws.id().get());
@@ -1823,6 +1835,9 @@ impl<W: LayoutElement> Layout<W> {
                 .map(str::to_owned);
             changed |= ws.row_name != name;
             ws.row_name = name;
+            let row_collapsed = collapsed.contains(&ws.id().get());
+            changed |= ws.row_collapsed != row_collapsed;
+            ws.row_collapsed = row_collapsed;
         }
         if changed {
             self.ensure_node_row_space();
@@ -4723,6 +4738,12 @@ impl<W: LayoutElement> Layout<W> {
     pub fn toggle_overview_to_workspace(&mut self, ws_idx: usize) {
         let config = self.options.animations.overview_open_close.0;
         if let Some(mon) = self.active_monitor() {
+            if let Some(ws) = mon.workspaces.get(ws_idx) {
+                let id = ws.id();
+                if let Some(ws) = mon.workspaces.iter_mut().find(|ws| ws.id() == id) {
+                    ws.row_collapsed = false;
+                }
+            }
             mon.activate_workspace_with_anim_config(ws_idx, Some(config));
         }
         self.toggle_overview();

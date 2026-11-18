@@ -139,6 +139,7 @@ pub(crate) fn synchronize_with_processes(
                     window_array: false,
                     graph_arranged: false,
                     view: RowView::default(),
+                    collapsed: false,
                 });
                 changed = true;
                 state.workspaces.len() - 1

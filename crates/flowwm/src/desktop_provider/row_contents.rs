@@ -20,6 +20,22 @@ fn row_names(state: &State, bindings: &Bindings) -> BTreeMap<u64, String> {
         .collect()
 }
 
+fn collapsed_rows(state: &State, bindings: &Bindings) -> Vec<u64> {
+    bindings
+        .collapsed
+        .iter()
+        .filter_map(|workflow| {
+            state
+                .workspaces
+                .iter()
+                .find(|row| row.id == *workflow && row.collapsed)
+                .and_then(|row| row.row.as_ref())
+                .filter(|row| row.session == bindings.session)
+                .map(|row| row.id)
+        })
+        .collect()
+}
+
 fn occupied_rows(state: &State, bindings: &Bindings) -> Vec<u64> {
     let workflows: BTreeSet<_> = state.nodes.iter().map(|n| n.workspace.as_str()).collect();
     bindings
@@ -36,7 +52,7 @@ fn occupied_rows(state: &State, bindings: &Bindings) -> Vec<u64> {
 
 #[derive(Default)]
 pub(super) struct Publisher {
-    last: Option<(String, Vec<u64>, BTreeMap<u64, String>)>,
+    last: Option<(String, Vec<u64>, BTreeMap<u64, String>, Vec<u64>)>,
     unsupported_session: Option<String>,
 }
 
@@ -60,6 +76,7 @@ impl Publisher {
             bindings.session.clone(),
             occupied_rows(state, bindings),
             row_names(state, bindings),
+            collapsed_rows(state, bindings),
         );
         if self.last.as_ref() == Some(&current) {
             return;
@@ -67,6 +84,7 @@ impl Publisher {
         match request(niri_ipc::Request::SetNodeRowContents {
             workspace_ids: current.1.clone(),
             names: current.2.clone(),
+            collapsed_workspace_ids: current.3.clone(),
         }) {
             Ok(_) => self.last = Some(current),
             Err(error) if error.to_string() == "error parsing request" => {
@@ -152,5 +170,9 @@ mod tests {
         assert_eq!(occupied_rows(&state, &bindings), vec![10]);
         state.nodes.clear();
         assert!(occupied_rows(&state, &bindings).is_empty());
+        state.workspaces[0].row = bindings.rows.get(&workflow).cloned();
+        state.workspaces[0].collapsed = true;
+        bindings.collapsed.insert(workflow);
+        assert_eq!(collapsed_rows(&state, &bindings), vec![10]);
     }
 }

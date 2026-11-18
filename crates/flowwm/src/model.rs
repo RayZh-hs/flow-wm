@@ -340,6 +340,8 @@ pub struct Workspace {
     pub graph_arranged: bool,
     #[serde(default)]
     pub view: RowView,
+    #[serde(default)]
+    pub collapsed: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Row {
@@ -395,6 +397,7 @@ impl State {
             window_array: false,
             graph_arranged: false,
             view: RowView::default(),
+            collapsed: false,
         };
         Self {
             orchestration: None,

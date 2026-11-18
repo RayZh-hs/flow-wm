@@ -131,6 +131,7 @@ Bindings that require a newer compositor are activated at the next login, after 
 | --- | --- |
 | Win+Tab | Toggle windows/nodes; leave a window peek before switching views |
 | Win+L | Row settings and owning workspace |
+| Win+H | Collapse or expand the current workflow row |
 | Win+M | Dismiss all notification popups |
 | Win+Shift+Tab | Return to Windows view |
 | Win+Space | Open Dux app search in Windows; create a node in Nodes |
@@ -211,7 +212,7 @@ You can start typing immediately after a search shortcut. The compositor holds t
 | `@ name` | Workflow nodes across workspaces |
 | `@ + type` | Node types, typed constants, and registered macros |
 | `@ > name` | Workflow macros: Rearrange, Frame all nodes, Undo, Redo |
-| `@ / name` | Workspace rows |
+| `# name` | Workspace rows and open windows |
 | `@ # name` | Saved recipes |
 
 Application window titles are kept out of ordinary search. In Nodes view, `Ctrl+Shift+P` opens `@ >` directly; choose Rearrange to compact and frame the workflow. In Windows view and window peeks, the shortcut passes through to the application. Existing profiles have the former global macro binding scoped to Nodes at the next login, preserving custom commands and explicit scopes. Fuzzy abbreviations match within words, so unrelated words in a long title cannot combine into a match.
@@ -270,6 +271,8 @@ Type **`#`** in Dux search to find and jump to rows and open windows across
 outputs. Matching rows always appear before matching windows. Select a row to
 switch to it in its saved view, or select a window to focus it in Windows view.
 Names, window titles, application IDs, and row output names are searchable.
+Collapsed rows include **Expand** in their result. Select one to expand it before
+switching to the row.
 The existing `@ #` recipe search remains available. To change or disable the
 navigation trigger, set `flowwm.triggerAliases` in
 `~/.config/flow-wm/dms/plugin_settings.json` to another list of prefixes or `[]`.

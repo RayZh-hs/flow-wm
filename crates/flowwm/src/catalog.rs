@@ -30,6 +30,8 @@ pub struct CatalogWorkspace {
     pub row: Option<Row>,
     #[serde(default)]
     pub view: RowView,
+    #[serde(default)]
+    pub collapsed: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CatalogRecipe {
@@ -287,6 +289,7 @@ impl Catalog {
                         .count(),
                     row: w.row.clone(),
                     view: w.view,
+                    collapsed: w.collapsed,
                 })
                 .collect(),
             recipes: state

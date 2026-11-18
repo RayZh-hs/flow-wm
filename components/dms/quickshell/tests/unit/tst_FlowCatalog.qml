@@ -23,6 +23,15 @@ TestCase {
         compare(JSON.parse(result[0].flowwmArgs[1]).command, {action: "focus_window", id: "window"});
     }
 
+    function test_collapsed_rows_advertise_expand_in_navigation_search() {
+        const catalog = {workspaces: [{id: "a", name: "Research", collapsed: true, row: {id: 1, index: 1}}]};
+        const result = Catalog.navigationItems(catalog, "expand", {row: "Row", window: "Window", open: "Open", expand: "Expand"});
+        compare(result.length, 1);
+        verify(result[0].comment.indexOf("Expand") >= 0);
+        compare(result[0].primaryAction.name, "Expand");
+        compare(result[0].flowwmArgs, ["workspace", "a"]);
+    }
+
     function test_connection_internal_id() {
         const node = "8a862113-d5e7-4aa0-b74b-08a34ba2badb";
         const lookup = {node, title: "Codex: a long prompt".repeat(30), outputs: [

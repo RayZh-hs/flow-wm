@@ -32,6 +32,7 @@ pub fn apply(state: &mut State, runtime: &RuntimeState) {
                 window_array: true,
                 graph_arranged: false,
                 view: RowView::default(),
+                collapsed: false,
             });
         }
         let nodes: BTreeSet<_> = workflow

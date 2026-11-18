@@ -61,6 +61,8 @@ pub struct Bindings {
     pub session: String,
     pub selected: String,
     pub rows: BTreeMap<String, crate::model::Row>,
+    #[serde(default)]
+    pub collapsed: BTreeSet<String>,
     pub applications: BTreeMap<String, Binding>,
     /// Declarative selectors reconnect attachments without persisting a live process handle.
     #[serde(default)]
@@ -96,6 +98,7 @@ impl Bindings {
         self.session == other.session
             && self.selected == other.selected
             && self.rows == other.rows
+            && self.collapsed == other.collapsed
             && self.disowned == other.disowned
             && self.applications.len() == other.applications.len()
             && self.applications.iter().all(|(id, binding)| {
@@ -143,6 +146,7 @@ impl Bindings {
                 .get(&row.id)
                 .filter(|r| !self.session.is_empty() && r.session == self.session)
                 .cloned();
+            row.collapsed = self.collapsed.contains(&row.id);
         }
         let mut windows = BTreeSet::new();
         for node in &mut state.nodes {
@@ -173,6 +177,11 @@ enum Event {
     Bind {
         workflow: String,
         row: crate::model::Row,
+        reply: mpsc::Sender<std::result::Result<(), String>>,
+    },
+    Collapse {
+        workflow: String,
+        collapsed: bool,
         reply: mpsc::Sender<std::result::Result<(), String>>,
     },
     Detach {
@@ -283,6 +292,24 @@ pub fn run() -> Result<()> {
                         mutations.send(Event::Bind {
                             workflow,
                             row,
+                            reply,
+                        });
+                        rx.recv_timeout(std::time::Duration::from_secs(5))?
+                            .map_err(anyhow::Error::msg)?;
+                        return Ok(serde_json::Value::Null);
+                    }
+                    if request["command"] == "set_row_collapsed" {
+                        let workflow = request["workflow"]
+                            .as_str()
+                            .ok_or_else(|| anyhow::anyhow!("Workflow required"))?
+                            .to_owned();
+                        let collapsed = request["collapsed"]
+                            .as_bool()
+                            .ok_or_else(|| anyhow::anyhow!("Collapsed state required"))?;
+                        let (reply, rx) = mpsc::channel();
+                        mutations.send(Event::Collapse {
+                            workflow,
+                            collapsed,
                             reply,
                         });
                         rx.recv_timeout(std::time::Duration::from_secs(5))?
@@ -545,6 +572,30 @@ pub fn run() -> Result<()> {
                 .map_err(|e| e.to_string());
                 let _ = reply.send(result);
             }
+            Event::Collapse {
+                workflow,
+                collapsed,
+                reply,
+            } => {
+                let result = (|| -> Result<()> {
+                    ensure!(
+                        state.workspaces.iter().any(|w| w.id == workflow),
+                        "Workflow not found"
+                    );
+                    if collapsed {
+                        bindings.collapsed.insert(workflow.clone());
+                    } else {
+                        bindings.collapsed.remove(&workflow);
+                    }
+                    if let Some(row) = state.workspaces.iter_mut().find(|w| w.id == workflow) {
+                        row.collapsed = collapsed;
+                    }
+                    writer.save(&bindings)?;
+                    Ok(())
+                })()
+                .map_err(|e| e.to_string());
+                let _ = reply.send(result);
+            }
             Event::Detach {
                 node,
                 close_window,
@@ -636,6 +687,27 @@ pub fn run() -> Result<()> {
                     .windows
                     .retain(|w| !bindings.disowned.contains(&w.id));
                 bindings.restore_row_hints(&mut state);
+                for (workflow, row) in &bindings.rows {
+                    let Some(workspace) = state.workspaces.iter_mut().find(|w| w.id == *workflow)
+                    else {
+                        continue;
+                    };
+                    let Some(live) = desktop
+                        .workspaces
+                        .iter()
+                        .find(|candidate| candidate.id == row.id)
+                    else {
+                        continue;
+                    };
+                    if workspace.collapsed != live.is_collapsed {
+                        workspace.collapsed = live.is_collapsed;
+                        if live.is_collapsed {
+                            bindings.collapsed.insert(workflow.clone());
+                        } else {
+                            bindings.collapsed.remove(workflow);
+                        }
+                    }
+                }
                 // Match live selectors first, including after a restart. Only
                 // imports actually removed by reconciliation leave the graph.
                 let previous: BTreeSet<_> = state.nodes.iter().map(|n| n.id.clone()).collect();

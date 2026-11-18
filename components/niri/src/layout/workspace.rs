@@ -51,6 +51,8 @@ pub struct Workspace<W: LayoutElement> {
     pub(crate) pending_node_scene: Option<niri_ipc::node_row::NodeRowScene>,
     /// Workflow content exists independently of the canvas's mapping or presentation.
     pub(crate) has_nodes: bool,
+    /// FlowWM rows can stay in the workspace stack while hiding their content.
+    pub(crate) row_collapsed: bool,
 
     /// The scrollable-tiling layout.
     scrolling: ScrollingSpace<W>,
@@ -272,6 +274,7 @@ impl<W: LayoutElement> Workspace<W> {
             node_tile: None,
             pending_node_scene: None,
             has_nodes: false,
+            row_collapsed: false,
             row_name: None,
             row_label: Default::default(),
             scrolling,
@@ -339,6 +342,7 @@ impl<W: LayoutElement> Workspace<W> {
             node_tile: None,
             pending_node_scene: None,
             has_nodes: false,
+            row_collapsed: false,
             row_name: None,
             row_label: Default::default(),
             scrolling,
@@ -378,7 +382,11 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn has_windows_or_name(&self) -> bool {
-        self.has_windows() || self.name.is_some() || self.has_nodes || self.row_name.is_some()
+        self.has_windows()
+            || self.name.is_some()
+            || self.has_nodes
+            || self.row_name.is_some()
+            || self.row_collapsed
     }
 
     pub fn scale(&self) -> smithay::output::Scale {
@@ -399,6 +407,9 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn update_render_elements(&mut self, is_active: bool, layer: RenderLayer) {
+        if self.row_collapsed {
+            return;
+        }
         if self.nodes_visible() {
             // Node chrome is supplied atomically by the canvas, including during
             // peeks. Avoid preparing every hidden layout tile on each graph frame.
@@ -520,6 +531,9 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn active_window(&self) -> Option<&W> {
+        if self.row_collapsed {
+            return None;
+        }
         if self.floating_is_active.get() {
             self.floating.active_window()
         } else {
@@ -1683,6 +1697,9 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn active_window_visual_rectangle(&self) -> Option<Rectangle<f64, Logical>> {
+        if self.row_collapsed {
+            return None;
+        }
         if self.floating_is_active.get() {
             self.floating.active_window_visual_rectangle()
         } else {
@@ -1706,6 +1723,9 @@ impl<W: LayoutElement> Workspace<W> {
         layer: RenderLayer,
         push: &mut dyn FnMut(WorkspaceRenderElement<R>),
     ) {
+        if self.row_collapsed {
+            return;
+        }
         if self.nodes_visible() {
             if layer.is_normal() {
                 self.render_nodes(ctx, xray_pos, push);
@@ -1727,6 +1747,9 @@ impl<W: LayoutElement> Workspace<W> {
         layer: RenderLayer,
         push: &mut dyn FnMut(WorkspaceRenderElement<R>),
     ) {
+        if self.row_collapsed {
+            return;
+        }
         if self.nodes_visible() {
             return;
         }
@@ -1764,7 +1787,7 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn render_above_top_layer(&self) -> bool {
-        !self.nodes_visible() && self.scrolling.render_above_top_layer()
+        !self.row_collapsed && !self.nodes_visible() && self.scrolling.render_above_top_layer()
     }
 
     pub fn is_floating_visible(&self) -> bool {
@@ -1847,6 +1870,9 @@ impl<W: LayoutElement> Workspace<W> {
     }
 
     pub fn window_under(&self, pos: Point<f64, Logical>) -> Option<(&W, HitType)> {
+        if self.row_collapsed {
+            return None;
+        }
         if self.nodes_visible() {
             return self.node_window_under(pos);
         }
@@ -1921,7 +1947,7 @@ impl<W: LayoutElement> Workspace<W> {
                     .iter()
                     .any(|w| w.expanded && Some(w.id) == focused);
             tile.canvas
-                .set_activated(is_focused && tile.mapped && graph_focus);
+                .set_activated(is_focused && tile.mapped && graph_focus && !self.row_collapsed);
         }
         self.refresh_node_tile();
         self.scrolling

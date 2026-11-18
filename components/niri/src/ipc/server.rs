@@ -292,14 +292,15 @@ async fn process(ctx: &ClientCtx, request: Request) -> Reply {
         Request::SetNodeRowContents {
             workspace_ids,
             names,
+            collapsed_workspace_ids,
         } => {
             let (tx, rx) = async_channel::bounded(1);
             ctx.event_loop.insert_idle(move |state| {
-                if state
-                    .niri
-                    .layout
-                    .set_node_row_metadata(&workspace_ids, &names)
-                {
+                if state.niri.layout.set_node_row_metadata_with_collapsed(
+                    &workspace_ids,
+                    &names,
+                    &collapsed_workspace_ids,
+                ) {
                     state.niri.queue_redraw_all();
                 }
                 let _ = tx.try_send(());
@@ -690,6 +691,7 @@ impl State {
             if ipc_ws.idx != u8::try_from(ws_idx + 1).unwrap_or(u8::MAX)
                 || ipc_ws.name.as_ref() != ws.name()
                 || ipc_ws.output.as_ref() != output_name
+                || ipc_ws.is_collapsed != ws.row_collapsed
             {
                 need_workspaces_changed = true;
                 break;
@@ -744,6 +746,7 @@ impl State {
                         is_active: mon.is_some_and(|mon| mon.active_workspace_idx() == ws_idx),
                         is_focused: Some(id) == focused_ws_id,
                         active_window_id: ws.active_window().map(|win| win.id().get()),
+                        is_collapsed: ws.row_collapsed,
                     }
                 })
                 .collect();

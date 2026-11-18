@@ -11,6 +11,7 @@ hotkey-overlay {
 binds {
     Mod+A repeat=false allow-inhibiting=false { spawn "flowwm" "focus-alert"; }
     Mod+L repeat=false allow-inhibiting=false { spawn "flowwm" "row-settings"; }
+    Mod+H repeat=false allow-inhibiting=false { spawn "flowwm" "collapse"; }
     Mod+M repeat=false allow-inhibiting=false { spawn "dms" "ipc" "call" "notifications" "dismissAllPopups"; }
     Mod+Tab repeat=false allow-inhibiting=false { spawn "flowwm" "toggle"; }
     Mod+Q repeat=false allow-inhibiting=false { spawn "flowwm" "send" r#"{"action":"ui","command":{"action":"stop_selected"}}"#; }

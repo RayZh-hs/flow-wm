@@ -81,6 +81,10 @@ pub enum UiCommand {
     Workspace {
         id: String,
     },
+    ToggleWorkspaceCollapse,
+    ExpandWorkspace {
+        id: String,
+    },
     Search {
         mode: String,
     },
@@ -230,6 +234,10 @@ pub enum Action {
     },
     SelectWorkspace {
         id: String,
+    },
+    SetWorkspaceCollapsed {
+        workspace: String,
+        collapsed: bool,
     },
     Notes {
         text: String,
@@ -725,6 +733,7 @@ impl DesktopClient {
                 | Action::Notes { .. }
                 | Action::HumanProgress { .. }
                 | Action::SyncDesktop { .. }
+                | Action::SetWorkspaceCollapsed { .. }
         );
         // Presentation edits are serialized under the WM lock, never the host's lock.
         let mut view = self.inner.view.lock().unwrap();
@@ -1042,6 +1051,30 @@ impl DesktopClient {
                 );
                 state.selected_workspace = id;
             }
+            Action::SetWorkspaceCollapsed {
+                workspace,
+                collapsed,
+            } => {
+                ensure!(
+                    state.workspaces.iter().any(|w| w.id == workspace),
+                    "Workflow not found"
+                );
+                flow_host::ipc::send(
+                    &self.inner.provider_socket,
+                    &json!({
+                        "desktop_protocol": 1,
+                        "command": "set_row_collapsed",
+                        "workflow": workspace.clone(),
+                        "collapsed": collapsed,
+                    }),
+                )?;
+                state
+                    .workspaces
+                    .iter_mut()
+                    .find(|w| w.id == workspace)
+                    .unwrap()
+                    .collapsed = collapsed;
+            }
             Action::CreateWorkspace { name, cwd } => {
                 let id = crate::model::id();
                 let host = state
@@ -1074,6 +1107,7 @@ impl DesktopClient {
                     window_array: false,
                     graph_arranged: false,
                     view: Default::default(),
+                    collapsed: false,
                 });
                 state.selected_workspace = id;
             }

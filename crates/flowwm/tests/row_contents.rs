@@ -30,8 +30,10 @@ fn desktop_provider_publishes_row_content_when_the_last_node_is_deleted_and_rest
                 Request::SetNodeRowContents {
                     workspace_ids,
                     names,
+                    collapsed_workspace_ids,
                 } => {
-                    *received.lock().unwrap() = Some((workspace_ids, names));
+                    *received.lock().unwrap() =
+                        Some((workspace_ids, names, collapsed_workspace_ids));
                     writeln!(stream, "{}", json!({"Ok":"Handled"})).unwrap();
                 }
                 Request::EventStream => {
@@ -63,7 +65,7 @@ fn desktop_provider_publishes_row_content_when_the_last_node_is_deleted_and_rest
     let id = node.id.clone();
     state.nodes.push(node);
     let (desktop, _) = support::fixture_with_niri(state, Some(&socket));
-    let expected = |ids| Some((ids, Default::default()));
+    let expected = |ids| Some((ids, Default::default(), Vec::new()));
     support::wait(|| *contents.lock().unwrap() == expected(vec![1]));
     desktop.request(Action::Delete { id }).unwrap();
     support::wait(|| *contents.lock().unwrap() == expected(vec![]));
@@ -86,7 +88,7 @@ fn desktop_provider_publishes_row_content_when_the_last_node_is_deleted_and_rest
             .unwrap();
         let names: std::collections::BTreeMap<_, _> =
             name.map(|name| (1, name.to_owned())).into_iter().collect();
-        support::wait(|| *contents.lock().unwrap() == Some((vec![], names.clone())));
+        support::wait(|| *contents.lock().unwrap() == Some((vec![], names.clone(), Vec::new())));
     }
     desktop.shutdown();
 }

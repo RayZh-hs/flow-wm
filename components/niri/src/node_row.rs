@@ -386,7 +386,10 @@ impl Niri {
             return None;
         }
         let ws = self.layout.active_workspace()?;
-        let tile = ws.node_tile.as_ref().filter(|t| t.mapped)?;
+        let tile = ws
+            .node_tile
+            .as_ref()
+            .filter(|t| t.mapped && !ws.row_collapsed)?;
         let focused = self.layout.focus().and_then(|w| w.node_window_id());
         if !tile.graph_focused
             && tile
@@ -419,7 +422,7 @@ impl Niri {
         let mon = self.layout.monitor_for_output(output)?;
         let (ws, geo) = mon
             .workspaces_with_render_geo()
-            .find(|(_, geo)| geo.contains(point))?;
+            .find(|(ws, geo)| !ws.row_collapsed && geo.contains(point))?;
         let tile = ws.node_tile.as_ref().filter(|t| t.mapped)?;
         let loc = geo.loc + ws.node_canvas_geometry().loc;
         tile.canvas

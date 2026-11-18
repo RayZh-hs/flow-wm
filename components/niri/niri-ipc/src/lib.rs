@@ -86,6 +86,9 @@ pub enum Request {
         /// Display names for workflow rows, independent of unique compositor workspace names.
         #[serde(default)]
         names: std::collections::BTreeMap<u64, String>,
+        /// Stable workspace IDs whose content is hidden outside the overview.
+        #[serde(default)]
+        collapsed_workspace_ids: Vec<u64>,
     },
     /// Stage geometry for the next node canvas commit.
     SetNodeRow {
@@ -1536,6 +1539,9 @@ pub struct Workspace {
     pub is_focused: bool,
     /// Id of the active window on this workspace, if any.
     pub active_window_id: Option<u64>,
+    /// Whether FlowWM has hidden this workspace's content outside overview.
+    #[serde(default)]
+    pub is_collapsed: bool,
 }
 
 /// Configured keyboard layouts.

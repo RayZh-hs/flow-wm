@@ -35,7 +35,7 @@ Scope {
 
     function getItems(query, activeTrigger) {
         if (isNavigationTrigger(activeTrigger))
-            return Catalog.navigationItems(catalog, query, {row: I18n.tr("Row"), window: I18n.tr("Window"), open: I18n.tr("Open")});
+            return Catalog.navigationItems(catalog, query, {row: I18n.tr("Row"), window: I18n.tr("Window"), open: I18n.tr("Open"), expand: I18n.tr("Expand")});
         if (catalog.lookup) return Catalog.connectionItems(catalog, query, outputName, targetKey);
         return Catalog.items(catalog, query, {
             kind: { agent: I18n.tr("Agent"), shell: I18n.tr("Shell"), metric: I18n.tr("Metric"), gate: I18n.tr("Decision"), human: I18n.tr("You"), window: I18n.tr("Window") },

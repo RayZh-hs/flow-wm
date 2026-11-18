@@ -99,6 +99,8 @@ enum Cmd {
     Workspace {
         id: String,
     },
+    /// Toggle visibility of the current workflow row.
+    Collapse,
     Recipe {
         id: String,
     },
@@ -261,6 +263,9 @@ fn main() -> Result<()> {
         },
         Cmd::Workspace { id } => Action::Ui {
             command: UiCommand::Workspace { id },
+        },
+        Cmd::Collapse => Action::Ui {
+            command: UiCommand::ToggleWorkspaceCollapse,
         },
         Cmd::Recipe { id } => Action::Ui {
             command: UiCommand::Recipe { id },

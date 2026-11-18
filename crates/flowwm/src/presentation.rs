@@ -26,7 +26,7 @@ impl PresentationDocument {
             selected_workflow: state.selected_workspace.clone().into(),
             recipes:state.recipes.clone(),
             workflows: state.workspaces.iter().map(|row| (row.id.clone().into(),
-                serde_json::json!({"cwd":row.cwd,"notes":row.notes,"view":row.view,"window_array":row.window_array,"graph_arranged":row.graph_arranged,"canvas":row.canvas}))).collect(),
+                serde_json::json!({"cwd":row.cwd,"notes":row.notes,"view":row.view,"window_array":row.window_array,"graph_arranged":row.graph_arranged,"canvas":row.canvas,"collapsed":row.collapsed}))).collect(),
             nodes: state.nodes.iter().map(|node| (node.id.clone().into(),
                 serde_json::json!({"position":node.position,"column":node.column,"column_mode":node.column_mode}))).collect(),
         }
@@ -50,6 +50,11 @@ impl PresentationDocument {
                 row.view = serde_json::from_value(value["view"].clone())?;
                 row.window_array = serde_json::from_value(value["window_array"].clone())?;
                 row.graph_arranged = serde_json::from_value(value["graph_arranged"].clone())?;
+                row.collapsed = value
+                    .get("collapsed")
+                    .map(|value| serde_json::from_value(value.clone()))
+                    .transpose()?
+                    .unwrap_or(false);
             }
         }
         for node in &mut state.nodes {

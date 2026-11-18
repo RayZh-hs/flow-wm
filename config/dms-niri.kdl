@@ -1,6 +1,7 @@
 // Minimal manual integration. Installed FlowWM keeps bindings in config.kdl.
 binds {
     Mod+Tab repeat=false allow-inhibiting=false hotkey-overlay-title="FlowWM: Nodes / Windows" { spawn "flowwm" "toggle"; }
+    Mod+H repeat=false allow-inhibiting=false hotkey-overlay-title="FlowWM: Collapse or expand row" { spawn "flowwm" "collapse"; }
     Mod+Shift+Tab repeat=false allow-inhibiting=false hotkey-overlay-title="FlowWM: Return to windows" { spawn "flowwm" "windows"; }
     Mod+Space repeat=false allow-inhibiting=false hotkey-overlay-title="FlowWM: Dux search / create a node" { spawn "flowwm" "new"; }
     Mod+Shift+Space repeat=false allow-inhibiting=false hotkey-overlay-title="FlowWM: Find a node" { spawn "flowwm" "search"; }
