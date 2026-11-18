@@ -48,7 +48,7 @@ def wallpaper():
     app.run([])
 
 
-def run():
+def run(popups_only=False):
     from PIL import Image, ImageChops
 
     artifacts = ROOT / "artifacts/interaction-fixes"
@@ -120,6 +120,50 @@ def run():
                 second = next(g for g in groups if g["id"] != first["id"])
                 ui("bar_geometry", output="winit", insets=[0, 0, 0, 0])
                 ui("nodes")
+
+                def editor_open():
+                    return any(layer["namespace"] == "flowwm-dialog" for layer in request(niri_socket, "Layers")["Layers"])
+
+                ordinary = create("human")
+                ui("nodes")
+                wait(lambda: catalog()["presentation"]["graph_visible"], compositor)
+                ui("fit")
+                time.sleep(0.4)
+                width, height = capture("node-parameters-canvas.png").size
+
+                def verify_popup(name):
+                    wait(editor_open, compositor)
+                    path = artifacts / name
+                    path.unlink(missing_ok=True)
+                    time.sleep(0.4)
+                    ui("capture", path=str(path))
+                    wait(path.exists, compositor)
+                    with Image.open(path) as panel:
+                        assert 0 < panel.width < width and 100 < panel.height < height, panel.size
+                    assert catalog()["presentation"]["graph_visible"]
+                    ui("dismiss")
+                    wait(lambda: not editor_open(), compositor)
+                    assert catalog()["presentation"]["graph_visible"]
+
+                click(width // 2, height // 2)
+                input_command("key", "shift+Return")
+                verify_popup("node-parameters-keyboard.png")
+                input_command("mousemove", "--sync", width // 2, height // 2,
+                              "click", "--repeat", "2", "--delay", "100", "1")
+                verify_popup("node-parameters-pointer.png")
+                assert not any(w["app_id"] == f"dev.flowwm.interface.v1.{ordinary}" for w in request(niri_socket, "Windows")["Windows"])
+                ui("help")
+                verify_popup("key-bindings.png")
+                ui("notes")
+                verify_popup("workspace-notes.png")
+                ui("workflows")
+                verify_popup("workflows.png")
+                ui("recipes")
+                verify_popup("recipes.png")
+                if popups_only:
+                    print("Popup smoke passed: node parameters via Shift+Enter and double-click, key bindings, workspace notes, workflows, and recipes.")
+                    return
+                request(flow_socket, {"action": "delete", "id": ordinary})
                 constant = create("constant")
                 children.append(subprocess.Popen([sys.executable, str(ROOT / "scripts/preview_fixture.py"), "Tall preview probe"], env=environment, stdout=log, stderr=log))
                 preview = wait(lambda: next((n["id"] for n in state()["nodes"] if n["title"] == "Tall preview probe" and n.get("window_id")), None), compositor)
@@ -301,8 +345,6 @@ def run():
                 vox = wait(lambda: next((n["id"] for n in state()["nodes"] if n["workspace"] == second["id"] and n["kind"] == "vox"), None), compositor)
                 ui("fit")
                 time.sleep(0.4)
-                def editor_open():
-                    return any(layer["namespace"] == "flowwm-dialog" for layer in request(niri_socket, "Layers")["Layers"])
                 assert not editor_open(), "creating Vox must wait for an explicit edit action"
                 vox_zoom = min((width - 160) / 292, (height - 160) / 252, 1.2)
                 code_x = width / 2
@@ -328,11 +370,6 @@ def run():
                 request(flow_socket, {"action": "delete", "id": vox})
                 request(niri_socket, {"Action": {"FocusWorkspace": {"reference": {"Id": first["row"]["id"]}}}})
                 wait(lambda: catalog()["selected_workspace"] == first["id"], compositor)
-                ordinary = create("human")
-                ui("open", id=ordinary)
-                wait(lambda: any(layer["namespace"] == "flowwm-dialog" for layer in request(niri_socket, "Layers")["Layers"]), compositor)
-                assert not any(w["app_id"] == f"dev.flowwm.interface.v1.{ordinary}" for w in request(niri_socket, "Windows")["Windows"])
-                ui("dismiss")
                 definition = json.loads((ROOT / "examples/extension-window.json").read_text())["nodes"][0]
                 request(flow_socket, {"action":"register_node", "definition":definition})
                 optional = create("vox")
@@ -404,4 +441,4 @@ def run():
 
 
 if __name__ == "__main__":
-    wallpaper() if "--wallpaper" in sys.argv else run()
+    wallpaper() if "--wallpaper" in sys.argv else run("--popups-only" in sys.argv)

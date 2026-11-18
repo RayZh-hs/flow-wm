@@ -38,7 +38,13 @@ struct Editor {
     cancelled: Arc<AtomicBool>,
     history: super::field_history::Form,
 }
-pub fn open(dialog: gtk::Window, engine: DesktopClient, node: Node, command: Vec<String>) {
+pub fn open(
+    dialog: gtk::Window,
+    panel: super::popup::Popup,
+    engine: DesktopClient,
+    node: Node,
+    command: Vec<String>,
+) {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 14);
     root.add_css_class("dialog-body");
     let status = gtk::Label::new(Some("Loading settings…"));
@@ -46,24 +52,20 @@ pub fn open(dialog: gtk::Window, engine: DesktopClient, node: Node, command: Vec
     status.set_xalign(0.);
     root.append(&status);
     let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    let scroll = gtk::ScrolledWindow::builder()
-        .vexpand(true)
-        .child(&body)
-        .build();
-    root.append(&scroll);
+    root.append(&body);
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     buttons.set_halign(gtk::Align::End);
     let cancel = gtk::Button::with_label("Cancel");
     let refresh = gtk::Button::with_label("Refresh");
     let save = gtk::Button::with_label("Save node");
-    dialog.set_default_widget(Some(&save));
     save.add_css_class("accent");
     save.set_sensitive(false);
     for button in [&cancel, &refresh, &save] {
         buttons.append(button);
     }
     root.append(&buttons);
-    dialog.set_child(Some(&root));
+    panel.set_body(&root);
+    dialog.set_default_widget(Some(&save));
     let properties = node
         .flow
         .properties

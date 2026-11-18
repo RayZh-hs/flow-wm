@@ -130,42 +130,12 @@ glib::wrapper! {
 }
 
 impl Popup {
-    pub fn attach(window: &gtk::Window, body: &impl IsA<gtk::Widget>, theme: &Theme) {
-        Self::attach_with_size(window, body, theme, 520, 720);
-    }
-
-    pub fn install(window: &gtk::Window, theme: &Theme, width: i32, height: i32) {
-        let installing = Cell::new(false);
-        let theme = theme.clone();
-        window.connect_notify_local(Some("child"), move |window, _| {
-            if installing.get() {
-                return;
-            }
-            let Some(body) = window.child() else {
-                return;
-            };
-            if body.is::<Self>() {
-                return;
-            }
-            installing.set(true);
-            Self::attach_with_size(window, &body, &theme, width, height);
-            installing.set(false);
-        });
-    }
-
-    fn attach_with_size(
-        window: &gtk::Window,
-        body: &impl IsA<gtk::Widget>,
-        theme: &Theme,
-        width: i32,
-        height: i32,
-    ) {
+    pub fn new(window: &gtk::Window, theme: &Theme, width: i32, height: i32) -> Self {
         let popup: Self = glib::Object::new();
         popup.imp().open_ms.set(theme.popup_open_ms);
         popup.imp().close_ms.set(theme.popup_close_ms);
         popup.imp().body_width.set(width.max(1));
         popup.imp().body_height.set(height);
-        popup.imp().body.set(Some(body.as_ref()));
         *popup.imp().backdrop.borrow_mut() = Some(gdk::RGBA::new(
             theme.backdrop.0 as f32,
             theme.backdrop.1 as f32,
@@ -176,18 +146,6 @@ impl Popup {
         overlay.set_vexpand(true);
         let background = gtk::Box::new(gtk::Orientation::Vertical, 0);
         overlay.set_child(Some(&background));
-        body.set_halign(gtk::Align::Center);
-        body.set_valign(gtk::Align::Center);
-        body.set_width_request((width - 24).max(1));
-        body.set_margin_top(12);
-        body.set_margin_bottom(12);
-        body.set_margin_start(12);
-        body.set_margin_end(12);
-        // `install` observes the window's child after GTK has parented it. Move
-        // that child into the viewport before installing the popup surface.
-        if body.parent().is_some() {
-            body.unparent();
-        }
         // A single viewport keeps every dialog inside the available output. Its natural
         // size is still used for short forms, while taller content becomes scrollable.
         let viewport = gtk::ScrolledWindow::builder()
@@ -195,7 +153,6 @@ impl Popup {
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .propagate_natural_width(true)
             .propagate_natural_height(true)
-            .child(body)
             .build();
         viewport.add_css_class("popup-viewport");
         viewport.set_halign(gtk::Align::Center);
@@ -247,10 +204,48 @@ impl Popup {
             gtk::prelude::GtkWindowExt::set_focus(&window, None::<&gtk::Widget>);
         });
         popup.add_controller(click);
+        popup.connect_map(|popup| popup.reopen());
+        window.set_child(Some(&popup));
+        if window.is_layer_window() {
+            window.set_default_size(0, 0);
+            for edge in [Edge::Top, Edge::Right, Edge::Bottom, Edge::Left] {
+                window.set_anchor(edge, true);
+            }
+        }
+        let weak = popup.downgrade();
+        window.connect_close_request(move |window| {
+            if let Some(popup) = weak.upgrade()
+                && window.is_mapped()
+                && popup.imp().close_ms.get() > 0
+            {
+                popup.animate(false);
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        popup
+    }
+
+    pub fn set_body(&self, body: &impl IsA<gtk::Widget>) {
+        // Install the body directly in its viewport so GTK owns each child through
+        // the corresponding container API for the whole lifetime of the dialog.
+        body.set_halign(gtk::Align::Center);
+        body.set_valign(gtk::Align::Center);
+        body.set_width_request((self.imp().body_width.get() - 24).max(1));
+        body.set_margin_top(12);
+        body.set_margin_bottom(12);
+        body.set_margin_start(12);
+        body.set_margin_end(12);
+        self.imp().body.set(Some(body.as_ref()));
+        self.imp()
+            .viewport
+            .upgrade()
+            .expect("popup has a viewport")
+            .set_child(Some(body));
         visit_popovers(body.as_ref(), &mut |popover| {
             let key = gtk::EventControllerKey::new();
             key.set_propagation_phase(gtk::PropagationPhase::Capture);
-            let weak = popup.downgrade();
+            let weak = self.downgrade();
             key.connect_key_pressed(move |_, key, _, _| {
                 if key == gdk::Key::Escape
                     && let Some(popup) = weak.upgrade()
@@ -260,37 +255,24 @@ impl Popup {
                 glib::Propagation::Proceed
             });
             popover.add_controller(key);
-            let weak = popup.downgrade();
-            let window = window.downgrade();
+            let weak = self.downgrade();
             // GTK restores picker focus after `closed`; clear it on the next event-loop turn.
             popover.connect_local("closed", true, move |_| {
                 if let Some(popup) = weak.upgrade()
                     && popup.imp().escaping_popover.replace(false)
                 {
-                    let window = window.clone();
+                    let weak = popup.downgrade();
                     glib::idle_add_local_once(move || {
-                        if let Some(window) = window.upgrade() {
+                        if let Some(window) = weak
+                            .upgrade()
+                            .and_then(|popup| popup.root().and_downcast::<gtk::Window>())
+                        {
                             gtk::prelude::GtkWindowExt::set_focus(&window, None::<&gtk::Widget>);
                         }
                     });
                 }
                 None
             });
-        });
-        popup.connect_map(|popup| popup.reopen());
-        window.set_child(Some(&popup));
-        if window.is_layer_window() {
-            window.set_default_size(0, 0);
-            for edge in [Edge::Top, Edge::Right, Edge::Bottom, Edge::Left] {
-                window.set_anchor(edge, true);
-            }
-        }
-        window.connect_close_request(move |window| {
-            if !window.is_mapped() || popup.imp().close_ms.get() == 0 {
-                return glib::Propagation::Proceed;
-            }
-            popup.animate(false);
-            glib::Propagation::Stop
         });
     }
 

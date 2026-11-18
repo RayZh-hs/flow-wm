@@ -2017,7 +2017,7 @@ impl Shell {
         }
     }
     fn workflow_macros(&self) {
-        let popup = self.dialog("Macros", 480, 300);
+        let (popup, panel) = self.dialog("Macros", 480, 300);
         let root = column(8);
         root.add_css_class("dialog-body");
         let search = gtk::SearchEntry::new();
@@ -2066,7 +2066,7 @@ impl Shell {
             }
         });
         root.append(&list);
-        popup.set_child(Some(&root));
+        panel.set_body(&root);
         popup.present();
         search.grab_focus();
     }
@@ -2901,7 +2901,7 @@ impl Shell {
                 message.set_text(text);
                 return;
             }
-            let dialog = self.dialog("FlowWM error", 480, -1);
+            let (dialog, panel) = self.dialog("FlowWM error", 480, -1);
             dialog.set_namespace(Some("flowwm-error"));
             let root = column(14);
             root.add_css_class("dialog-body");
@@ -2916,7 +2916,7 @@ impl Shell {
             let d = dialog.clone();
             close.connect_clicked(move |_| d.close());
             root.append(&close);
-            dialog.set_child(Some(&root));
+            panel.set_body(&root);
             dialog.set_default_widget(Some(&close));
             let weak = self.weak.clone();
             dialog.connect_destroy(move |_| {
@@ -3130,7 +3130,7 @@ impl Shell {
             popup.present();
             return;
         }
-        let popup = self.dialog("Find a node", 480, 110);
+        let (popup, panel) = self.dialog("Find a node", 480, 110);
         popup.add_css_class("flow-search");
         let root = column(8);
         root.add_css_class("chat-body");
@@ -3141,7 +3141,7 @@ impl Shell {
         root.append(&search);
         let count = label("Matching nodes stay highlighted on the graph", "hint");
         root.append(&count);
-        popup.set_child(Some(&root));
+        panel.set_body(&root);
         let weak = self.weak.clone();
         let matches = count.clone();
         search.connect_search_changed(move |entry| {
@@ -3293,7 +3293,7 @@ impl Shell {
         self.canvas().grab_focus();
     }
     fn show_chat(&self, id: Option<String>) {
-        let popup = self.dialog("Ask FlowGraph", 560, 150);
+        let (popup, panel) = self.dialog("Ask FlowGraph", 560, 150);
         popup.add_css_class("flow-chat");
         let root = column(10);
         root.add_css_class("chat-body");
@@ -3325,7 +3325,7 @@ impl Shell {
             "Enter to send · Tab to put this session on the graph · Esc to dismiss",
             "hint",
         ));
-        popup.set_child(Some(&root));
+        panel.set_body(&root);
         let session = Rc::new(RefCell::new(id));
         let current = session.clone();
         let weak = self.weak.clone();
@@ -3455,7 +3455,7 @@ impl Shell {
         }
     }
     fn agent_settings(&self) {
-        let popup = self.dialog("FlowGraph agent", 540, 230);
+        let (popup, panel) = self.dialog("FlowGraph agent", 540, 230);
         let root = column(12);
         root.add_css_class("dialog-body");
         root.append(&label("Agent command", "panel-title"));
@@ -3494,7 +3494,7 @@ impl Shell {
                 Err(e) => error.set_text(&e.to_string()),
             }
         });
-        popup.set_child(Some(&root));
+        panel.set_body(&root);
         popup.present();
     }
     fn palette(&self) {
@@ -3502,7 +3502,7 @@ impl Shell {
             self.dms_launcher(Some("create"));
             return;
         }
-        let dialog = self.dialog("Create a node", 480, 560);
+        let (dialog, panel) = self.dialog("Create a node", 480, 560);
         let root = column(14);
         root.add_css_class("dialog-body");
         root.append(&label("What happens next?", "dialog-title"));
@@ -3531,12 +3531,13 @@ impl Shell {
             }
         }
         let scroll = gtk::ScrolledWindow::builder()
+            .propagate_natural_height(true)
             .vexpand(true)
             .child(&list)
             .build();
         root.append(&scroll);
         root.append(&label("Enter  create     ·     Esc  cancel", "hint"));
-        dialog.set_child(Some(&root));
+        panel.set_body(&root);
         let l = list.clone();
         let macros = self.macros.clone();
         search.connect_search_changed(move |search| {
@@ -3877,12 +3878,12 @@ impl Shell {
             .find(|m| m.id == node.spec().type_id)
             .and_then(|m| m.settings.clone())
         {
-            let dialog = self.dialog("Extension settings", 560, 620);
-            super::extension_settings::open(dialog, self.engine.clone(), node, command);
+            let (dialog, panel) = self.dialog("Extension settings", 560, 620);
+            super::extension_settings::open(dialog, panel, self.engine.clone(), node, command);
             return;
         }
         let session_action = flow_builtins::session_actions::name(&node.spec().type_id);
-        let dialog = self.dialog(
+        let (dialog, panel) = self.dialog(
             session_action.unwrap_or("Node parameters"),
             if node.kind == NodeKind::Vox {
                 1100
@@ -4143,7 +4144,6 @@ impl Shell {
         let cancel = gtk::Button::with_label("Cancel");
         let save = gtk::Button::with_label("Save node");
         save.add_css_class("accent");
-        dialog.set_default_widget(Some(&save));
         actions.append(&cancel);
         actions.append(&save);
         if node.kind != NodeKind::Vox {
@@ -4231,15 +4231,16 @@ impl Shell {
             actions.set_margin_bottom(20);
             actions.set_margin_top(12);
             body.append(&actions);
-            dialog.set_child(Some(&body));
+            panel.set_body(&body);
         } else {
             let scroll = gtk::ScrolledWindow::builder()
                 .propagate_natural_height(true)
                 .max_content_height(680)
                 .child(&root)
                 .build();
-            dialog.set_child(Some(&scroll));
+            panel.set_body(&scroll);
         }
+        dialog.set_default_widget(Some(&save));
         dialog.present();
         if node.kind == NodeKind::Vox {
             focus_editor.grab_focus();
@@ -4251,7 +4252,7 @@ impl Shell {
     }
     fn notes(&self) {
         let state = self.engine.snapshot().state;
-        let dialog = self.dialog("Workspace notes", 700, 600);
+        let (dialog, panel) = self.dialog("Workspace notes", 700, 600);
         let root = column(18);
         root.add_css_class("dialog-body");
         root.append(&label("Your thinking space.", "dialog-title"));
@@ -4261,6 +4262,7 @@ impl Shell {
         text.add_css_class("notes-editor");
         text.buffer().set_text(&state.workspace().notes);
         let scroll = gtk::ScrolledWindow::builder()
+            .min_content_height(240)
             .vexpand(true)
             .child(&text)
             .build();
@@ -4278,7 +4280,7 @@ impl Shell {
             });
             d.close();
         });
-        dialog.set_child(Some(&root));
+        panel.set_body(&root);
         dialog.present();
     }
     fn orchestrate(
@@ -4325,7 +4327,7 @@ impl Shell {
             }
         };
         let overrides: Env = serde_json::from_value(value["settings"].clone()).unwrap_or_default();
-        let dialog = self.dialog("Row settings", 520, 560);
+        let (dialog, panel) = self.dialog("Row settings", 520, -1);
         dialog.add_css_class("row-settings-window");
         let root = column(12);
         root.add_css_class("row-settings-body");
@@ -4496,21 +4498,19 @@ impl Shell {
                 }
             }
         });
-        dialog.set_default_widget(Some(&save));
         let view = self.view.clone();
-        let window = dialog.downgrade();
+        let popup = panel.downgrade();
         super::background::attach(&root, move || {
             let view = view.borrow();
-            let progress = window
-                .upgrade()
-                .and_then(|window| window.child().and_downcast::<super::popup::Popup>())
-                .map_or(1., |popup| popup.progress());
+            let progress = popup.upgrade().map_or(1., |popup| popup.progress());
             super::background::Style {
                 enabled: view.theme.blur_enabled && progress > 0.,
                 radius: view.theme.window_radius,
                 scale: 0.96 + 0.04 * progress,
             }
         });
+        panel.set_body(&root);
+        dialog.set_default_widget(Some(&save));
         dialog.present();
         gtk::prelude::GtkWindowExt::set_focus(&dialog, None::<&gtk::Widget>);
     }
@@ -4532,7 +4532,7 @@ impl Shell {
         };
         let state = self.engine.snapshot().state;
         let current = WorkflowId(state.selected_workspace.clone());
-        let dialog = self.dialog("Workflows", 560, 520);
+        let (dialog, panel) = self.dialog("Workflows", 560, 520);
         let root = column(16);
         root.add_css_class("dialog-body");
         root.append(&label("Workflows", "dialog-title"));
@@ -4701,12 +4701,12 @@ impl Shell {
                 Err(e) => shell.show_error(&e.to_string()),
             }
         });
-        dialog.set_child(Some(&gtk::ScrolledWindow::builder().child(&root).build()));
+        panel.set_body(&root);
         dialog.present();
     }
     fn recipes(&self) {
         let state = self.engine.snapshot().state;
-        let dialog = self.dialog("Recipes", 560, 500);
+        let (dialog, panel) = self.dialog("Recipes", 560, 500);
         let root = column(16);
         root.add_css_class("dialog-body");
         root.append(&label("Build once. Reuse the flow.", "dialog-title"));
@@ -4767,7 +4767,7 @@ impl Shell {
             "Share with: flowwm export <recipe-id> recipe.json",
             "hint",
         ));
-        dialog.set_child(Some(&gtk::ScrolledWindow::builder().child(&root).build()));
+        panel.set_body(&root);
         dialog.present();
     }
     fn watcher(&self, id: &str) {
@@ -4775,7 +4775,7 @@ impl Shell {
         let Some(source) = state.node(id) else {
             return;
         };
-        let dialog = self.dialog("Metric watcher", 520, 460);
+        let (dialog, panel) = self.dialog("Metric watcher", 520, 460);
         let root = column(16);
         root.add_css_class("dialog-body");
         root.append(&label("Turn a signal into work.", "dialog-title"));
@@ -4819,7 +4819,7 @@ impl Shell {
                 d.close();
             }
         });
-        dialog.set_child(Some(&gtk::ScrolledWindow::builder().child(&root).build()));
+        panel.set_body(&root);
         dialog.present();
     }
     fn help(&self) {
@@ -4832,20 +4832,20 @@ impl Shell {
             window.present();
             return;
         }
-        let dialog = self.dialog("Key bindings", 800, 640);
+        let (dialog, panel) = self.dialog("Key bindings", 800, 640);
         let (root, search) = super::keybindings::content(crate::config::shortcuts());
-        dialog.set_child(Some(&root));
+        panel.set_body(&root);
         dialog.present();
         search.grab_focus();
     }
-    fn dialog(&self, title: &str, width: i32, height: i32) -> gtk::Window {
+    fn dialog(&self, title: &str, width: i32, height: i32) -> (gtk::Window, super::popup::Popup) {
         let dialog = gtk::Window::builder()
             .application(&self.app)
             .title(title)
             .transient_for(&self.window())
             .modal(true)
             .default_width(width)
-            // Popup::install uses the requested height as a viewport maximum.
+            // The popup uses the requested height as a viewport maximum.
             // Let the window itself follow the content so short dialogs do not
             // retain a large empty lower half.
             .default_height(-1)
@@ -4863,7 +4863,7 @@ impl Shell {
             dialog.set_exclusive_zone(-1);
             dialog.set_keyboard_mode(KeyboardMode::Exclusive);
         }
-        super::popup::Popup::install(&dialog, &self.view.borrow().theme, width, height);
+        let panel = super::popup::Popup::new(&dialog, &self.view.borrow().theme, width, height);
         let key = gtk::EventControllerKey::new();
         key.set_propagation_phase(gtk::PropagationPhase::Capture);
         let d = dialog.clone();
@@ -4886,7 +4886,7 @@ impl Shell {
             }
         });
         dialog.add_controller(key);
-        dialog
+        (dialog, panel)
     }
     fn capture(&self, path: PathBuf) -> Result<()> {
         let window = self

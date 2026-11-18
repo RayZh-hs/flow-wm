@@ -164,7 +164,6 @@ fn attach(entry: &gtk::Entry, scope: Scope) {
     popup.set_autohide(false);
     popup.set_has_arrow(false);
     popup.set_position(gtk::PositionType::Bottom);
-    popup.set_parent(entry);
     let list = gtk::ListBox::new();
     list.set_activate_on_single_click(true);
     list.set_focusable(false);
@@ -177,14 +176,15 @@ fn attach(entry: &gtk::Entry, scope: Scope) {
         .build();
     popup.set_child(Some(&scroll));
     let navigation = scroll.clone();
+    // Some forms construct entries they never show. Tie the popover to the
+    // realized entry so those entries can be dropped without a parented child.
+    if entry.is_realized() {
+        popup.set_parent(entry);
+    }
+    let attached = popup.clone();
+    entry.connect_realize(move |entry| attached.set_parent(entry));
     let attached = popup.clone();
     entry.connect_unrealize(move |_| attached.unparent());
-    let attached = popup.clone();
-    entry.connect_realize(move |entry| {
-        if attached.parent().is_none() {
-            attached.set_parent(entry);
-        }
-    });
     let p = popup.downgrade();
     let e = entry.downgrade();
     list.connect_row_activated(move |_, row| {

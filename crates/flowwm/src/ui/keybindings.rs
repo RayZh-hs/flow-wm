@@ -99,6 +99,7 @@ pub fn content(shortcuts: Vec<Shortcut>) -> (gtk::Box, gtk::SearchEntry) {
     });
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
+        .propagate_natural_height(true)
         .vexpand(true)
         .child(&list)
         .build();
