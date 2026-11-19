@@ -8,6 +8,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        env:
+          # Keep the excluded niri wiki filenames out of Git for Windows' index.
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: index.sparse
+          GIT_CONFIG_VALUE_0: 'true'
+        with:
+          sparse-checkout: |
+            crates
+            vendor/vox
+            components/niri/niri-config
+            components/niri/niri-ipc
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test -p flow-core --locked
       - run: cargo clippy -p flow-core --all-targets --locked -- -D warnings
