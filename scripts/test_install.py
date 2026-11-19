@@ -53,12 +53,30 @@ class ProfileIsolation(unittest.TestCase):
                 original = f'binds {{\n    {binding}\n}}\n'
                 self.assertEqual(notification_dismiss_binding(original), original)
 
-    def test_existing_profile_adds_alert_focus_and_popup_dismissal_at_login_once_with_backup(self):
+    def test_row_collapse_upgrade_preserves_custom_bindings_and_remapping(self):
+        from configuration import row_collapse_binding
+        defaults = (installer.ROOT / 'config/compositor.kdl').read_text()
+        binding = next(line for line in defaults.splitlines() if line.strip().startswith('Mod+H '))
+        for original in ('binds {\n}\n', '// Mod+H { custom; }\nbinds {}\n', ''):
+            with self.subTest(original=original):
+                upgraded = row_collapse_binding(original)
+                self.assertIn(binding, upgraded)
+                self.assertEqual(row_collapse_binding(upgraded), upgraded)
+        for existing in ('Mod+H { focus-column-left; }', '"Win+h" { spawn "custom"; }',
+                         'Super+H { spawn "custom"; }', 'Mod+F9 { spawn "/custom/bin/flowwm" "collapse"; }',
+                         f'// {binding.strip()}', f'/- {binding.strip()}'):
+            with self.subTest(existing=existing):
+                original = f'binds {{\n    {existing}\n}}\n'
+                self.assertEqual(row_collapse_binding(original), original)
+
+    def test_existing_profile_adds_default_shortcuts_at_login_once_with_backup(self):
         from configuration import activate_launcher_bindings
         with tempfile.TemporaryDirectory() as temporary:
             args = self.profile(Path(temporary))
             main = args[0] / 'config.kdl'
-            original = '\n'.join(line for line in main.read_text().splitlines() if '"focus-alert"' not in line and '"dismissAllPopups"' not in line) + '\n'
+            added_commands = ('"focus-alert"', '"dismissAllPopups"', '"collapse"')
+            original = '\n'.join(line for line in main.read_text().splitlines()
+                                 if not any(command in line for command in added_commands)) + '\n'
             main.write_text(original)
             main.chmod(0o600)
             installer.prepare_profile(*args)
@@ -68,6 +86,7 @@ class ProfileIsolation(unittest.TestCase):
             upgraded = main.read_text()
             self.assertIn('Mod+A hotkey-overlay-title="Focus next alerted window or node"', upgraded)
             self.assertIn('Mod+M hotkey-overlay-title="Dismiss all notification popups"', upgraded)
+            self.assertIn('Mod+H hotkey-overlay-title="Collapse or expand workflow row"', upgraded)
             self.assertEqual(main.stat().st_mode & 0o777, 0o600)
             backup = args[1] / 'config-backups/before-launcher-input/config.kdl'
             self.assertEqual(backup.read_text(), original)

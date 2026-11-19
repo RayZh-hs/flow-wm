@@ -90,6 +90,7 @@ def activate_launcher_bindings(config, state, launcher, compositor):
     original = main.read_text()
     upgraded = alert_focus_binding(node_view_macro_bindings(row_environment_bindings(launcher_focus_bindings(original, launcher)), launcher))
     upgraded = notification_dismiss_binding(upgraded)
+    upgraded = row_collapse_binding(upgraded)
     if original == upgraded:
         return False
     backup = Path(state) / 'config-backups/before-launcher-input/config.kdl'
@@ -168,6 +169,21 @@ def notification_dismiss_binding(text):
     match = re.search(r'(?m)^binds\s*\{', text)
     if match:
         return text[:match.end()] + '\n' + binding + text[match.end():]
+    return text + '\nbinds {\n' + binding + '\n}\n'
+
+
+def row_collapse_binding(text):
+    """Add the default row toggle while preserving custom keys and remappings."""
+    active = '\n'.join(line for line in text.splitlines() if not line.lstrip().startswith('//'))
+    if re.search(r'(?im)(?:^|[;{])[ \t]*"?(?:Mod|Super|Win)[ \t]*\+H"?(?=\s|\{)', active):
+        return text
+    if re.search(r'\bspawn\s+"(?:[^"\n]*/)?flowwm"\s+"collapse"', text):
+        return text
+    binding = '    Mod+H hotkey-overlay-title="Collapse or expand workflow row" repeat=false allow-inhibiting=false { spawn "flowwm" "collapse"; }'
+    match = re.search(r'(?m)^binds\s*\{', text)
+    if match:
+        tail = text[match.end():]
+        return text[:match.end()] + '\n' + binding + (tail if tail.startswith('\n') else '\n' + tail)
     return text + '\nbinds {\n' + binding + '\n}\n'
 
 
